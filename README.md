@@ -35,6 +35,13 @@ bill: a normal day is a handful of invocations. It needs a Mac or a Linux
 machine that is on when you want it working, a Google account, and about half an
 hour.
 
+"On when you want it working" is the part worth thinking about, because Herald
+is most useful always-on. An old laptop or a Raspberry Pi in a cupboard is the
+best answer for most people; Oracle Cloud's Always Free tier is the only cloud
+free tier with enough memory, and it has real caveats.
+[`docs/hosting.md`](docs/hosting.md) compares them and covers setting up over
+SSH.
+
 ## The idea
 
 Most tools that read your calendar can tell you what is on Thursday. Almost none
@@ -109,6 +116,7 @@ ledger, not your settings, not your extensions.
 ## Reading further
 
 - [`docs/install.md`](docs/install.md) — setting it up
+- [`docs/hosting.md`](docs/hosting.md) — where to run it, free options compared
 - [`docs/architecture.md`](docs/architecture.md) — what it is and why it is
   shaped this way
 - [`docs/extending.md`](docs/extending.md) — adding a collector, a cycle, a surface

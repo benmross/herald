@@ -211,8 +211,28 @@ def cmd_doctor(args) -> int:
     check("claude logged in", creds.exists())
     if creds.exists():
         try:
-            sub = json.loads(creds.read_text()).get("claudeAiOauth", {}).get("subscriptionType")
+            oauth = json.loads(creds.read_text()).get("claudeAiOauth", {})
+            sub = oauth.get("subscriptionType")
             print(f"        {_c('subscription: ' + str(sub), DIM)}")
+            # The refresh token is the deadline that matters, and it is short --
+            # about a day, extended every time Claude Code runs. An always-on
+            # Herald therefore never sees it, while a machine that sleeps for
+            # longer than that comes back logged out and silently stops doing
+            # anything model-driven until someone runs `claude` and /login.
+            # Worth reporting as a fact rather than a warning: on a healthy
+            # install this is always a few hours away and means nothing.
+            deadline = oauth.get("refreshTokenExpiresAt")
+            if deadline:
+                when = dt.datetime.fromtimestamp(deadline / 1000)
+                hours = (when - dt.datetime.now()).total_seconds() / 3600
+                if hours <= 0:
+                    check("the login can still be refreshed", False,
+                          f"it expired at {when:%Y-%m-%d %H:%M}. Run `claude` "
+                          f"and /login; nothing model-driven works until you do.")
+                else:
+                    print(f"        {_c(f'login refreshable for another '
+                                        f'{hours:.0f}h (renewed on every run)',
+                                        DIM)}")
         except Exception:
             pass
     from herald import google as google_mod  # noqa: PLC0415

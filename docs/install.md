@@ -10,8 +10,12 @@ search your calendar and one that can tell you which thing on it matters.
 ## What you need first
 
 **A computer that is on when you want Herald working.** A Mac or a Linux
-machine. A laptop is fine — Herald just does less while it is asleep. Windows
-works only through WSL2, which is not covered here.
+machine with 4 GB of RAM or more. A laptop is fine, but one that sleeps for more
+than about a day comes back logged out of Claude Code and stops doing anything
+model-driven until you sign in again — so something that stays on is worth it.
+[`hosting.md`](hosting.md) compares the free options, including what to use if
+you do not have a spare machine. Windows works only through WSL2, which is not
+covered here.
 
 **A Claude subscription**, and the Claude Code app or CLI signed in to it.
 Herald works by running Claude Code for you. There is no separate bill, no API
