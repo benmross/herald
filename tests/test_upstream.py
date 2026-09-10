@@ -77,7 +77,10 @@ class ModeAndHook(unittest.TestCase):
         self.assertTrue(self.up.hook_installed())
         (self.repo / "a.txt").write_text("two\n")
         git("add", "-A", cwd=self.repo)
-        result = git("commit", "-m", "should not happen", cwd=self.repo)
+        # The hook reads the mode at commit time from $HERALD_HOME, the way
+        # the program does, so the commit has to be made against this home.
+        with mock.patch.dict(os.environ, {"HERALD_HOME": str(self.home)}):
+            result = git("commit", "-m", "should not happen", cwd=self.repo)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("tracks upstream", result.stderr + result.stdout)
         log = git("log", "--oneline", cwd=self.repo).stdout
