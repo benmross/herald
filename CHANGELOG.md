@@ -2,6 +2,10 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.3 — 10 September 2026
+
+- A checkout is not an install, and now a test knows the difference
+
 ## v0.1.2 — 10 September 2026
 
 - Two bugs in the update path, both found by rehearsing one
