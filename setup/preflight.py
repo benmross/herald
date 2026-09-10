@@ -73,6 +73,37 @@ def memory_gb() -> float | None:
         return None
 
 
+def _systemd_state() -> tuple[bool, str, str]:
+    """Whether systemd is actually running, not merely installed.
+
+    WSL2 is the case that matters: systemctl is on the PATH, and unless
+    `[boot] systemd=true` is in /etc/wsl.conf every call to it fails with
+    "System has not been booted with systemd". The install step would then
+    report that unit by unit, forty minutes in.
+    """
+    if not shutil.which("systemctl"):
+        return False, "not found", ("without it, Herald still works when you run "
+                                    "it by hand, but nothing runs on a schedule.")
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-system-running"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, str(exc)[:80], "systemctl did not answer"
+    text = (r.stdout + r.stderr).strip()
+    if "not been booted with systemd" in text or "Failed to connect" in text:
+        wsl = pathlib.Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists() \
+            or "microsoft" in platform.release().lower()
+        fix = ("systemd is installed but not running as init. "
+               + ("On WSL2: put `[boot]` and `systemd=true` on two lines in "
+                  "/etc/wsl.conf, then `wsl --shutdown` from Windows and open "
+                  "the terminal again." if wsl else
+                  "Herald still works by hand; nothing runs on a schedule."))
+        return False, "installed but not running", fix
+    # "running" or "degraded" both mean the user manager is up; degraded only
+    # says some unrelated unit failed.
+    return True, text or "running", ""
+
+
 def checks() -> list[dict]:
     """Every check, as {name, ok, detail, fix, required}."""
     out = []
@@ -154,12 +185,9 @@ def checks() -> list[dict]:
 
     system = platform.system()
     if system == "Linux":
-        ok = shutil.which("systemctl") is not None
+        ok, detail, fix = _systemd_state()
         out.append({"name": "systemd (for the background services)", "ok": ok,
-                    "required": False,
-                    "detail": "systemctl found" if ok else "not found",
-                    "fix": "without it, Herald still works when you run it by "
-                           "hand, but nothing runs on a schedule."})
+                    "required": False, "detail": detail, "fix": fix})
     elif system == "Darwin":
         out.append({"name": "launchd (for the background services)", "ok": True,
                     "required": False, "detail": "macOS", "fix": ""})

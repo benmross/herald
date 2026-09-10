@@ -14,8 +14,12 @@ machine with 4 GB of RAM or more. A laptop is fine, but one that sleeps for more
 than about a day comes back logged out of Claude Code and stops doing anything
 model-driven until you sign in again — so something that stays on is worth it.
 [`hosting.md`](hosting.md) compares the free options, including what to use if
-you do not have a spare machine. Windows works only through WSL2, which is not
-covered here.
+you do not have a spare machine. Windows works through WSL2 only, with two
+things to know first: systemd has to be switched on inside WSL (put `[boot]`
+and `systemd=true` on two lines in `/etc/wsl.conf`, run `wsl --shutdown` from
+Windows, open the terminal again -- preflight tells you if this is missing),
+and WSL only runs while Windows is awake and a WSL process is alive, so a
+laptop that sleeps overnight has no 06:30 digest until it wakes.
 
 **A Claude subscription**, and the Claude Code app or CLI signed in to it.
 Herald works by running Claude Code for you. There is no separate bill, no API
