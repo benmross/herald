@@ -31,7 +31,17 @@ import sys
 
 
 def render(url: str, wait: str | None, timeout_s: float) -> tuple[str, str]:
-    from playwright.sync_api import sync_playwright
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        # Optional on purpose: it pulls a ~400MB browser, and most installs
+        # never need a page rendered. Say what to run rather than showing a
+        # traceback about a package nobody was told about.
+        raise SystemExit(
+            "tools/browse.py needs playwright, which is not part of a default "
+            "install:\n"
+            "    ./venv/bin/pip install -r requirements-optional.txt\n"
+            "    ./venv/bin/playwright install chromium") from None
 
     timeout_ms = timeout_s * 1000
     with sync_playwright() as p:

@@ -4,4 +4,3 @@ google-auth-oauthlib>=1.4
 icalendar>=6.0
 requests>=2.32
 python-dateutil>=2.9
-playwright>=1.62

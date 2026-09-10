@@ -1,0 +1,11 @@
+# Optional dependencies. Nothing in Herald's core needs these; each is here
+# because one tool wants it, and installing them is a choice rather than part
+# of setup.
+#
+#   ./venv/bin/pip install -r requirements-optional.txt
+#   ./venv/bin/playwright install chromium
+
+# tools/browse.py -- renders a page with a real browser, for sites that build
+# their content with JavaScript after load. Pulls a ~400MB browser with it,
+# which is why a fresh install does not.
+playwright>=1.62

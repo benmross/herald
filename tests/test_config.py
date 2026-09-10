@@ -191,7 +191,7 @@ class PersonalDataCheck(unittest.TestCase):
 
     def test_a_home_path_is_a_leak(self):
         p = self.check.account_pattern(self.LOGIN)
-        self.assertTrue(p.search(f"/home/{self.LOGIN}/.herald/extensions/elms"))
+        self.assertTrue(p.search(f"/home/{self.LOGIN}/.herald/extensions/private-thing"))
         self.assertTrue(p.search(f"/Users/{self.LOGIN}/.herald".lower()))
         self.assertTrue(p.search(f"~{self.LOGIN}/notes"))
         self.assertTrue(p.search(f"scp {self.LOGIN}@box:/tmp/x ."))
