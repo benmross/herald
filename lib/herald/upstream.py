@@ -196,7 +196,7 @@ def unreleased() -> list[str]:
 # A rule in a prompt is most of the work, and `herald check` makes drift
 # visible -- but a session that edits and commits anyway leaves an install that
 # can never fast-forward again, and the person running it finds out weeks later
-# when an update fails. Ben asked for the hook: in tracking mode a commit in
+# when an update fails. Hence the hook: in tracking mode a commit in
 # the program's repository is refused by git itself.
 # --------------------------------------------------------------------------
 

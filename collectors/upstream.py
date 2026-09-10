@@ -18,7 +18,7 @@ Three things it deliberately does not do:
 - **Nothing on a fork or a maintainer install.** Neither takes updates, and a
   maintainer's own unreleased commits are not news about somebody else's
   release.
-- **No auto-apply.** Ben's call, and the right one: one bad push should reach
+- **No auto-apply.** Deliberate: one bad push should reach
   nobody who did not agree to it, which also means the first person to say "it
   broke" is one person rather than everybody at once.
 - **No re-asking.** One pending approval per release. An unanswered question is
