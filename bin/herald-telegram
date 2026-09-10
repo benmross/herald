@@ -63,7 +63,6 @@ TYPING_REFRESH = 4         # Telegram clears the typing indicator after ~5s
 # two-second answer never gets a progress message at all.
 PROGRESS_AFTER_SECONDS = 6
 PROGRESS_EDIT_SECONDS = 4
-PROGRESS_LINES = 24
 PROGRESS_LIMIT = 3400
 TOOL_BULLET = "\u2023"      # a single right-pointing bracket
 # A topic IS the conversation, for as long as the user wants it to be.
@@ -244,10 +243,6 @@ class Working:
                 self._steps += 1
                 self._latest = text
                 self._lines.append(f"{TOOL_BULLET} {text}")
-            # A long turn can produce hundreds of these; the message has a hard
-            # 4096-character limit and nobody scrolls back through a live one
-            # anyway. Keep the recent end.
-            del self._lines[:-PROGRESS_LINES]
             self._dirty = True
 
     def _render(self, *, done: bool = False, failed: bool = False) -> str:
@@ -261,8 +256,13 @@ class Working:
         else:
             head = f"working · {clock}{step_note}"
         body = "\n".join(lines) if lines else "thinking..."
+        # Trimmed only by the message's real limit, and only from the front, so
+        # the newest text is always there and anything cut says so. There used
+        # to be a line cap as well, which quietly dropped the oldest narration
+        # on a long turn -- the opposite of the point.
         if len(body) > PROGRESS_LIMIT:
-            body = "..." + body[-PROGRESS_LIMIT:]
+            cut = body[-PROGRESS_LIMIT:]
+            body = "[earlier steps trimmed to fit]\n" + cut.split("\n", 1)[-1]
         # The transcript goes in <pre>: it is full of file paths and shell
         # commands, which should stay monospaced and copyable, and which must
         # never be read as formatting. tgtext escapes the contents.
@@ -280,6 +280,9 @@ class Working:
             if resp and resp.get("ok"):
                 self._msg_id = (resp.get("result") or {}).get("message_id")
                 self._sent_text = text
+            # Without this the first edit could fire immediately after the
+            # send, since _last_edit was still 0.
+            self._last_edit = time.monotonic()
             return
         resp = api("editMessageText", chat_id=self.chat_id,
                    message_id=self._msg_id, text=text, parse_mode="HTML",
@@ -296,19 +299,34 @@ class Working:
         progress block ends with the first 400 characters of the reply and the
         reply then arrives underneath it, saying the same thing twice.
         """
-        head = " ".join((reply or "").split())[:120].lower()
+        # Compared with punctuation and spacing removed, because the two are
+        # near-identical rather than identical: a narration block that ends
+        # "...read back." precedes a reply that continues "...read back, so
+        # every pass...", and an exact prefix test misses that.
+        def _key(text: str) -> str:
+            return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+        head = _key(reply)[:60]
         if head:
             with self._lock:
-                while self._lines:
-                    last = " ".join(self._lines[-1].split()).lower()
-                    if last.startswith(TOOL_BULLET):
+                prose = sum(1 for l in self._lines if not l.startswith(TOOL_BULLET))
+                while self._lines and prose > 1:
+                    if self._lines[-1].startswith(TOOL_BULLET):
                         break
-                    # A narration line that the reply opens with, or that opens
-                    # the reply, is the reply.
-                    if head.startswith(last[:120]) or last.startswith(head[:80]):
+                    last = _key(self._lines[-1])[:60]
+                    # A narration line the reply opens with, or that opens the
+                    # reply, is the reply.
+                    if last and (head.startswith(last[:40])
+                                 or last.startswith(head[:40])):
                         self._lines.pop()
+                        prose -= 1
                         continue
                     break
+                # `prose > 1` above is deliberate. On a short turn the only text
+                # block is the answer itself, and trimming it would leave a
+                # transcript of nothing but file paths -- which is what this
+                # display exists to improve on. Better a first line repeated
+                # once than a wall of tool calls.
         self._settled = True
         self._finish(failed=stopped)
 

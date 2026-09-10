@@ -186,9 +186,16 @@ class Progress:
 
 
 def _text_summary(block: dict) -> str:
-    """The model's narration, collapsed to something a chat line can hold."""
-    text = " ".join((block.get("text") or "").split())
-    return text[:400]
+    """The model's narration, whole.
+
+    Not truncated and not collapsed. It was both at first -- 400 characters,
+    newlines squashed -- which quietly dropped the end of any longer thought,
+    and dropping text is exactly what a progress display must not do. Whoever
+    renders this decides how much of it fits; that is a display question, and
+    the answer to it should not be baked in here where nothing can recover
+    what was cut.
+    """
+    return (block.get("text") or "").strip()
 
 
 def _tool_summary(block: dict) -> str:
