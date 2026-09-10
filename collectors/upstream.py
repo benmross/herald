@@ -86,7 +86,11 @@ def collect(con) -> dict:
 
     ok, err = upstream.fetch()
     if not ok:
-        raise RuntimeError(f"could not reach upstream: {err}")
+        # Not a failure. A laptop is offline half the time, and a missed daily
+        # check for a release costs nothing -- while raising here would start a
+        # failure streak and tell the user "upstream is failing", which is both
+        # alarming and wrong. The next pass tries again.
+        return {"upstream unreachable": 1}
 
     release = upstream.available()
     db.clear(con, NAME, "release")

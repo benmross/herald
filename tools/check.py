@@ -238,7 +238,16 @@ def main() -> int:
     release = upstream.current_release()
     print(f"  \033[2mmode {mode}, version {upstream.version()}"
           f"{', ' + release if release else ', no release tag'}\033[0m")
-    if mode == "tracking":
+    configured = config.CONFIG_PATH.exists()
+    if mode == "tracking" and not configured:
+        # Nobody has run setup here, so "tracking" is only the default rather
+        # than a choice, and demanding the guard that enforces it is wrong.
+        # This is a checkout, not an install -- which is exactly what CI is,
+        # and how this was found.
+        c.warn("this checkout has no install behind it",
+               f"no {config.CONFIG_PATH.name} in {config.HOME}; `herald setup` "
+               f"decides whether this follows upstream or owns its program")
+    elif mode == "tracking":
         local = upstream.local_changes()
         c.check("the program directory is unmodified",
                 not local["modified"] and not local["commits"],

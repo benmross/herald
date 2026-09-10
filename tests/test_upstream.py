@@ -195,3 +195,55 @@ class Releases(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ABareCheckoutPasses(unittest.TestCase):
+    """`tools/check.py` has to succeed on a checkout nobody has set up.
+
+    That is what CI is -- a clone with no `$HERALD_HOME` behind it -- and three
+    separate checks have now failed there for the same reason: they could not
+    tell "not set up yet" from "broken". Each one was found by a red build
+    rather than by a test, which is what this is for.
+    """
+
+    def test_check_exits_zero_on_a_fresh_checkout(self):
+        """The layout a clone has, carrying the code as it is right now.
+
+        Built from `git ls-files` rather than by cloning, for one reason that
+        matters: a clone carries the last *commit*, so a test that cloned would
+        pass or fail one commit behind whatever is being written. This copies
+        the tracked files as they are on disk into an otherwise empty git
+        repository -- no generated CLAUDE.md, no ledger symlink, no
+        `$HERALD_HOME` -- which is exactly what CI runs against and what three
+        checks have now failed on for confusing "not set up yet" with "broken".
+
+        `tools/check.py` imports nothing outside the standard library, so this
+        needs no virtualenv.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tree = pathlib.Path(td) / "checkout"
+            tree.mkdir()
+            listed = subprocess.run(["git", "ls-files"], cwd=str(ROOT),
+                                    capture_output=True, text=True).stdout.split()
+            for rel in listed:
+                source = ROOT / rel
+                if not source.exists() or source.is_symlink():
+                    continue
+                target = tree / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+                target.chmod(source.stat().st_mode & 0o777)
+            for args in (("init", "-q", "-b", "main"),
+                         ("config", "user.email", "t@example.com"),
+                         ("config", "user.name", "T"),
+                         ("add", "-A"),
+                         ("commit", "-q", "-m", "checkout")):
+                git(*args, cwd=tree)
+            env = dict(os.environ, HERALD_HOME=str(pathlib.Path(td) / "nothing"))
+            env.pop("VIRTUAL_ENV", None)
+            run = subprocess.run([sys.executable, "tools/check.py"],
+                                 cwd=str(tree), capture_output=True, text=True,
+                                 env=env)
+            self.assertEqual(run.returncode, 0,
+                             msg="check.py failed on a fresh checkout, which is "
+                                 f"what CI runs:\n{run.stdout[-2500:]}")
