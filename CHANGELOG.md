@@ -2,6 +2,10 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.4 — 10 September 2026
+
+- Where to run it, and the login constraint that decides the answer
+
 ## v0.1.3 — 10 September 2026
 
 - A checkout is not an install, and now a test knows the difference
