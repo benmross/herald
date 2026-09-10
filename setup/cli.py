@@ -148,6 +148,10 @@ def _ask_textarea(field) -> str:
             pass
 
 
+class Skip(Exception):
+    """The person chose to leave this step for later."""
+
+
 def ask(prompt) -> dict:
     answers = {}
     for field in prompt.fields:
@@ -158,19 +162,23 @@ def ask(prompt) -> dict:
             print(_c(textwrap.fill(field.help, 76, initial_indent="  ",
                                    subsequent_indent="  "), DIM))
             continue
-        if field.type == "bool":
-            answers[field.key] = _ask_bool(field)
-        elif field.type == "choice":
-            answers[field.key] = _ask_choice(field)
-        elif field.type == "textarea":
-            answers[field.key] = _ask_textarea(field)
-        elif field.type == "secret":
-            answers[field.key] = _ask_text(field, secret=True)
-        else:
-            answers[field.key] = _ask_text(field)
-        if field.required and not str(answers.get(field.key) or "").strip():
-            print(_c("  that one is required", YELLOW))
-            return ask(prompt)
+        while True:
+            if field.type == "bool":
+                answers[field.key] = _ask_bool(field)
+            elif field.type == "choice":
+                answers[field.key] = _ask_choice(field)
+            elif field.type == "textarea":
+                answers[field.key] = _ask_textarea(field)
+            elif field.type == "secret":
+                answers[field.key] = _ask_text(field, secret=True)
+            else:
+                answers[field.key] = _ask_text(field)
+            if not field.required or str(answers.get(field.key) or "").strip():
+                break
+            again = input(_c("  that one is required — enter to try again, "
+                             "'s' to skip this step for now: ", YELLOW)).strip().lower()
+            if again == "s":
+                raise Skip()
     return answers
 
 
@@ -204,15 +212,17 @@ def run_step(step, state: State) -> bool:
         print(f"\n{_c(prompt.title, BOLD)}\n")
         if prompt.blurb:
             print(_md(prompt.blurb))
-        answers = ask(prompt) if prompt.fields else {}
-
-        if prompt.immediate or prompt.fields:
-            print()
-            confirm = input(f"  {prompt.action} — enter to go on, "
-                            f"'s' to skip: ").strip().lower()
-            if confirm == "s":
-                print(_c("  skipped", DIM))
-                return True
+        try:
+            answers = ask(prompt) if prompt.fields else {}
+            if prompt.immediate or prompt.fields:
+                print()
+                confirm = input(f"  {prompt.action} — enter to go on, "
+                                f"'s' to skip: ").strip().lower()
+                if confirm == "s":
+                    raise Skip()
+        except (Skip, EOFError):
+            print(_c("  skipped — `herald setup` comes back to it", DIM))
+            return True
 
         if step.key == "google":
             answers["_on_url"] = _print_google_url
@@ -221,7 +231,10 @@ def run_step(step, state: State) -> bool:
         if outcome.ok and outcome.more:
             continue
         if not outcome.ok:
-            again = input("\n  try this step again? [Y/n]: ").strip().lower()
+            try:
+                again = input("\n  try this step again? [Y/n]: ").strip().lower()
+            except EOFError:
+                again = "n"
             if again.startswith("n"):
                 return True
             continue
@@ -272,25 +285,20 @@ def main(argv: list[str] | None = None) -> int:
         "You can stop at any point and pick up where you left off with "
         "`herald setup`.\n"))
 
-    while True:
-        step = engine.next_step(state)
-        if step is None:
-            print(_c("\n  Everything is set up. `herald status` from here.\n", GREEN))
-            return 0
+    for step in engine.steps():
+        if step.status(state)[0] == DONE:
+            continue
         run_step(step, state)
-        status, _ = step.status(state)
-        if status != DONE and step.optional:
-            # A skipped optional step must not trap the wizard in a loop.
-            state.step(step.key)["skipped"] = True
-            state.save()
-            order = [s.key for s in engine.steps()]
-            remaining = [s for s in engine.steps()
-                         if order.index(s.key) > order.index(step.key)
-                         and s.status(state)[0] != DONE
-                         and not state.step(s.key).get("skipped")]
-            if not remaining:
-                print(_c("\n  Done for now. `herald setup` picks up the rest.\n", GREEN))
-                return 0
+
+    left = [s for s in engine.steps() if s.status(state)[0] != DONE]
+    if not left:
+        print(_c("\n  Everything is set up. `herald status` from here.\n", GREEN))
+        return 0
+    print(_c("\n  Done for now. Still to do:", GREEN))
+    for s in left:
+        print(f"    {s.title:<36} {_c('herald setup --step ' + s.key, DIM)}")
+    print(_c("\n  `herald setup` on its own comes back to these.\n", DIM))
+    return 0
 
 
 if __name__ == "__main__":
