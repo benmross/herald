@@ -82,6 +82,7 @@ install_macos_deps() {
   fi
   local wanted=()
   have git || wanted+=(git)
+  have tmux || wanted+=(tmux)
   python_ok python3 || wanted+=(python@3.13)
   if [ ${#wanted[@]} -gt 0 ]; then
     bold "Installing: ${wanted[*]}"
@@ -92,6 +93,7 @@ install_macos_deps() {
 install_linux_deps() {
   local wanted=()
   have git || wanted+=(git)
+  have tmux || wanted+=(tmux)
   pick_python >/dev/null || wanted+=(python3 python3-venv)
   # A venv needs python3-venv even when python3 is already present.
   if have python3 && ! python3 -c "import venv" >/dev/null 2>&1; then

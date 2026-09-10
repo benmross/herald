@@ -138,5 +138,13 @@ ln -s ~/herald/bin/herald ~/.local/bin/herald
 herald setup            # or: herald setup --web
 ```
 
-Requires Python 3.11+, git, and a signed-in `claude`. `$HERALD_HOME` overrides
+Setting up over SSH, with the browser wizard: forward both the wizard's port
+and the one Google redirects to at the end of the sign-in, in one command from
+the machine you are sitting at, and leave it running until setup is done:
+
+```bash
+ssh -N -L 127.0.0.1:8799:127.0.0.1:8799 -L 127.0.0.1:8765:127.0.0.1:8765 you@server
+```
+
+Requires Python 3.11+, git, tmux, and a signed-in `claude`. `$HERALD_HOME` overrides
 where your data goes. Everything the wizard does is re-runnable per step.

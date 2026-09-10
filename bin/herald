@@ -207,8 +207,14 @@ def cmd_doctor(args) -> int:
     check("no ANTHROPIC_API_KEY leaking into agent env",
           "ANTHROPIC_API_KEY" not in env,
           "an API key would silently move Herald onto metered billing")
+    sys.path.insert(0, str(config.ROOT))
+    from setup.preflight import claude_auth  # noqa: PLC0415
+    auth = claude_auth()
+    check("claude logged in", bool(auth.get("loggedIn")),
+          "" if auth.get("loggedIn") else "run `claude` and /login")
     creds = pathlib.Path.home() / ".claude" / ".credentials.json"
-    check("claude logged in", creds.exists())
+    if auth.get("loggedIn") and not creds.exists():
+        print(f"        {_c('subscription: ' + str(auth.get('subscriptionType')), DIM)}")
     if creds.exists():
         try:
             oauth = json.loads(creds.read_text()).get("claudeAiOauth", {})
@@ -329,11 +335,13 @@ def cmd_restart(args) -> int:
               file=sys.stderr)
         return 1
 
+    sys.path.insert(0, str(config.ROOT))
+    from setup import services  # noqa: PLC0415
     rc = 0
     for u in units:
-        r = subprocess.run(["systemctl", "--user", "restart", u])
-        rc = rc or r.returncode
-        print(f"  restarted {u}" if r.returncode == 0 else f"  FAILED {u}")
+        ok, err = services.restart(u)
+        rc = rc or (0 if ok else 1)
+        print(f"  restarted {u}" if ok else f"  FAILED {u}  {err}")
     return rc
 
 
@@ -903,8 +911,18 @@ def cmd_cycle(args) -> int:
     # thing in the prompt, and this is the half that does not depend on the
     # session believing it.
     env["HERALD_UNATTENDED"] = "1"
-    return subprocess.run([config.python(), str(available[args.name])],
-                          cwd=str(config.ROOT), env=env).returncode
+    rc = subprocess.run([config.python(), str(available[args.name])],
+                        cwd=str(config.ROOT), env=env).returncode
+    # A cycle rewrites state/ and appends to journal/. Committed here, in the
+    # one place every cycle passes through, rather than trusting each cycle's
+    # session to remember -- the ledger's history is only as real as this.
+    try:
+        from herald import ledger  # noqa: PLC0415
+        if (short := ledger.commit(f"cycle: {args.name}")):
+            print(f"  ledger committed ({short})")
+    except Exception as exc:                                        # noqa: BLE001
+        print(f"  ledger not committed: {exc}", file=sys.stderr)
+    return rc
 
 
 # --------------------------------------------------------------------------- main

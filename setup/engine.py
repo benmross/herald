@@ -144,6 +144,15 @@ class Step:
         except Exception as exc:                                    # noqa: BLE001
             return Outcome(ok=False, message=f"{type(exc).__name__}: {exc}")
         state.save()
+        if outcome.ok:
+            # Whatever this step wrote into the person's directory -- config,
+            # identity files, the interview -- is committed there now, so the
+            # version history the home step promised actually has entries.
+            try:
+                from herald import ledger  # noqa: PLC0415
+                ledger.commit(f"setup: {self.key}")
+            except Exception:                                       # noqa: BLE001
+                pass
         return outcome
 
 

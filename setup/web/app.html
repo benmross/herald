@@ -133,12 +133,14 @@ let current = null, fields = [], recog = null;
 
 /* Enough Markdown for these blurbs: headings, bold, code, links, bullets,
    indented blocks. A dependency for this would be absurd. */
+const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
 function md(src) {
-  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const inline = s => esc(s)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
     .replace(/&lt;(https?:\/\/[^&]+)&gt;/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])\*([^*\s][^*]*?)\*(?=[\s.,;:)]|$)/g, "$1<em>$2</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>");
   const out = [];
   for (const block of src.split(/\n\s*\n/)) {
@@ -171,28 +173,28 @@ function field(f) {
   wrap.className = "field";
   const id = "f_" + f.key;
   if (f.type === "note") {
-    wrap.innerHTML = (f.label ? `<label>${f.label}</label>` : "") +
+    wrap.innerHTML = (f.label ? `<label>${esc(f.label)}</label>` : "") +
       `<div class="help">${md(f.help || "")}</div>`;
     return wrap;
   }
   if (f.type === "bool") {
     wrap.innerHTML = `<div class="checkline">
         <input type="checkbox" id="${id}" ${f.default ? "checked" : ""}>
-        <div><label for="${id}">${f.label}</label>
+        <div><label for="${id}">${esc(f.label)}</label>
         <div class="help">${md(f.help || "")}</div></div></div>`;
     return wrap;
   }
   let control;
   if (f.type === "choice") {
     control = `<select id="${id}">` + (f.choices || []).map(c =>
-      `<option ${c === f.default ? "selected" : ""}>${c}</option>`).join("") + "</select>";
+      `<option ${c === f.default ? "selected" : ""}>${esc(c)}</option>`).join("") + "</select>";
   } else if (f.type === "textarea") {
-    control = `<textarea id="${id}" rows="${f.rows || 4}" placeholder="${f.placeholder || ""}">${(f.default || "")}</textarea>`;
+    control = `<textarea id="${id}" rows="${f.rows || 4}" placeholder="${esc(f.placeholder || "")}">${esc(f.default || "")}</textarea>`;
   } else {
     const type = f.type === "secret" ? "password" : "text";
-    control = `<input type="${type}" id="${id}" value="${f.type === "secret" ? "" : (f.default || "")}" placeholder="${f.placeholder || ""}">`;
+    control = `<input type="${type}" id="${id}" value="${f.type === "secret" ? "" : esc(f.default || "")}" placeholder="${esc(f.placeholder || "")}">`;
   }
-  wrap.innerHTML = (f.label ? `<label for="${id}">${f.label}${f.required ? " *" : ""}</label>` : "") +
+  wrap.innerHTML = (f.label ? `<label for="${id}">${esc(f.label)}${f.required ? " *" : ""}</label>` : "") +
     (f.help ? `<div class="help">${md(f.help)}</div>` : "") + control;
   if (f.type === "textarea" && f.dictate && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
     const btn = document.createElement("button");
@@ -272,7 +274,7 @@ async function load(step) {
     const li = document.createElement("li");
     li.className = s.key === current ? "current" : "";
     li.innerHTML = `<span class="dot ${s.status}"></span>
-      <span class="stepname">${s.title}<span class="stepdetail">${s.detail || ""}</span></span>`;
+      <span class="stepname">${esc(s.title)}<span class="stepdetail">${esc(s.detail || "")}</span></span>`;
     li.onclick = () => load(s.key);
     list.appendChild(li);
   });
@@ -299,7 +301,7 @@ async function go() {
     if (state.url && !shownUrl) {
       shownUrl = true;
       result.innerHTML = `<div class="note"><h4>Open this and sign in</h4>
-        <a class="signin" href="${state.url}" target="_blank" rel="noreferrer">${state.url}</a>
+        <a class="signin" href="${esc(state.url)}" target="_blank" rel="noreferrer">${esc(state.url)}</a>
         <p style="margin:10px 0 0;color:var(--muted);font-size:14px">
         Google will warn that the app is unverified. It is your own app, made
         minutes ago. Waiting for you to finish…</p></div>`;
@@ -309,9 +311,9 @@ async function go() {
       button.disabled = false;
       working.style.display = "none";
       result.innerHTML = `<div class="note ${o.ok ? "ok" : "bad"}">
-        <h4>${o.ok ? "" : "That did not work — "}${(o.message || "").replace(/</g, "&lt;")}</h4>
-        ${o.detail ? `<pre>${o.detail.replace(/</g, "&lt;")}</pre>` : ""}
-        ${(o.warnings || []).map(w => `<div class="warn">! ${w.replace(/</g, "&lt;")}</div>`).join("")}
+        <h4>${o.ok ? "" : "That did not work — "}${esc(o.message || "")}</h4>
+        ${o.detail ? `<pre>${esc(o.detail)}</pre>` : ""}
+        ${(o.warnings || []).map(w => `<div class="warn">! ${esc(w)}</div>`).join("")}
       </div>`;
       if (o.ok) {
         const next = document.createElement("button");

@@ -191,10 +191,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _lan_hint(port: int) -> str:
+    # Two ports, one command: the wizard's own, and the one Google redirects to
+    # at the end of the sign-in. Forwarding only the first means the Google
+    # step fails forty minutes in with "connection refused" in a browser tab.
+    from setup.google import DEFAULT_PORT as google_port  # noqa: PLC0415
     host = socket.gethostname()
     return (f"If Herald is on another machine, run this on the computer you are "
             f"sitting at:\n\n    ssh -N -L 127.0.0.1:{port}:127.0.0.1:{port} "
-            f"$USER@{host}\n\nthen open the URL below in your own browser.")
+            f"-L 127.0.0.1:{google_port}:127.0.0.1:{google_port} "
+            f"$USER@{host}\n\nthen open the URL below in your own browser. Leave "
+            f"it running until setup is finished.")
 
 
 def serve(port: int = 8799) -> int:
@@ -212,7 +218,8 @@ def serve(port: int = 8799) -> int:
     print("  Open this:\n")
     print(f"      {url}\n")
     print("  It only listens on this machine, and the token in the link is what")
-    print("  keeps other accounts on it out. Ctrl-C when you are finished.\n")
+    print("  keeps other accounts on it out. Ctrl-C when you are finished.\n",
+          flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

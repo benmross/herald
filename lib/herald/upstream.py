@@ -396,11 +396,14 @@ def restart_services(report=None) -> str:
                         "--reason", "update applied", "herald-telegram.service"],
                        capture_output=True, text=True)
     out = (r.stdout or "").strip()
-    b = subprocess.run(["systemctl", "--user", "restart", "herald-brain.service"],
-                       capture_output=True, text=True)
+    import sys as _sys
+    if str(config.ROOT) not in _sys.path:
+        _sys.path.insert(0, str(config.ROOT))
+    from setup import services  # noqa: PLC0415
+    ok, err = services.restart("herald-brain.service")
     if report:
         report(out or "restart requested")
-    return out + ("" if b.returncode == 0 else f" (brain: {b.stderr.strip()[:120]})")
+    return out + ("" if ok else f" (brain: {err[:120]})")
 
 
 # --------------------------------------------------------------------------

@@ -29,18 +29,47 @@ def _brew_or_apt(brew: str, apt: str) -> str:
     return f"sudo apt install {apt}"
 
 
+def claude_auth() -> dict:
+    """What `claude auth status` says: {loggedIn, subscriptionType, ...}.
+
+    Asked of the CLI rather than read from ~/.claude/.credentials.json,
+    because that file only exists on Linux. On macOS the login lives in the
+    Keychain, and a file check there reports every signed-in Mac as signed out.
+    """
+    from herald import config  # noqa: PLC0415
+    if not shutil.which("claude"):
+        return {}
+    try:
+        r = subprocess.run(["claude", "auth", "status"], capture_output=True,
+                           text=True, timeout=30, env=config.agent_env())
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    try:
+        import json
+        return json.loads(r.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+
+
 def _claude_logged_in() -> bool:
-    return (pathlib.Path.home() / ".claude" / ".credentials.json").exists()
+    return bool(claude_auth().get("loggedIn"))
 
 
 def _subscription() -> str | None:
-    creds = pathlib.Path.home() / ".claude" / ".credentials.json"
-    if not creds.exists():
-        return None
+    return claude_auth().get("subscriptionType")
+
+
+def memory_gb() -> float | None:
+    """Total RAM, or None where it cannot be read."""
     try:
-        import json
-        return json.loads(creds.read_text()).get("claudeAiOauth", {}).get("subscriptionType")
-    except Exception:                                               # noqa: BLE001
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9
+    except (ValueError, OSError, AttributeError):
+        pass
+    try:
+        out = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
+                             text=True, timeout=5).stdout.strip()
+        return int(out) / 1e9 if out else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
 
@@ -77,12 +106,41 @@ def checks() -> list[dict]:
         "fix": "curl -fsSL https://claude.ai/install.sh | bash",
     })
 
-    sub = _subscription()
+    auth = claude_auth() if claude else {}
+    sub = auth.get("subscriptionType")
     out.append({
-        "name": "Claude Code signed in", "ok": _claude_logged_in(), "required": True,
-        "detail": f"subscription: {sub}" if sub else "no credentials found",
+        "name": "Claude Code signed in", "ok": bool(auth.get("loggedIn")),
+        "required": True,
+        "detail": (f"subscription: {sub}" if sub else
+                   "signed in" if auth.get("loggedIn") else "not signed in"),
         "fix": "run `claude` once and use /login. Herald runs on your own "
                "subscription -- it never uses an API key.",
+    })
+    if auth.get("loggedIn") and auth.get("apiProvider") not in (None, "firstParty"):
+        out.append({
+            "name": "Claude Code uses the subscription, not an API provider",
+            "ok": False, "required": False,
+            "detail": f"apiProvider: {auth.get('apiProvider')}",
+            "fix": "Claude Code is configured for a third-party provider "
+                   "(Bedrock or Vertex). Herald would then be metered there "
+                   "rather than on a subscription.",
+        })
+
+    tmux = shutil.which("tmux")
+    out.append({
+        "name": "tmux", "ok": bool(tmux), "required": True,
+        "detail": tmux or "not installed",
+        "fix": _brew_or_apt("tmux", "tmux") + "  -- the persistent session "
+               "(herald-brain, and `herald attach`) lives in it.",
+    })
+
+    ram = memory_gb()
+    out.append({
+        "name": "memory", "ok": ram is None or ram >= 3.5, "required": False,
+        "detail": f"{ram:.1f} GB" if ram else "unknown",
+        "fix": "Claude Code wants 4 GB. Below that a cycle can be killed "
+               "mid-run; a 1 GB free-tier VPS passes every other check and then "
+               "fails at 06:30. See docs/hosting.md.",
     })
 
     out.append({

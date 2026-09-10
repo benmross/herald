@@ -25,6 +25,7 @@ def prompt(state: State) -> Prompt:
     exts = [e.name for e in extensions.enabled()]
     jobs = services.status()
     telegram = bool(config.secret("telegram.chat_id"))
+    ntfy = bool(config.get("notify.ntfy_topic"))
 
     lines = [
         f"**{agent} is yours now, {who['first']}.**",
@@ -34,7 +35,11 @@ def prompt(state: State) -> Prompt:
         "- every 30 minutes: it reads whatever you connected — "
         + (", ".join(on) or "nothing yet"),
         "- 06:30: a digest of what actually matters that day"
-        + (", to Telegram" if telegram else ", as a notification"),
+        + (", to Telegram" if telegram else
+           ", as an ntfy notification" if ntfy else
+           ". **Nothing carries it to your phone yet** — it is written to "
+           "`ledger/digests/` and that is all. `herald setup --step telegram` "
+           "fixes that in five minutes."),
         "- twice a day: it looks for opportunities and deadlines you would "
         "otherwise miss, ranked against your goals",
         "- the moment it finds something closing tomorrow: it interrupts you",

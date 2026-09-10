@@ -24,6 +24,7 @@ it when the machine wakes, so the digest arrives late rather than never.
 from __future__ import annotations
 
 import getpass
+import os
 import pathlib
 import platform
 import plistlib
@@ -151,7 +152,8 @@ def enable_linger() -> tuple[bool, str]:
 # macOS
 
 def _plist(label: str, args: list[str], *, interval: int | None = None,
-           calendar: list[dict] | None = None, keepalive: bool = False) -> dict:
+           calendar: list[dict] | None = None, keepalive: bool = False,
+           run_at_load: bool = False) -> dict:
     out = {
         "Label": label,
         "ProgramArguments": args,
@@ -175,6 +177,8 @@ def _plist(label: str, args: list[str], *, interval: int | None = None,
     if keepalive:
         out["KeepAlive"] = True
         out["RunAtLoad"] = True
+    if run_at_load:
+        out["RunAtLoad"] = True
     return out
 
 
@@ -193,9 +197,15 @@ def launchd_jobs() -> dict[str, dict]:
         f"{LABEL_PREFIX}.telegram": _plist(
             f"{LABEL_PREFIX}.telegram",
             [python, str(config.ROOT / "bin" / "herald-telegram")], keepalive=True),
-        f"{LABEL_PREFIX}.watchdog": _plist(
-            f"{LABEL_PREFIX}.watchdog",
-            [python, str(config.ROOT / "bin" / "herald-watchdog")], interval=300),
+        # The brain lives in a tmux session; `ensure` starts it if it is not
+        # there and restarts it if claude has died inside it. Run at load and
+        # every five minutes, it is the brain's launcher and its watchdog in
+        # one -- the systemd watchdog's other probes are systemctl calls that
+        # mean nothing here, so it is not shipped on a Mac.
+        f"{LABEL_PREFIX}.brain": _plist(
+            f"{LABEL_PREFIX}.brain",
+            [str(config.ROOT / "bin" / "herald-brain"), "ensure"],
+            interval=300, run_at_load=True),
     }
     return jobs
 
@@ -257,6 +267,34 @@ def status() -> list[tuple[str, str]]:
         for label in launchd_jobs():
             out.append((label, "loaded" if label in listing else "not loaded"))
     return out
+
+
+def restart(unit: str) -> tuple[bool, str]:
+    """Restart one background job on whichever scheduler this platform has.
+
+    `unit` is the systemd name (`herald-telegram.service`); on macOS it is
+    mapped to the launchd label. Both `herald restart` and an update's
+    post-restart go through here, which is what stops either from being a
+    bare `systemctl` that fails on a Mac with "command not found".
+    """
+    kind = platform_name()
+    if kind == "systemd":
+        r = subprocess.run(["systemctl", "--user", "restart", unit],
+                           capture_output=True, text=True)
+        return r.returncode == 0, (r.stderr or "").strip()[:200]
+    if kind == "launchd":
+        label = f"{LABEL_PREFIX}." + unit.removeprefix("herald-").removesuffix(".service")
+        if label == f"{LABEL_PREFIX}.brain":
+            # A oneshot `ensure`; a restart of the brain means restarting the
+            # tmux session it supervises, which the script itself does.
+            r = subprocess.run([str(config.ROOT / "bin" / "herald-brain"), "restart"],
+                               capture_output=True, text=True)
+            return r.returncode == 0, (r.stderr or "").strip()[:200]
+        target = f"gui/{os.getuid()}/{label}"
+        r = subprocess.run(["launchctl", "kickstart", "-k", target],
+                           capture_output=True, text=True)
+        return r.returncode == 0, (r.stderr or "").strip()[:200]
+    return False, "no scheduler on this platform"
 
 
 def available() -> bool:

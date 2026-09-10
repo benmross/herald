@@ -20,6 +20,7 @@ from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
+sys.path.insert(0, str(ROOT))
 
 from herald import db, think  # noqa: E402
 
@@ -108,7 +109,7 @@ class RestartGuardTests(unittest.TestCase):
         live = [{"service": "telegram", "key": "-100:107", "pid": 1, "started": 0}]
         with mock.patch.object(self.herald, "cmd_check", return_value=0), \
                 mock.patch.object(self.herald.activity, "active", return_value=live), \
-                mock.patch.object(self.herald.subprocess, "run") as run, \
+                mock.patch("setup.services.restart") as run, \
                 redirect_stderr(io.StringIO()) as err:
             rc = self.herald.cmd_restart(self._args())
         self.assertEqual(rc, 1)
@@ -120,8 +121,8 @@ class RestartGuardTests(unittest.TestCase):
         live = [{"service": "telegram", "key": "-100:107", "pid": 1, "started": 0}]
         with mock.patch.object(self.herald, "cmd_check", return_value=0), \
                 mock.patch.object(self.herald.activity, "active", return_value=live), \
-                mock.patch.object(self.herald.subprocess, "run",
-                                  return_value=mock.Mock(returncode=0)) as run:
+                mock.patch("setup.services.restart",
+                           return_value=(True, "")) as run:
             rc = self.herald.cmd_restart(self._args(force=True))
         self.assertEqual(rc, 0)
         run.assert_called_once()
@@ -129,8 +130,8 @@ class RestartGuardTests(unittest.TestCase):
     def test_restarts_normally_when_nothing_is_mid_turn(self):
         with mock.patch.object(self.herald, "cmd_check", return_value=0), \
                 mock.patch.object(self.herald.activity, "active", return_value=[]), \
-                mock.patch.object(self.herald.subprocess, "run",
-                                  return_value=mock.Mock(returncode=0)) as run:
+                mock.patch("setup.services.restart",
+                           return_value=(True, "")) as run:
             rc = self.herald.cmd_restart(self._args())
         self.assertEqual(rc, 0)
         run.assert_called_once()
@@ -140,8 +141,8 @@ class RestartGuardTests(unittest.TestCase):
         live = [{"service": "telegram", "key": "-100:107", "pid": 1, "started": 0}]
         with mock.patch.object(self.herald, "cmd_check", return_value=0), \
                 mock.patch.object(self.herald.activity, "active", return_value=live), \
-                mock.patch.object(self.herald.subprocess, "run",
-                                  return_value=mock.Mock(returncode=0)) as run:
+                mock.patch("setup.services.restart",
+                           return_value=(True, "")) as run:
             rc = self.herald.cmd_restart(
                 mock.Mock(units=["herald-brain.service"], defer=False,
                           reason=None, force=False))

@@ -228,6 +228,24 @@ def _answers_path() -> pathlib.Path:
     return _dir() / "answers.json"
 
 
+def _draft_path() -> pathlib.Path:
+    return _dir() / "draft.md"
+
+
+def _current_text() -> str:
+    """What to show in the box: the saved piece, else the autosaved draft.
+
+    The browser writes `draft.md` as the person types (setup/web/server.py),
+    which is what makes "you can leave and come back" true -- but only if the
+    field actually reads it back. It did not, the first time.
+    """
+    if _piece_path().exists() and _piece_path().read_text().strip():
+        return _piece_path().read_text()
+    if _draft_path().exists():
+        return _draft_path().read_text()
+    return ""
+
+
 def _stage(state: State) -> str:
     step = state.step("interview")
     if not _piece_path().exists() or not _piece_path().read_text().strip():
@@ -267,9 +285,9 @@ def prompt(state: State) -> Prompt:
                   "thing on it matters.\n\n" + PROVOCATIONS,
             fields=[Field(key="piece", label="", type="textarea", rows=30,
                           dictate=True, required=True,
-                          default=(_piece_path().read_text()
-                                   if _piece_path().exists() else ""),
-                          help="Type or dictate. Saved when you press the button.")],
+                          default=_current_text(),
+                          help="Type or dictate. Saved as you go in the browser, "
+                               "and for good when you press the button.")],
             action="Save and read it")
 
     if stage == "ask":
@@ -362,6 +380,8 @@ def apply(state: State, answers: dict) -> Outcome:
                                   "skip the step — everything else works without "
                                   "it, just worse.")
         _piece_path().write_text(piece)
+        if _draft_path().exists():
+            _draft_path().unlink()
         step["words"] = len(piece.split())
         step.pop("questions", None)
         step.pop("answered", None)

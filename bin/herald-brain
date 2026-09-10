@@ -11,7 +11,9 @@
 # `ensure` every few minutes so a crash heals without waiting for a reboot.
 set -uo pipefail
 
-HERALD_ROOT="${HERALD_ROOT:-$HOME/herald}"
+# Resolved from this script's own location, not assumed to be ~/herald: the
+# installer takes HERALD_DIR, and the systemd unit only sets WorkingDirectory.
+HERALD_ROOT="${HERALD_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 SESSION="${HERALD_TMUX_SESSION:-herald}"
 NAME="${HERALD_RC_NAME:-herald}"
 LOG="$HERALD_ROOT/logs/brain.log"
@@ -89,6 +91,7 @@ case "${1:-status}" in
   stop)   stop ;;
   ensure) ensure ;;
   status) status ;;
+  restart) stop; start ;;
   attach) exec tmux attach -t "$SESSION" ;;
   url)    tmux capture-pane -p -t "$SESSION" 2>/dev/null |
             sed -e 's/\x1b\[[0-9;]*m//g' | grep -o 'https://claude.ai/code[^ ]*' | tail -1 ;;

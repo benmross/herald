@@ -48,6 +48,23 @@ def push(title: str, message: str, *, priority: str = "default",
 
     base = config.get("notify.ntfy_url", "https://ntfy.sh").rstrip("/")
     topic = config.get("notify.ntfy_topic")
+    if not topic:
+        # No topic means no channel, not a topic called "None". ntfy topics are
+        # public by name, so posting a digest to https://ntfy.sh/None would
+        # hand the user's morning to anyone subscribed to that word. A fresh
+        # install without Telegram or ntfy has nowhere to push, and the caller
+        # already handles "nowhere"; the digest is still written to
+        # ledger/digests/.
+        if record:
+            try:
+                with db.session() as con:
+                    con.execute(
+                        "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
+                        " VALUES (?, 'ntfy', ?, ?, ?, 0)",
+                        (db.now(), priority, title, message))
+            except Exception:                                       # noqa: BLE001
+                pass
+        return False
     url = f"{base}/{topic}"
 
     headers = {
