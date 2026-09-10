@@ -1043,6 +1043,16 @@ def main() -> int:
 
     args = p.parse_args()
     config.ensure_dirs()
+    # Tracking is the default before anyone has chosen anything, and the
+    # wizard's updates step can now be skipped -- so the guard that makes
+    # tracking mean something is put in place by whichever `herald` command
+    # runs first, rather than depending on one particular screen having been
+    # seen. Cheap: a stat of one file.
+    if upstream.is_tracking() and not upstream.hook_installed():
+        try:
+            upstream.install_hook()
+        except (OSError, FileExistsError):
+            pass
     return args.fn(args)
 
 
