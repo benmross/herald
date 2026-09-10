@@ -127,9 +127,18 @@ def cmd_status(args) -> int:
     rows = db.query("SELECT * FROM collector_state ORDER BY collector")
     if not rows:
         print(f"  {_c('none registered yet', DIM)}")
+    # Cycles keep cursors in this table too (scout's seen set, the bridge's
+    # offset), and a retired collector leaves its row behind. Both would
+    # otherwise read as live collectors that have stopped running.
+    live = set(_discover("collectors"))
     for r in rows:
         fails = r["consecutive_failures"]
-        state = _c("ok", OK) if not fails else _c(f"failing x{fails}", BAD if fails > 2 else WARN)
+        if r["collector"] not in live:
+            state = _c("not a collector", DIM)
+        elif fails:
+            state = _c(f"failing x{fails}", BAD if fails > 2 else WARN)
+        else:
+            state = _c("ok", OK)
         print(f"  {r['collector']:<20} {state:<22} last ok {r['last_ok'] or 'never'}")
 
     _hdr("ledger")
