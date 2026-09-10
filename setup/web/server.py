@@ -190,17 +190,14 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"error": "not found"}, 404)
 
 
-def _lan_hint(port: int) -> str:
+def _forward_command(port: int) -> str:
     # Two ports, one command: the wizard's own, and the one Google redirects to
     # at the end of the sign-in. Forwarding only the first means the Google
     # step fails forty minutes in with "connection refused" in a browser tab.
     from setup.google import DEFAULT_PORT as google_port  # noqa: PLC0415
     host = socket.gethostname()
-    return (f"If Herald is on another machine, run this on the computer you are "
-            f"sitting at:\n\n    ssh -N -L 127.0.0.1:{port}:127.0.0.1:{port} "
-            f"-L 127.0.0.1:{google_port}:127.0.0.1:{google_port} "
-            f"$USER@{host}\n\nthen open the URL below in your own browser. Leave "
-            f"it running until setup is finished.")
+    return (f"ssh -N -L 127.0.0.1:{port}:127.0.0.1:{port} "
+            f"-L 127.0.0.1:{google_port}:127.0.0.1:{google_port} $USER@{host}")
 
 
 def serve(port: int = 8799) -> int:
@@ -213,12 +210,14 @@ def serve(port: int = 8799) -> int:
         return 1
     url = f"http://127.0.0.1:{port}/?token={TOKEN}"
     print()
-    print(_lan_hint(port))
-    print()
-    print("  Open this:\n")
+    print("  Open this in your browser:\n")
     print(f"      {url}\n")
-    print("  It only listens on this machine, and the token in the link is what")
-    print("  keeps other accounts on it out. Ctrl-C when you are finished.\n",
+    if engine.over_ssh():
+        print("  You are connected over SSH, so first, on the computer you are")
+        print("  sitting at, run this and leave it running until setup is done:\n")
+        print(f"      {_forward_command(port)}\n")
+    print("  The page only listens on this machine; the token in the link keeps")
+    print("  other accounts on it out. Ctrl-C here when you are finished.\n",
           flush=True)
     try:
         httpd.serve_forever()

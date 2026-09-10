@@ -215,12 +215,33 @@ main() {
   echo
   bold "Installed."
   echo
-  if ! [ -f "$HOME/.claude/.credentials.json" ]; then
-    warn "One thing first: sign in to Claude Code."
-    dim  "  run:  claude     then use  /login"
+
+  # Signed in? Asked of the CLI, which is right on macOS too, where the login
+  # lives in the Keychain and no credentials file exists. If not, that is the
+  # only next step, and this script ends on it rather than listing setup
+  # commands underneath as if the sign-in were optional.
+  if ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+    warn "Herald needs Claude Code signed in to your Claude subscription."
+    if [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
+      if ask "Sign in now? (it opens a link)"; then
+        claude auth login --claudeai </dev/tty >/dev/tty 2>&1 || true
+      fi
+    fi
+    if ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
+      echo
+      bold "Not signed in yet. When you are ready:"
+      echo
+      echo "    claude auth login       sign in to your subscription"
+      echo "    herald setup --web      then set Herald up"
+      echo
+      exit 0
+    fi
+    echo
+    bold "Signed in."
     echo
   fi
-  dim "Then set Herald up. Either of these — they do the same thing:"
+
+  dim "Now set Herald up. Either of these — they do the same thing:"
   echo
   echo "    herald setup --web      a page in your browser (easier)"
   echo "    herald setup            in this terminal"

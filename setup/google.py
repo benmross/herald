@@ -185,6 +185,18 @@ def credentials_dir() -> pathlib.Path:
     return google_mod.credentials_dir()
 
 
+def _ssh_note() -> str:
+    """The port-forward, only when there is an SSH session to forward through."""
+    from .engine import over_ssh  # noqa: PLC0415
+    if not over_ssh():
+        return ""
+    return (" You are connected over SSH, so Google's redirect has to reach this "
+            "machine: if you started the browser wizard with the `ssh -N -L` "
+            "line it printed, that is already covered; otherwise run\n\n"
+            f"    ssh -N -L 127.0.0.1:{DEFAULT_PORT}:127.0.0.1:{DEFAULT_PORT} "
+            "USER@THIS-MACHINE\n\non the computer you are sitting at first.")
+
+
 # --------------------------------------------------------------------------
 # The consent flow, done by hand rather than with run_local_server, because
 # both frontends need the URL *before* anything blocks: the terminal prints it,
@@ -325,10 +337,7 @@ def prompt(state: State) -> Prompt:
                     "it, choose the account this Herald is for, and tick every "
                     "permission — Herald asks for mail, calendar, contacts, "
                     "tasks, Drive, Docs and Sheets because that is the whole of "
-                    "what it does. If you are setting this up over SSH on "
-                    f"another machine, first run:\n\n"
-                    f"    ssh -N -L 127.0.0.1:{DEFAULT_PORT}:127.0.0.1:{DEFAULT_PORT} "
-                    f"USER@THIS-MACHINE\n\nfrom the computer you are sitting at.",
+                    "what it does." + _ssh_note(),
             fields=[], immediate=True, action="Get my sign-in link")
     return Prompt(
         title="Google is connected",

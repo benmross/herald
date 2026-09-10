@@ -63,6 +63,20 @@ def _repo_exists(path: pathlib.Path) -> bool:
     return (path / ".git").exists()
 
 
+def _gh_signed_in() -> bool:
+    if not shutil.which("gh"):
+        return False
+    return subprocess.run(["gh", "auth", "status"], capture_output=True,
+                          text=True).returncode == 0
+
+
+GH_NOTE = ("The GitHub CLI is installed but not signed in, so the off-machine "
+           "backup is not offered yet. If you want one: run `gh auth login` in "
+           "a terminal, follow its prompts, and run this step again "
+           "(`herald setup --step home`). Without one, a dead disk takes the "
+           "ledger.")
+
+
 def status(state: State) -> tuple[str, str]:
     home = config.HOME
     if not (home / "config.json").exists():
@@ -101,7 +115,9 @@ def prompt(state: State) -> Prompt:
     if versioned:
         remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=home,
                                 capture_output=True, text=True).stdout.strip()
-    if has_gh and not remote:
+    if has_gh and not remote and not _gh_signed_in():
+        fields.append(Field(key="note", type="note", label="", help=GH_NOTE))
+    elif has_gh and not remote:
         fields.append(Field(
             key="github", label="Also back it up to a private GitHub repository",
             type="bool", default=False,
@@ -142,17 +158,30 @@ def apply(state: State, answers: dict) -> Outcome:
     want_git = answers.get("git", True) and not _repo_exists(home)
     if want_git:
         subprocess.run(["git", "init", "-q", "-b", "main"], cwd=home, check=False)
-        subprocess.run(["git", "add", "-A"], cwd=home, check=False)
-        r = subprocess.run(["git", "commit", "-q", "-m",
-                            "My Herald: config, ledger, extensions"],
-                           cwd=home, capture_output=True, text=True)
-        if r.returncode != 0 and "nothing to commit" not in (r.stdout + r.stderr):
-            warnings.append(f"git commit said: {(r.stderr or r.stdout).strip()[:200]}")
+        # A person who has never used git has no name and email configured,
+        # and git refuses to commit without them -- "Please tell me who you
+        # are" was the first thing the first outside install saw. Set for
+        # this repository only, never globally; ledger.commit passes the same
+        # on every later commit too.
+        subprocess.run(["git", "config", "user.name",
+                        config.get("agent.name", "Herald") or "Herald"], cwd=home, check=False)
+        subprocess.run(["git", "config", "user.email", "herald@localhost"],
+                       cwd=home, check=False)
+        from herald import ledger  # noqa: PLC0415
+        if not ledger.commit("My Herald: config, ledger, extensions", push=False):
+            r = subprocess.run(["git", "log", "--oneline", "-1"], cwd=home,
+                               capture_output=True, text=True)
+            if not r.stdout.strip():
+                warnings.append("the first commit did not happen; "
+                                "`git -C " + str(home) + " status` says why")
 
     if answers.get("github"):
         name = (answers.get("repo_name") or "herald-ledger").strip()
         if not shutil.which("gh"):
             warnings.append("the GitHub CLI is not installed, so no backup was made")
+        elif not _gh_signed_in():
+            warnings.append("the GitHub CLI is not signed in, so no backup was "
+                            "made. " + GH_NOTE)
         else:
             r = subprocess.run(
                 ["gh", "repo", "create", name, "--private", "--source=.",

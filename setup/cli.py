@@ -246,6 +246,11 @@ def _print_google_url(url: str) -> None:
     print(f"  {url}\n")
     print(_c("  Waiting for you to finish. Google will warn that the app is "
              "unverified — that is your own app, made minutes ago.", DIM))
+    if engine.over_ssh():
+        from .google import DEFAULT_PORT  # noqa: PLC0415
+        print(_c(f"  You are over SSH: the sign-in ends by redirecting to this "
+                 f"machine's port {DEFAULT_PORT}, so it needs the port-forward "
+                 f"from the computer you are sitting at.", DIM))
 
 
 def main(argv: list[str] | None = None) -> int:

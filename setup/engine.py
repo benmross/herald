@@ -40,6 +40,18 @@ from herald import config  # noqa: E402
 
 STATE_PATH = config.HOME / "setup-state.json"
 
+
+def over_ssh() -> bool:
+    """Whether the wizard is being run through an SSH session.
+
+    The port-forwarding instruction only means anything then. Shown to
+    somebody sitting at the machine -- or in WSL, or in the Claude app -- it
+    reads as a step they are failing to do, and the first outside install
+    stalled on exactly that.
+    """
+    import os  # noqa: PLC0415
+    return any(os.environ.get(k) for k in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
+
 DONE, TODO, BLOCKED, PARTIAL = "done", "todo", "blocked", "partial"
 
 
