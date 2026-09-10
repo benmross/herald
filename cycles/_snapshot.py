@@ -217,6 +217,32 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
             if len(rows) > 4:
                 out.append(f"    - …and {len(rows) - 4} more")
 
+    # A waiting release, and any red action waiting on a tap. Both are things
+    # the user has to answer rather than things that happened, so they come
+    # before the day itself.
+    release = _rows(con, "SELECT * FROM facts WHERE source='upstream' "
+                         "AND kind='release' ORDER BY ts DESC LIMIT 1")
+    if release:
+        r = release[0]
+        head("An update to Herald is waiting")
+        out.append(f"{r['title']} — {_j(r, 'commits')} commit(s) since "
+                   f"{_j(r, 'from') or 'this install'}. It is offered as a "
+                   f"one-tap approval; mention it once, briefly, and do not "
+                   f"repeat it every morning."
+                   + flag(f"upstream:{r['external_id']}"))
+        if r["body"]:
+            out.append(f"    {r['body'][:400].replace(chr(10), ' ')}")
+
+    waiting = _rows(con, "SELECT * FROM approvals WHERE state='pending' ORDER BY ts")
+    if waiting:
+        head(f"Waiting on a yes or no from {them} ({len(waiting)})")
+        out.append("These were asked as one-tap questions and never answered. "
+                   "Worth one line if any still matters; drop the ones that "
+                   "have gone stale.")
+        for a in waiting:
+            out.append(f"- {(a['ts'] or '')[:16].replace('T', ' ')}  "
+                       f"{a['kind']}: {a['summary']}")
+
     pour(20)          # extensions that want to be near the top
 
     # --- schedule ----------------------------------------------------------

@@ -155,11 +155,15 @@ def steps() -> list[Step]:
     broken.
     """
     from . import (basics, done, google, home, install, interview,  # noqa: PLC0415
-                   preflight, rules, sources, telegram)
+                   preflight, rules, sources, telegram, updates)
     return [
         preflight.STEP,
         home.STEP,
         basics.STEP,
+        # Early, and before anything is customised: it decides whether a
+        # later "can you make it do X" is answered by editing the program or
+        # by reaching for a setting, and that shapes every step after it.
+        updates.STEP,
         google.STEP,
         telegram.STEP,
         sources.STEP,

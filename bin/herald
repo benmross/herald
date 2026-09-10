@@ -52,8 +52,9 @@ if _VENV_PY.exists() and pathlib.Path(sys.prefix).resolve() != (ROOT / "venv").r
 sys.path.insert(0, str(ROOT / "lib"))
 
 from herald import (activity, capabilities, config,  # noqa: E402
-                    constitution as constitution_mod, db, extensions, notify,
-                    think as think_mod)
+                    constitution as constitution_mod, db, extensions,
+                    migrations as migrations_mod, notify,
+                    think as think_mod, upstream)
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
 OK, WARN, BAD = "\033[32m", "\033[33m", "\033[31m"
@@ -104,6 +105,27 @@ def cmd_status(args) -> int:
         tot = db.query("SELECT ROUND(SUM(COALESCE(cost_usd,0)),4) t,"
                        " COUNT(*) n FROM runs WHERE ts >= datetime('now','-7 days')")[0]
         print(f"  {_c(f'{tot['n']} runs / ${tot['t'] or 0:.4f} in the last 7 days', DIM)}")
+
+    _hdr("program")
+    current_mode = upstream.mode()
+    release = upstream.current_release()
+    print(f"  {'mode':16} {current_mode}")
+    print(f"  {'version':16} {upstream.version()}"
+          f"{'  (' + release + ')' if release else '  (no release tag yet)'}")
+    if current_mode == "maintainer":
+        waiting = upstream.unreleased()
+        if waiting:
+            print(f"  {'unreleased':16} {_c(str(len(waiting)) + ' commit(s)', WARN)}"
+                  f"  — `herald release --preview`")
+    elif current_mode == "tracking":
+        if not upstream.hook_installed():
+            print(f"  {'commit hook':16} {_c('missing', WARN)} — `herald mode tracking`")
+        local = upstream.local_changes()
+        if local["modified"] or local["commits"]:
+            note = (f"{len(local['modified'])} edited, "
+                    f"{len(local['commits'])} committed")
+            print(f"  {'local changes':16} {_c(note, BAD)}"
+                  f" — updates cannot fast-forward")
 
     exts = extensions.all_extensions()
     if exts:
@@ -505,6 +527,166 @@ def cmd_collect(args) -> int:
     return rc
 
 
+def cmd_mode(args) -> int:
+    """Read or set this install's relationship to the program it runs."""
+    if not args.mode:
+        current = upstream.mode()
+        print(f"  {_c(current, BOLD)}")
+        print(_c({
+            "tracking": "  follows upstream releases; the program is not this "
+                        "install's to edit, and `herald update` fast-forwards",
+            "fork": "  this install owns its program and will not receive "
+                    "updates",
+            "maintainer": "  this install IS upstream: it edits, commits and "
+                          "pushes, and `herald release` is what reaches others",
+        }[current], DIM))
+        if current == "tracking":
+            print(_c(f"  commit hook: "
+                     f"{'installed' if upstream.hook_installed() else 'MISSING'}",
+                     DIM))
+        return 0
+    was = upstream.mode()
+    if args.mode == was:
+        # Still sync the hook. A fresh install has no `mode` set at all, so it
+        # is *already* tracking by default and would otherwise never get the
+        # guard that makes tracking mean anything -- which is exactly how the
+        # first test of it committed straight through.
+        print(f"  already {was}  (commit hook {upstream.sync_hook()})")
+        config.set_user("mode", was)
+        return 0
+    if args.mode == "tracking" and (local := upstream.local_changes())["commits"]:
+        print(_c(f"  {len(local['commits'])} local commit(s) in the program repo. "
+                 f"Tracking means fast-forwarding, which cannot happen over "
+                 f"them.\n  Reset to upstream first, or stay a fork.", BAD),
+              file=sys.stderr)
+        return 1
+    hook = upstream.set_mode(args.mode)
+    print(f"  {was} → {_c(args.mode, BOLD)}  (commit hook {hook})")
+    constitution_mod.write()
+    print(_c("  CLAUDE.md regenerated: the rules a session reads changed with it",
+             DIM))
+    return 0
+
+
+def cmd_update(args) -> int:
+    """Fast-forward to the newest upstream release and reconcile."""
+    current = upstream.mode()
+    if current != "tracking" and not args.check:
+        print(_c(f"  this install is a {current}, so it does not take updates.",
+                 WARN))
+        print(_c("  `herald update --check` still shows what upstream has done.",
+                 DIM))
+        return 1
+
+    ok, err = upstream.fetch()
+    if not ok:
+        print(_c(f"  could not reach upstream: {err}", BAD), file=sys.stderr)
+        return 1
+
+    release = upstream.available()
+    if not release:
+        here = upstream.current_release() or upstream.current_commit()
+        print(f"  up to date ({here})")
+        return 0
+
+    print(f"  {_c(release['tag'], BOLD)} is available "
+          f"(you are on {release['from'] or 'an untagged commit'})")
+    for line in release["commits"][:20]:
+        print(f"    {line}")
+    if len(release["commits"]) > 20:
+        print(f"    …and {len(release['commits']) - 20} more")
+    if release["notes"]:
+        print()
+        print(textwrap.indent(release["notes"][:1200], "  "))
+
+    pending = migrations_mod.pending()
+    if pending:
+        print(f"\n  {len(pending)} migration(s) will run:")
+        for name, path in pending:
+            print(f"    {name}: {migrations_mod.describe(path)}")
+
+    if args.check:
+        print(_c("\n  `herald update` to apply it.", DIM))
+        return 0
+
+    print()
+    result = upstream.apply(release["tag"], report=lambda m: print(f"  {m}"))
+    if not result["ok"]:
+        print(_c(f"  {result['error']}", BAD), file=sys.stderr)
+        detail = result.get("detail") or {}
+        for kind in ("modified", "commits"):
+            for item in (detail.get(kind) or [])[:5]:
+                print(f"    {kind}: {item}", file=sys.stderr)
+        return 1
+    if not result["checked"]:
+        print(_c("\n  the invariant check does NOT pass after this update:", BAD))
+        print(textwrap.indent(result["check_output"][-800:], "    "))
+        print(_c("  services were not restarted. `herald check` for the detail.",
+                 WARN))
+        return 1
+    print(_c(f"  {upstream.restart_services()}", DIM))
+    notify.tell(f"Herald updated to {release['tag']}",
+                (release["notes"] or "\n".join(release["commits"][:8]))[:1500],
+                priority="low", tags="arrow_up")
+    return 0
+
+
+def cmd_release(args) -> int:
+    """Cut a release: what other people's installs will move to."""
+    if upstream.mode() != "maintainer":
+        print(_c("  only a maintainer install cuts releases. This one is a "
+                 f"{upstream.mode()}.", WARN), file=sys.stderr)
+        return 1
+
+    commits = upstream.unreleased()
+    if not commits:
+        print(f"  nothing since {upstream.current_release()}")
+        return 0
+
+    tag = upstream.next_version("major" if args.major else
+                                "minor" if args.minor else "patch")
+    print(f"  {_c(tag, BOLD)} would ship {len(commits)} commit(s) "
+          f"since {upstream.current_release() or 'the beginning'}:")
+    for line in commits:
+        print(f"    {line}")
+
+    if args.preview:
+        print(_c("\n  `herald release` to cut it.", DIM))
+        return 0
+
+    # The one condition on publishing: nothing personal in the program.
+    print()
+    ok, output = upstream.check_invariants()
+    if not ok:
+        print(_c("  the invariant check fails, so this is not going out:", BAD))
+        print(textwrap.indent(output[-900:], "    "))
+        return 1
+    print(_c("  invariants hold, including the personal-data scan", DIM))
+
+    local = upstream.local_changes()
+    if local["modified"]:
+        print(_c(f"  {len(local['modified'])} uncommitted change(s); commit them "
+                 f"first so the tag contains them.", BAD), file=sys.stderr)
+        return 1
+
+    upstream.set_version(tag)
+    upstream.write_changelog(tag, commits)
+    subprocess.run(["git", "add", "CHANGELOG.md", "lib/herald/__init__.py"],
+                   cwd=str(config.ROOT), check=False)
+    subprocess.run(["git", "commit", "-q", "-m", f"Release {tag}"],
+                   cwd=str(config.ROOT), check=False)
+    subprocess.run(["git", "tag", "-a", tag, "-m", f"Herald {tag}"],
+                   cwd=str(config.ROOT), check=False)
+    push = subprocess.run(["git", "push", "-q", "origin", "main", tag],
+                          cwd=str(config.ROOT), capture_output=True, text=True)
+    if push.returncode != 0:
+        print(_c(f"  tagged locally, but the push failed: "
+                 f"{(push.stderr or '').strip()[:300]}", BAD), file=sys.stderr)
+        return 1
+    print(f"  released {_c(tag, OK)} — tracking installs will offer it within a day")
+    return 0
+
+
 def cmd_services(args) -> int:
     """Install, enable or inspect the background jobs on this platform."""
     sys.path.insert(0, str(config.ROOT))
@@ -766,6 +948,21 @@ def main() -> int:
     c.add_argument("--force", action="store_true",
                    help="run everything, ignoring cadence")
     c.set_defaults(fn=cmd_collect)
+
+    md = sub.add_parser("mode", help="tracking, fork, or maintainer")
+    md.add_argument("mode", nargs="?", choices=list(upstream.MODES))
+    md.set_defaults(fn=cmd_mode)
+
+    up = sub.add_parser("update", help="fast-forward to the newest release")
+    up.add_argument("--check", action="store_true",
+                    help="say what is available and stop")
+    up.set_defaults(fn=cmd_update)
+
+    rl = sub.add_parser("release", help="cut a release other installs will take")
+    rl.add_argument("--preview", action="store_true", help="say what it would ship")
+    rl.add_argument("--minor", action="store_true")
+    rl.add_argument("--major", action="store_true")
+    rl.set_defaults(fn=cmd_release)
 
     sv = sub.add_parser("services", help="the background jobs")
     sv.add_argument("action", nargs="?", default="install",

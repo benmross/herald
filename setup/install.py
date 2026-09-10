@@ -95,6 +95,15 @@ def apply(state: State, answers: dict) -> Outcome:
                 warnings.append(f"run `{how}` so the jobs survive logging out")
         state.step("install")["units"] = units
 
+    # A fresh database is created from the current schema, so every migration
+    # that exists has, by definition, already happened to it. Recording them as
+    # applied is right; running them would be wrong as often as harmless.
+    from herald import migrations  # noqa: PLC0415
+    stamped = migrations.stamp()
+    if stamped:
+        warnings.append(f"recorded {stamped} migration(s) as already applied "
+                        f"(a new install starts at the current shape)")
+
     # Ingest once, so nothing downstream is reasoning about an empty ledger.
     collect = subprocess.run([str(config.ROOT / "bin" / "herald"), "collect", "--force"],
                              capture_output=True, text=True, timeout=1800)

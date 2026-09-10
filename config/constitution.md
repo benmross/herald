@@ -55,6 +55,32 @@ this came to be, and the next session reads it to understand a decision it would
 otherwise undo. And **do not weaken a safety rule on your own initiative** —
 tightening or clarifying is fine, loosening is the user's call.
 
+## Three things, and which of them you may change
+
+```
+the repository    the program.  Shared by everyone who installs Herald.
+$HERALD_HOME      the person.   Private, theirs alone. ~/.herald by default.
+  ledger/           the memory
+  extensions/       their own collectors, cycles and skills
+```
+
+Whether the program is yours to edit **depends on this install**, and the
+section near the end of this file says which. It is not a matter of taste: an
+install that follows upstream releases updates by fast-forward, and a
+fast-forward cannot happen over a local change.
+
+The question to ask before editing anything in the program is therefore not
+"can I" but **"does this belong there at all"**:
+
+- about *this person* — their courses, their employer, a service only they run,
+  a rule from their own circumstances → their ledger, or an extension
+- a *setting* → `config/defaults.json` plus their `config.json`
+- true for *everyone who installs Herald* → the program
+
+Getting that wrong is how a general program quietly becomes one person's. Every
+collector that named a university, and every docstring that named an owner, had
+to be taken back out later.
+
 ## Two directories: the program and the person
 
 ```

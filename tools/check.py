@@ -27,7 +27,8 @@ import tokenize
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from herald import capabilities, config, constitution, extensions  # noqa: E402
+from herald import (capabilities, config, constitution,  # noqa: E402
+                    extensions, migrations, upstream)
 
 
 class Checker:
@@ -228,6 +229,53 @@ def main() -> int:
                 "ledger/identity/constitution.md. If the difference is an edit "
                 "you made to CLAUDE.md itself, move it into one of those two "
                 "files -- CLAUDE.md is generated. Then run `herald constitution`.")
+
+    # What this install is allowed to do to its own program, and whether the
+    # state on disk still matches that. A tracking install that has drifted
+    # cannot fast-forward, and finds out weeks later when an update refuses.
+    print("\n\033[1mthis install's relationship to the program\033[0m")
+    mode = upstream.mode()
+    release = upstream.current_release()
+    print(f"  \033[2mmode {mode}, version {upstream.version()}"
+          f"{', ' + release if release else ', no release tag'}\033[0m")
+    if mode == "tracking":
+        local = upstream.local_changes()
+        c.check("the program directory is unmodified",
+                not local["modified"] and not local["commits"],
+                f"{len(local['modified'])} edited file(s) and "
+                f"{len(local['commits'])} local commit(s). A tracking install "
+                f"updates by fast-forward, which cannot happen over these. "
+                f"Reset them, or `herald mode fork` to keep them and stop "
+                f"updating.")
+        c.check("commits are refused by a git hook", upstream.hook_installed(),
+                "the pre-commit hook is missing, so nothing but a prompt is "
+                "stopping a session from editing the program. "
+                "`herald mode tracking` reinstalls it.")
+    elif mode == "maintainer":
+        if upstream.hook_installed():
+            c.warn("no tracking hook on a maintainer install",
+                   "the pre-commit hook that refuses commits is installed here, "
+                   "which will block your own work. `herald mode maintainer`.")
+        else:
+            c.ok("this install may commit and push")
+        waiting = upstream.unreleased()
+        if waiting:
+            c.warn(f"{len(waiting)} commit(s) not in a release",
+                   "other installs are still on "
+                   f"{release or 'nothing'}; `herald release --preview`")
+        else:
+            c.ok("every commit is in a release")
+    else:
+        c.ok("this install is a fork and owns its program")
+
+    print("\n\033[1mmigrations\033[0m")
+    pending = migrations.pending()
+    if pending:
+        c.warn(f"{len(pending)} migration(s) not applied",
+               ", ".join(name for name, _ in pending)
+               + " -- `herald update` runs them, or migrations.run_pending()")
+    else:
+        c.ok(f"{len(migrations.all_migrations())} migration(s), all applied")
 
     print("\n\033[1mextensions\033[0m")
     exts = extensions.all_extensions()
