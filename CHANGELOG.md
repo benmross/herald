@@ -2,6 +2,14 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.5 — 10 September 2026
+
+- Preflight tells WSL2 the truth about systemd
+- The tracking guard no longer depends on one wizard screen having been seen
+- A fresh install starts at a release, and the timezone guess actually runs
+- The terminal wizard could not be left mid-step
+- What a full rehearsal of a fresh install found
+
 ## v0.1.4 — 10 September 2026
 
 - Where to run it, and the login constraint that decides the answer
