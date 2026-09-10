@@ -2,6 +2,10 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.7 — 10 September 2026
+
+- Three things the first outside install tripped on
+
 ## v0.1.6 — 10 September 2026
 
 - The installer checked venv support on the wrong interpreter

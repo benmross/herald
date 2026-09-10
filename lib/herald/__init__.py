@@ -5,4 +5,4 @@ a subprocess so every token is billed to the user's own subscription. See
 `herald.think` for the one place that boundary is crossed.
 """
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"
