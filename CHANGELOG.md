@@ -2,6 +2,11 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.8 — 10 September 2026
+
+- Setup reads like it was written for the person doing it, and does not lag
+- The tracking hook decides at commit time, not at install time
+
 ## v0.1.7 — 10 September 2026
 
 - Three things the first outside install tripped on
