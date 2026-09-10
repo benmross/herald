@@ -2,6 +2,10 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.1 — 10 September 2026
+
+- Nothing ever created the ledger symlink
+
 ## v0.1.0 — 10 September 2026
 
 - Two docstrings named the maintainer
