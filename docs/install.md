@@ -58,7 +58,7 @@ thing with the same questions.
 
 ## Step 3 — the wizard
 
-Ten screens. Each one checks that what you just did actually worked before
+Eleven screens. Each one checks that what you just did actually worked before
 offering the next, so you find out about a problem on the screen that caused it.
 
 1. **Before we start** — checks this machine has what Herald needs.
@@ -68,30 +68,35 @@ offering the next, so you find out about a problem on the screen that caused it.
    second one is off by default; read what it says before saying yes.
 3. **You, briefly** — your name, your pronouns, your timezone, and what to call
    your agent.
-4. **Google** — the long one. Google will not let a program touch your account
+4. **Updates, or a program of your own** — whether your copy follows new
+   releases (the default, and the reversible choice) or owns its code and stops
+   updating. [`updates.md`](updates.md) is the longer version; the short one is
+   that following costs you almost nothing, because everything you actually
+   want to change lives outside the program.
+5. **Google** — the long one. Google will not let a program touch your account
    until you create a project that asks for permission, so the wizard walks you
    through it a click at a time, with the links. Two things people trip on, both
    called out on the page: you must add yourself as a **test user**, and Google
    will warn that the app is **unverified** — it is, because you made it four
    minutes ago and nobody else will ever use it.
-5. **Telegram** — optional, and worth it. This is how your agent reaches you
+6. **Telegram** — optional, and worth it. This is how your agent reaches you
    when you are not at the machine, and how you answer. You make a bot by
    messaging Telegram's own bot; the wizard walks through it.
-6. **What else should it read?** — GitHub activity, job postings, calendar
+7. **What else should it read?** — GitHub activity, job postings, calendar
    feeds, and on a Mac your Messages database. All optional.
-7. **Tell it who you are** — the hour. Write about yourself: what you are
+8. **Tell it who you are** — the hour. Write about yourself: what you are
    trying to do, what a good week looks like, who matters, what you want to be
    interrupted for. There are prompts, and you can ignore them. You can dictate
    instead of typing, and it saves as you go, so you can stop and come back.
    Then it asks you eight to fifteen follow-up questions about what you actually
    wrote, and finally turns all of it into the files it reads every day.
-8. **Read what it wrote** — everything it concluded about you, editable. Fix
+9. **Read what it wrote** — everything it concluded about you, editable. Fix
    anything wrong now; a wrong fact here becomes a wrong assumption every
    morning.
-9. **Start it running** — installs the background jobs, reads everything once,
+10. **Start it running** — installs the background jobs, reads everything once,
    and builds a morning brief without spending anything so you can see what it
    has to work with.
-10. **Done** — what happens next, and how to stop it.
+11. **Done** — what happens next, and how to stop it.
 
 ## After that
 

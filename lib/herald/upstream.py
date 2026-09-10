@@ -325,17 +325,28 @@ def reconcile(report=None) -> list[str]:
                     f"{len(sync.get('skills_removed', []))} out)")
         say(done[-1])
 
+    # The path goes on before the import, not after -- it was the other way
+    # round, so this silently failed on any install whose working directory is
+    # not the checkout and reported it as a one-line warning nobody reads.
+    import sys as _sys
+    if str(config.ROOT) not in _sys.path:
+        _sys.path.insert(0, str(config.ROOT))
     try:
         from setup import services  # noqa: PLC0415
-        import sys as _sys
-        if str(config.ROOT) not in _sys.path:
-            _sys.path.insert(0, str(config.ROOT))
-        written = services.install(force=True).get("written") or []
+        # Deliberately *not* forced. Unit names are global to the account, so
+        # forcing here would let an update in one checkout take over another
+        # install's background jobs -- while an install refreshing its *own*
+        # units never needs force, because they are not foreign to it. Both
+        # bugs were found by rehearsing an update in a second checkout on this
+        # machine, and the broken import order is the only reason the force did
+        # not do damage first.
+        written = services.install().get("written") or []
         if written:
             done.append(f"background jobs updated: {', '.join(written)}")
             say(done[-1])
     except Exception as exc:                                        # noqa: BLE001
-        done.append(f"could not refresh the background jobs: {type(exc).__name__}")
+        done.append(f"could not refresh the background jobs: "
+                    f"{type(exc).__name__}: {exc}")
         say(done[-1])
 
     return done

@@ -5,6 +5,28 @@ description: How to change Herald itself — its collectors, cycles, surfaces, p
 
 # Changing Herald
 
+**First: is this install allowed to change the program at all?**
+
+```bash
+herald mode
+```
+
+- **maintainer** — it is upstream. Change it, commit it, push it; that is
+  ordinary work and does not need asking. Two conditions: `herald check` must
+  pass before every push (it scans for anything personal), and a change to the
+  shape of stored data needs a migration in `migrations/`. Releases are the
+  user's call: `herald release` is what reaches other people's installs.
+- **fork** — it owns its program. Change it freely, commit it, and know that
+  no upstream fix will ever arrive again.
+- **tracking** — **the program is not this install's to edit.** git refuses
+  commits here and `herald check` fails on drift. Reach for a setting
+  (`herald config set`), an extension (`herald ext new`, and it can override a
+  bundled one by name), or the user's own half of the constitution
+  (`ledger/identity/constitution.md`). Only if none of those can do it, say so
+  and offer the two real options: ask upstream, or `herald mode fork`.
+
+Everything below assumes the answer was maintainer or fork.
+
 You are Herald, and this is your own source. The person you work for develops it
 by asking you to change it, so treat a request to add a collector or alter a
 cycle as ordinary work — not as something to hand back.
@@ -111,6 +133,16 @@ this arrangement invites, and `herald check` catches it:
 
 A rule about one person's life belongs in the second file. Ask which one a change
 belongs in before making it.
+
+## Changing something an install already has
+
+Other people's installs have to survive a change. A new setting in
+`config/defaults.json` is free -- it is merged under theirs. A new table or
+column is nearly free. Anything that changes the *shape* of what is already
+stored, or moves a path a ledger depends on, needs a numbered file in
+`migrations/`; `lib/herald/migrations.py` has the contract, and the short
+version is idempotent anyway, never destructive without a copy, and it says
+what it did.
 
 ## Adding an extension
 

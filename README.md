@@ -9,9 +9,14 @@ something real is closing. You talk to it on Telegram, in a terminal, or through
 the Claude app, and it is the same agent every time, because its memory is a
 directory of files rather than a conversation.
 
-It is also yours to change by asking. "Read my library's events feed too", "stop
-telling me about X", "send the digest at seven" — it edits its own source, and
-it knows how.
+It is also yours to shape by asking. "Read my library's events feed too", "stop
+telling me about X", "send the digest at seven" — it writes the setting, or the
+extension, or the rule, itself.
+
+Setup asks once whether your copy should **follow updates** (the default: it
+offers each new release as a one-tap install, and treats the program as not its
+own to edit) or **own its program** (it can rewrite any part of itself, and
+receives no further updates). See [`docs/updates.md`](docs/updates.md).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/benmross/herald/main/install.sh | bash
@@ -89,6 +94,18 @@ check` fails if anything is. Your ledger is yours to version, back up, read, or
 delete; nothing is sent anywhere except to the services you connected and to
 Claude Code, which is what you are already using.
 
+## Staying current
+
+```bash
+herald update --check     # what a new release would change
+herald update             # apply it: fast-forward, migrate, restart
+herald mode               # follow updates, or own the program
+```
+
+An install that follows updates checks daily and asks before installing
+anything. Nothing in your own directory is touched by an update — not your
+ledger, not your settings, not your extensions.
+
 ## Reading further
 
 - [`docs/install.md`](docs/install.md) — setting it up
@@ -96,6 +113,7 @@ Claude Code, which is what you are already using.
   shaped this way
 - [`docs/extending.md`](docs/extending.md) — adding a collector, a cycle, a surface
 - [`docs/extensions.md`](docs/extensions.md) — packaging your own
+- [`docs/updates.md`](docs/updates.md) — following releases, forking, releasing
 - [`docs/operations.md`](docs/operations.md) — running it, and what to do when
   something breaks
 - [`SECURITY.md`](SECURITY.md) — what it stores, what it never sends, and how
