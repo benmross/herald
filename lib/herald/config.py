@@ -232,9 +232,45 @@ def tz() -> ZoneInfo:
     return ZoneInfo(get("timezone", "America/New_York"))
 
 
+def link_ledger() -> str | None:
+    """Make `ROOT/ledger` point at `HOME/ledger`. Returns what it did, or None.
+
+    This symlink is the most load-bearing thing in the layout: every prompt,
+    skill and docstring refers to `ledger/identity/...`, and they are all
+    relative to the checkout. Without it a session is told to read files that
+    are not there.
+
+    It existed on the first install because it was made by hand during the
+    split, and **no code path created it** until a rehearsal of a fresh install
+    fell over on exactly that -- which is the whole argument for doing the
+    rehearsal. It is created here, from `ensure_dirs`, which every `herald`
+    invocation calls, so a missing or stale link heals itself rather than
+    needing to be noticed.
+    """
+    if LEGACY_LAYOUT:
+        return None
+    link = ROOT / "ledger"
+    if link.is_symlink():
+        try:
+            if link.resolve() == LEDGER.resolve():
+                return None
+        except OSError:
+            pass                        # dangling; replace it
+        link.unlink()
+        link.symlink_to(LEDGER)
+        return f"repointed at {LEDGER}"
+    if link.exists():
+        # A real directory here in a split layout means somebody has data in
+        # the wrong place. Not this function's business to move or delete it.
+        return f"{link} is a real directory, not a link into {HOME}"
+    link.symlink_to(LEDGER)
+    return f"linked to {LEDGER}"
+
+
 def ensure_dirs() -> None:
     for d in (HOME, LEDGER, IDENTITY, STATE, STATE / "areas", JOURNAL, RAW, LOGS):
         d.mkdir(parents=True, exist_ok=True)
+    link_ledger()
 
 
 def agent_env() -> dict:

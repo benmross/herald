@@ -296,6 +296,12 @@ def reconcile(report=None) -> list[str]:
 
     done = []
 
+    # Before anything else: the symlink every relative `ledger/...` path in
+    # every prompt depends on.
+    if (linked := config.link_ledger()):
+        done.append(f"ledger {linked}")
+        say(done[-1])
+
     requirements = config.ROOT / "requirements.txt"
     if requirements.exists():
         r = subprocess.run([config.python(), "-m", "pip", "install", "--quiet",

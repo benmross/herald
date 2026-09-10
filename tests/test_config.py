@@ -225,3 +225,71 @@ class PersonalDataCheck(unittest.TestCase):
         self.assertTrue(p.search(f"/home/{short}/.herald"))
         for innocent in ("pipeline", "the api", "pip install", "copying"):
             self.assertIsNone(p.search(innocent), innocent)
+
+
+class LedgerSymlink(unittest.TestCase):
+    """`ROOT/ledger` -> `$HERALD_HOME/ledger` is the most load-bearing thing in
+    the layout: every prompt, skill and docstring says `ledger/identity/...`,
+    relative to the checkout.
+
+    It existed on the first install because it was made by hand during the
+    split, and no code path created it until a rehearsal of a fresh install
+    fell over on exactly that. These tests are why it cannot go missing again.
+    """
+
+    def tearDown(self):
+        _fresh_config()
+
+    def test_a_fresh_install_gets_the_link(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td) / "home"
+            root = pathlib.Path(td) / "program"
+            root.mkdir()
+            cfg = _fresh_config(HERALD_HOME=str(home))
+            cfg.ROOT = root
+            cfg.LEDGER = home / "ledger"
+            (home / "ledger").mkdir(parents=True)
+            self.assertIn("linked", cfg.link_ledger() or "")
+            link = root / "ledger"
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), (home / "ledger").resolve())
+
+    def test_it_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td) / "home"
+            root = pathlib.Path(td) / "program"
+            root.mkdir()
+            (home / "ledger").mkdir(parents=True)
+            cfg = _fresh_config(HERALD_HOME=str(home))
+            cfg.ROOT = root
+            cfg.LEDGER = home / "ledger"
+            cfg.link_ledger()
+            self.assertIsNone(cfg.link_ledger())
+
+    def test_a_stale_link_is_repointed(self):
+        """A home that moved leaves a link into a directory that is gone."""
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td) / "home"
+            root = pathlib.Path(td) / "program"
+            root.mkdir()
+            (home / "ledger").mkdir(parents=True)
+            (root / "ledger").symlink_to(pathlib.Path(td) / "old" / "ledger")
+            cfg = _fresh_config(HERALD_HOME=str(home))
+            cfg.ROOT = root
+            cfg.LEDGER = home / "ledger"
+            self.assertIn("repointed", cfg.link_ledger() or "")
+            self.assertEqual((root / "ledger").resolve(), (home / "ledger").resolve())
+
+    def test_a_real_directory_is_never_clobbered(self):
+        """Data in the wrong place is still data. Report it; do not delete it."""
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td) / "home"
+            root = pathlib.Path(td) / "program"
+            (root / "ledger").mkdir(parents=True)
+            (root / "ledger" / "keepme.md").write_text("mine")
+            (home / "ledger").mkdir(parents=True)
+            cfg = _fresh_config(HERALD_HOME=str(home))
+            cfg.ROOT = root
+            cfg.LEDGER = home / "ledger"
+            self.assertIn("real directory", cfg.link_ledger() or "")
+            self.assertTrue((root / "ledger" / "keepme.md").exists())
