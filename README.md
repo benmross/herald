@@ -2,15 +2,15 @@
 
 A personal agent that runs on your own machine.
 
-It reads what you connect — your mail, your calendars, your tasks, whatever
-feeds you point it at — keeps a durable record of what it concludes, briefs you
+It reads what you connect (your mail, your calendars, your tasks, whatever
+feeds you point it at), keeps a durable record of what it concludes, briefs you
 each morning on what actually matters that day, and interrupts you when
 something real is closing. You talk to it on Telegram, in a terminal, or through
 the Claude app, and it is the same agent every time, because its memory is a
 directory of files rather than a conversation.
 
 It is also yours to shape by asking. "Read my library's events feed too", "stop
-telling me about X", "send the digest at seven" — it writes the setting, or the
+telling me about X", "send the digest at seven". It writes the setting, or the
 extension, or the rule, itself.
 
 Setup asks once whether your copy should **follow updates** (the default: it
@@ -47,7 +47,7 @@ SSH.
 Most tools that read your calendar can tell you what is on Thursday. Almost none
 can tell you which of the four things on Thursday matters, because that depends
 entirely on what you are trying to do and what you are like. Herald asks you, at
-length, during setup — and then everything it ever surfaces is ranked against
+length, during setup, and then everything it ever surfaces is ranked against
 what you said.
 
 The other half is that it **remembers what it decided**. A conclusion is written
@@ -61,7 +61,7 @@ activity, any published `.ics` calendar feed, and public job and internship
 postings. On a Mac it can read your Messages database and tell you who is
 actually waiting on a reply.
 
-Anything else is an **extension** — a directory with a manifest, discovered
+Anything else is an **extension**: a directory with a manifest, discovered
 automatically, holding collectors, cycles, skills and background jobs of its
 own. Extensions are where anything specific to one person's life belongs: a
 university's event scraper, a self-hosted service, a data source only you have.
@@ -73,7 +73,7 @@ Three tiers, and the middle one is the one people are surprised by:
 
 - **It acts freely** when nothing leaves the machine: reading, searching,
   writing to its own notes, drafting something for you to look at.
-- **It acts and then tells you** for reversible things only you see — putting an
+- **It acts and then tells you** for reversible things only you see: putting an
   event it found on a calendar it manages, labelling mail, opening a task. Never
   silently: every one appears in the next digest.
 - **It asks first, every time**, for anything anyone else sees: sending a
@@ -92,7 +92,7 @@ Two directories, and the separation is the point:
 ```
 the checkout        the program. Public, identical for everyone.
 $HERALD_HOME        you. Private, yours, ~/.herald by default:
-                    config, credentials, and the ledger — identity, state,
+                    config, credentials, and the ledger: identity, state,
                     journal, and the database of everything ingested.
 ```
 
@@ -110,21 +110,21 @@ herald mode               # follow updates, or own the program
 ```
 
 An install that follows updates checks daily and asks before installing
-anything. Nothing in your own directory is touched by an update — not your
+anything. Nothing in your own directory is touched by an update: not your
 ledger, not your settings, not your extensions.
 
 ## Reading further
 
-- [`docs/install.md`](docs/install.md) — setting it up
-- [`docs/hosting.md`](docs/hosting.md) — where to run it, free options compared
-- [`docs/architecture.md`](docs/architecture.md) — what it is and why it is
+- [`docs/install.md`](docs/install.md): setting it up
+- [`docs/hosting.md`](docs/hosting.md): where to run it, free options compared
+- [`docs/architecture.md`](docs/architecture.md): what it is and why it is
   shaped this way
-- [`docs/extending.md`](docs/extending.md) — adding a collector, a cycle, a surface
-- [`docs/extensions.md`](docs/extensions.md) — packaging your own
-- [`docs/updates.md`](docs/updates.md) — following releases, forking, releasing
-- [`docs/operations.md`](docs/operations.md) — running it, and what to do when
+- [`docs/extending.md`](docs/extending.md): adding a collector, a cycle, a surface
+- [`docs/extensions.md`](docs/extensions.md): packaging your own
+- [`docs/updates.md`](docs/updates.md): following releases, forking, releasing
+- [`docs/operations.md`](docs/operations.md): running it, and what to do when
   something breaks
-- [`SECURITY.md`](SECURITY.md) — what it stores, what it never sends, and how
+- [`SECURITY.md`](SECURITY.md): what it stores, what it never sends, and how
   the prompt-injection surface is handled
 
 ## The rule that shapes everything

@@ -12,7 +12,7 @@ search your calendar and one that can tell you which thing on it matters.
 **A computer that is on when you want Herald working.** A Mac or a Linux
 machine with 4 GB of RAM or more. A laptop is fine, but one that sleeps for more
 than about a day comes back logged out of Claude Code and stops doing anything
-model-driven until you sign in again — so something that stays on is worth it.
+model-driven until you sign in again, so something that stays on is worth it.
 [`hosting.md`](hosting.md) compares the free options, including what to use if
 you do not have a spare machine. Windows works through WSL2 only, with two
 things to know first: systemd has to be switched on inside WSL (put `[boot]`
@@ -27,14 +27,14 @@ key, and no per-token cost beyond your existing subscription.
 
 **A Google account.** Mail and calendar are the spine of everything else.
 
-## Step 1 — open a terminal
+## Step 1: open a terminal
 
 On a Mac: press `⌘ Space`, type `Terminal`, press enter.
 On Linux: `Ctrl+Alt+T`, or find Terminal in your applications.
 
 A window appears with a blinking cursor. That is where the next line goes.
 
-## Step 2 — install
+## Step 2: install
 
 Copy this line, paste it into the terminal, and press enter:
 
@@ -56,7 +56,7 @@ That prints a link. Open it. Everything from here happens on a page in your
 browser.
 
 > **If you are installing on a different computer than the one you are sitting
-> at** — a home server, say — the wizard prints an `ssh -N -L …` line as well.
+> at**, a home server for example, the wizard prints an `ssh -N -L` line as well.
 > Run that in a second terminal window on your own computer first, then open the
 > link. It makes the server's page reachable from your browser without putting
 > anything on the network.
@@ -64,47 +64,47 @@ browser.
 If you would rather stay in the terminal, `herald setup` does exactly the same
 thing with the same questions.
 
-## Step 3 — the wizard
+## Step 3: the wizard
 
 Eleven screens. Each one checks that what you just did actually worked before
 offering the next, so you find out about a problem on the screen that caused it.
 
-1. **Before we start** — checks this machine has what Herald needs.
-2. **Where your Herald lives** — creates `~/.herald`, the private directory
+1. **Before we start** checks this computer has what Herald needs.
+2. **Where your Herald lives** creates `~/.herald`, the private folder
    holding everything it will know about you. It offers to keep a version
    history, and separately to back that up to a private GitHub repository. The
    second one is off by default; read what it says before saying yes.
-3. **You, briefly** — your name, your pronouns, your timezone, and what to call
+3. **You, briefly** asks your name, your pronouns, your timezone, and what to call
    your agent.
-4. **Updates, or a program of your own** — whether your copy follows new
+4. **Updates, or a program of your own** asks whether your copy receives new
    releases (the default, and the reversible choice) or owns its code and stops
    updating. [`updates.md`](updates.md) is the longer version; the short one is
    that following costs you almost nothing, because everything you actually
    want to change lives outside the program.
-5. **Google** — the long one. Google will not let a program touch your account
+5. **Google** is the long one. Google will not let a program read your account
    until you create a project that asks for permission, so the wizard walks you
    through it a click at a time, with the links. Two things people trip on, both
    called out on the page: you must add yourself as a **test user**, and Google
-   will warn that the app is **unverified** — it is, because you made it four
+   will say that the app is **unverified**. It is, because you made it four
    minutes ago and nobody else will ever use it.
-6. **Telegram** — optional, and worth it. This is how your agent reaches you
+6. **Telegram** is optional, and worth it. This is how your agent reaches you
    when you are not at the machine, and how you answer. You make a bot by
    messaging Telegram's own bot; the wizard walks through it.
-7. **What else should it read?** — GitHub activity, job postings, calendar
+7. **What else should it read?** offers GitHub activity, job postings, calendar
    feeds, and on a Mac your Messages database. All optional.
-8. **Tell it who you are** — the hour. Write about yourself: what you are
+8. **Tell it who you are** is the hour. Write about yourself: what you are
    trying to do, what a good week looks like, who matters, what you want to be
    interrupted for. There are prompts, and you can ignore them. You can dictate
    instead of typing, and it saves as you go, so you can stop and come back.
    Then it asks you eight to fifteen follow-up questions about what you actually
    wrote, and finally turns all of it into the files it reads every day.
-9. **Read what it wrote** — everything it concluded about you, editable. Fix
+9. **Read what it wrote** shows everything it concluded about you, editable. Fix
    anything wrong now; a wrong fact here becomes a wrong assumption every
    morning.
-10. **Start it running** — installs the background jobs, reads everything once,
+10. **Start it running** sets up the background jobs, reads everything once,
    and builds a morning brief without spending anything so you can see what it
    has to work with.
-11. **Done** — what happens next, and how to stop it.
+11. **Done** says what happens next, and how to stop it.
 
 ## After that
 

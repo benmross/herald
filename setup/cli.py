@@ -133,7 +133,7 @@ def _ask_textarea(field) -> str:
     if field.help:
         print(_c(textwrap.fill(field.help, 76, initial_indent="  ",
                                subsequent_indent="  "), DIM))
-    print(_c(f"  opening {editor} — write, save, and close it to continue", DIM))
+    print(_c(f"  This opens {editor}. Write, save, and close it to continue.", DIM))
     input("  press enter when ready ")
     with tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False) as fh:
         fh.write(str(field.default or ""))
@@ -175,8 +175,8 @@ def ask(prompt) -> dict:
                 answers[field.key] = _ask_text(field)
             if not field.required or str(answers.get(field.key) or "").strip():
                 break
-            again = input(_c("  that one is required — enter to try again, "
-                             "'s' to skip this step for now: ", YELLOW)).strip().lower()
+            again = input(_c("  that one is required. Enter to try again, "
+                             "or s to skip this step for now: ", YELLOW)).strip().lower()
             if again == "s":
                 raise Skip()
     return answers
@@ -200,7 +200,7 @@ def show_list(state: State) -> int:
         colour = STATUS_COLOUR.get(row["status"], DIM)
         mark = {DONE: "done", TODO: "  · ", PARTIAL: "part", BLOCKED: "stop"}[row["status"]]
         print(f"  {_c(mark, colour)}  {row['title']:<34} {_c(row['detail'][:120], DIM)}")
-    print(f"\n  {_c('herald setup --step <name>', DIM)} to run one on its own")
+    print(f"\n  {_c('herald setup --step <name>', DIM)} runs one step on its own")
     return 0
 
 
@@ -216,12 +216,12 @@ def run_step(step, state: State) -> bool:
             answers = ask(prompt) if prompt.fields else {}
             if prompt.immediate or prompt.fields:
                 print()
-                confirm = input(f"  {prompt.action} — enter to go on, "
-                                f"'s' to skip: ").strip().lower()
+                confirm = input(f"  {prompt.action}: press enter to go on, "
+                                f"or s to skip: ").strip().lower()
                 if confirm == "s":
                     raise Skip()
         except (Skip, EOFError):
-            print(_c("  skipped — `herald setup` comes back to it", DIM))
+            print(_c("  Skipped. `herald setup` comes back to it later.", DIM))
             return True
 
         if step.key == "google":
@@ -232,7 +232,7 @@ def run_step(step, state: State) -> bool:
             continue
         if not outcome.ok:
             try:
-                again = input("\n  try this step again? [Y/n]: ").strip().lower()
+                again = input("\n  Try this step again? [Y/n]: ").strip().lower()
             except EOFError:
                 again = "n"
             if again.startswith("n"):
@@ -244,13 +244,14 @@ def run_step(step, state: State) -> bool:
 def _print_google_url(url: str) -> None:
     print(f"\n  {_c('Open this in a browser and sign in:', BOLD)}\n")
     print(f"  {url}\n")
-    print(_c("  Waiting for you to finish. Google will warn that the app is "
-             "unverified — that is your own app, made minutes ago.", DIM))
+    print(_c("  Waiting for you to finish. Google will say the app is not "
+             "verified. That is your own app, made minutes ago.", DIM))
     if engine.over_ssh():
         from .google import DEFAULT_PORT  # noqa: PLC0415
-        print(_c(f"  You are over SSH: the sign-in ends by redirecting to this "
-                 f"machine's port {DEFAULT_PORT}, so it needs the port-forward "
-                 f"from the computer you are sitting at.", DIM))
+        print(_c(f"  You are connected over SSH: the sign-in ends by sending "
+                 f"your browser to this machine's port {DEFAULT_PORT}, so the "
+                 f"port-forward from the computer you are sitting at has to be "
+                 f"running.", DIM))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -282,10 +283,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(_md(
         f"\n{'=' * 78}\n\n"
-        "**Herald** — a personal agent that reads your mail, your calendars and "
+        "**Herald** is a personal agent that reads your mail, your calendars and "
         "whatever else you connect, keeps track of what it concludes, and tells "
-        "you each morning what actually matters.\n\n"
-        "This sets it up. Ten steps, most of them short; the long one is you "
+        "you each morning what matters.\n\n"
+        "This sets it up. Eleven steps, most of them short. The long one is you "
         "writing about yourself, and it is the one that makes the difference. "
         "You can stop at any point and pick up where you left off with "
         "`herald setup`.\n"))
@@ -299,7 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     if not left:
         print(_c("\n  Everything is set up. `herald status` from here.\n", GREEN))
         return 0
-    print(_c("\n  Done for now. Still to do:", GREEN))
+    print(_c("\n  That is everything for now. Still to do:", GREEN))
     for s in left:
         print(f"    {s.title:<36} {_c('herald setup --step ' + s.key, DIM)}")
     print(_c("\n  `herald setup` on its own comes back to these.\n", DIM))

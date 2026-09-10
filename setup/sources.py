@@ -28,32 +28,43 @@ OFFERS = [
     {
         "key": "github",
         "label": "What you have been building (GitHub)",
-        "help": "Reads your own recent activity through the `gh` CLI you are "
-                "already signed into. No token to create.",
+        "help": "Reads your own recent activity through the GitHub tool you "
+                "are already signed in to. Nothing to create.",
         "needs_gh": True,
     },
     {
         "key": "jobs",
         "label": "Job and internship postings",
-        "help": "Public, crowdsourced posting lists, scanned against your goals "
-                "so a deadline you would have missed reaches you.",
+        "help": "Public lists of openings, checked against your goals, so a "
+                "closing date you would have missed reaches you in time.",
     },
     {
         "key": "calendar_feeds",
-        "label": "Calendar feeds (.ics)",
-        "help": "Any published calendar: a course's deadlines, a team's "
-                "fixtures, a venue's programme. You can add more later.",
-        "field": Field(key="feed_url", label="A calendar feed URL",
-                       placeholder="https://…/feed.ics",
-                       help="Leave blank to set this up later. If it is a "
-                            "private link (a Canvas feed is), Herald stores it "
-                            "in secrets.json rather than in the config."),
+        "label": "Calendar links",
+        "help": "Any calendar published as a link: a course's deadlines, a "
+                "team's fixtures, a venue's programme. You can add more later.",
+        "field": Field(key="feed_url", label="A calendar link",
+                       placeholder="https://.../feed.ics",
+                       help="Leave blank to set this up later. If the link is "
+                            "private to you, Herald keeps it with your other "
+                            "sign-in details rather than with ordinary settings."),
         "field2": Field(key="feed_name", label="What to call it",
                         placeholder="courses",
-                        help="A short name; it becomes the source name in the "
-                             "ledger."),
+                        help="A short name, used to label what comes from it."),
     },
 ]
+
+
+#: What a person sees for each source's internal name.
+FRIENDLY = {
+    "google": "Google", "telegram": "Telegram", "github": "GitHub",
+    "jobs": "job postings", "calendar_feeds": "calendar links",
+    "imessage": "Messages (iMessage and texts)",
+}
+
+
+def friendly(keys) -> str:
+    return ", ".join(FRIENDLY.get(k, k) for k in keys)
 
 
 def _bundled() -> list:
@@ -74,7 +85,7 @@ def status(state: State) -> tuple[str, str]:
     if broken:
         return PARTIAL, "needs attention: " + ", ".join(
             f"{k} ({capabilities.missing(k)})" for k in broken)
-    return DONE, (", ".join(on) if on else "nothing beyond mail and calendar")
+    return DONE, (friendly(on) if on else "only mail and calendar")
 
 
 def prompt(state: State) -> Prompt:
@@ -91,9 +102,10 @@ def prompt(state: State) -> Prompt:
                 fields.append(offer[extra])
 
     for ext in _bundled():
-        suffix = "" if _platform_ok(ext) else "  — not available on this machine"
+        suffix = "" if _platform_ok(ext) else "  (not available on this computer)"
         fields.append(Field(
-            key=f"ext_{ext.name}", label=f"{ext.name}{suffix}", type="bool",
+            key=f"ext_{ext.name}", label=f"{FRIENDLY.get(ext.name, ext.name)}{suffix}",
+            type="bool",
             default=ext.enabled and _platform_ok(ext),
             help=ext.description + " " + " ".join(
                 cap.get("setup_hint", "")
@@ -101,10 +113,10 @@ def prompt(state: State) -> Prompt:
 
     return Prompt(
         title="What else should it read?",
-        blurb="All optional. Each one is something your agent can then reason "
-              "about — a deadline it can warn you about, a person it can notice "
-              "you have not replied to. You can turn any of them on later with "
-              "`herald ext` or by running this step again.",
+        blurb="All optional. Each one gives your agent something more to "
+              "reason about: a deadline it can warn you of, a person it can "
+              "notice you have not replied to. You can turn any of them on "
+              "later by running this step again.",
         fields=fields, action="Save these")
 
 
@@ -134,14 +146,13 @@ def apply(state: State, answers: dict) -> Outcome:
                     feeds.append({"source": name, "url_secret": f"calendar_feeds.{name}"})
                     config.set_user("calendar_feeds", feeds)
             elif not config.get("calendar_feeds"):
-                warnings.append("calendar feeds are on but you have not added "
-                                "one yet — `herald config set calendar_feeds` "
-                                "or run this step again")
+                warnings.append("calendar feeds are on but none has been added "
+                                "yet. Run this step again when you have a link.")
 
     for ext in _bundled():
         want = bool(answers.get(f"ext_{ext.name}"))
         if want and not _platform_ok(ext):
-            warnings.append(f"{ext.name} needs "
+            warnings.append(f"{ext.name} only works on "
                             f"{ext.manifest.get('platform')}, so it stays off")
             want = False
         extensions.set_enabled(ext.name, want)
@@ -158,11 +169,11 @@ def apply(state: State, answers: dict) -> Outcome:
         if capabilities.enabled(key) and not capabilities.available(key):
             cap = capabilities.registry()[key]
             warnings.append(f"{key}: {capabilities.missing(key)}"
-                            + (f" — {cap.setup_hint}" if cap.setup_hint else ""))
+                            + (f". {cap.setup_hint}" if cap.setup_hint else ""))
 
     on = [k for k in capabilities.registry() if capabilities.available(k)]
     return Outcome(ok=True,
-                   message="Reading: " + (", ".join(sorted(on)) or "nothing yet"),
+                   message="Reading: " + (friendly(sorted(on)) or "nothing yet"),
                    warnings=warnings)
 
 

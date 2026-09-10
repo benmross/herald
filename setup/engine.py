@@ -203,13 +203,19 @@ def by_key(key: str) -> Step | None:
 
 
 def overview(state: State) -> list[dict]:
-    """Every step with its live status, for a progress list."""
-    out = []
-    for step in steps():
-        status, detail = step.status(state)
-        out.append({"key": step.key, "title": step.title, "summary": step.summary,
-                    "status": status, "detail": detail, "optional": step.optional})
-    return out
+    """Every step with its live status, for a progress list.
+
+    Statuses are computed concurrently: two of them ask something slow (Google
+    who the token belongs to, the Claude CLI whether it is signed in) and a
+    page that waits for each in turn feels broken on a slow connection.
+    """
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+    all_steps = steps()
+    with ThreadPoolExecutor(max_workers=len(all_steps)) as pool:
+        results = list(pool.map(lambda s: s.status(state), all_steps))
+    return [{"key": step.key, "title": step.title, "summary": step.summary,
+             "status": status, "detail": detail, "optional": step.optional}
+            for step, (status, detail) in zip(all_steps, results)]
 
 
 def next_step(state: State) -> Step | None:

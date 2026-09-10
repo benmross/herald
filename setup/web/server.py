@@ -132,8 +132,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if path in ("/", "/index.html"):
             if not self._authorised(query):
-                self._send(403, b"Open the URL printed in your terminal, "
-                                b"including the token after the #.",
+                self._send(403, b"Open the full link printed in your terminal, "
+                                b"including the part after token=.",
                            "text/plain; charset=utf-8")
                 return
             self._send(200, (HERE / "app.html").read_bytes(),
@@ -216,9 +216,9 @@ def serve(port: int = 8799) -> int:
         print("  You are connected over SSH, so first, on the computer you are")
         print("  sitting at, run this and leave it running until setup is done:\n")
         print(f"      {_forward_command(port)}\n")
-    print("  The page only listens on this machine; the token in the link keeps")
-    print("  other accounts on it out. Ctrl-C here when you are finished.\n",
-          flush=True)
+    print("  The page can only be reached from this computer, and the code in")
+    print("  the link keeps other people who use it out. Press Ctrl-C here when")
+    print("  you have finished.\n", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

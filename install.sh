@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Herald — install.
+# Herald: install.
 #
 #   curl -fsSL https://raw.githubusercontent.com/benmross/herald/main/install.sh | bash
 #
@@ -89,8 +89,8 @@ venv_package() {
 
 install_macos_deps() {
   if ! have brew; then
-    warn "Homebrew is not installed. It is how macOS gets developer tools."
-    dim  "  https://brew.sh — one command, and then run this script again."
+    warn "Homebrew is not installed. It is how a Mac gets the tools Herald needs."
+    dim  "  See https://brew.sh for the one command, then run this script again."
     if ask "Install Homebrew now?"; then
       /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || true)"
@@ -137,11 +137,11 @@ install_linux_deps() {
 install_claude() {
   have claude && return 0
   bold "Installing the Claude Code CLI"
-  dim  "Herald runs it as a subprocess on your own subscription. It never uses"
-  dim  "an API key, and there is nothing to pay per token."
+  dim  "Herald runs it for you, on your own Claude subscription. There is"
+  dim  "nothing extra to pay."
   curl -fsSL https://claude.ai/install.sh | bash
   export PATH="$HOME/.local/bin:$PATH"
-  have claude || warn "claude is installed but not on PATH yet — open a new terminal."
+  have claude || warn "Claude Code is installed but this terminal cannot see it yet. Open a new terminal window and run this again."
 }
 
 main() {
@@ -152,7 +152,7 @@ main() {
   echo
 
   local os; os="$(detect_os)"
-  [ "$os" = other ] && die "This installer handles macOS and Linux. On Windows, use WSL2."
+  [ "$os" = other ] && die "This installer works on macOS and Linux. On Windows, install WSL first and run it there."
 
   if [ "$os" = macos ]; then install_macos_deps; else install_linux_deps; fi
 
@@ -174,7 +174,7 @@ main() {
       dim "Fast-forwarded to $latest"
     fi
   else
-    have git || die "git is required."
+    have git || die "git is needed and could not be installed. Install it, then run this again."
     bold "Cloning into $DEST"
     git clone --quiet "$REPO" "$DEST"
     # Start at the newest release, not at whatever main is this minute. main
@@ -208,7 +208,9 @@ main() {
   ln -sf "$DEST/bin/herald" "$HOME/.local/bin/herald"
   case ":$PATH:" in
     *":$HOME/.local/bin:"*) ;;
-    *) warn "Add this to your shell profile so \`herald\` is on your PATH:"
+    *) warn "So that typing \`herald\` works in every new terminal window, add this"
+       warn "line to the end of your shell profile (~/.zshrc or ~/.bashrc), then"
+       warn "open a new window:"
        dim  "  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
   esac
 
@@ -221,7 +223,7 @@ main() {
   # only next step, and this script ends on it rather than listing setup
   # commands underneath as if the sign-in were optional.
   if ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
-    warn "Herald needs Claude Code signed in to your Claude subscription."
+    warn "Herald needs Claude Code to be signed in to your Claude account."
     if [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
       if ask "Sign in now? (it opens a link)"; then
         claude auth login --claudeai </dev/tty >/dev/tty 2>&1 || true
@@ -229,9 +231,9 @@ main() {
     fi
     if ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
       echo
-      bold "Not signed in yet. When you are ready:"
+      bold "Not signed in yet. When you are ready, run these two commands:"
       echo
-      echo "    claude auth login       sign in to your subscription"
+      echo "    claude auth login       sign in to your Claude account"
       echo "    herald setup --web      then set Herald up"
       echo
       exit 0
@@ -241,7 +243,7 @@ main() {
     echo
   fi
 
-  dim "Now set Herald up. Either of these — they do the same thing:"
+  dim "Now set Herald up. Either of these does the same thing:"
   echo
   echo "    herald setup --web      a page in your browser (easier)"
   echo "    herald setup            in this terminal"

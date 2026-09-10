@@ -45,31 +45,34 @@ INTERVIEW_DIR = config.IDENTITY / "interview"
 FILES = ("about.md", "goals.md", "preferences.md", "constitution.md")
 
 PROVOCATIONS = """\
-Write as much as you can stand. Aim for something between 800 and 2000 words —
-long enough that it is actually about you rather than a summary of you. It does
-not have to be organised, spell-checked, or fair to anyone. Nobody reads it but
-your agent, and nothing in it leaves this machine.
+Write as much as you can. Aim for somewhere between 800 and 2000 words: long
+enough to be about you rather than a summary of you. It does not have to be
+organised, spell-checked, or fair to anyone. Nobody reads it but your agent, and
+nothing in it leaves this computer.
 
-Things worth covering, in any order, ignoring any that are not interesting:
+Some things worth covering, in any order. Skip any that are not interesting.
 
-- How you got to where you are. Not a CV — the turns that mattered.
-- What you are actually trying to do over the next year, and by when.
+- How you got to where you are. Not a CV, just the turns that mattered.
+- What you are trying to do over the next year, and by when.
 - What you would be doing if the current thing stopped working out.
-- What you are good at that people do not expect, and what you are bad at that
-  they also do not expect.
-- Who matters to you, and how you refer to them. (First names are fine — say
-  who is who.)
-- What a good week looks like, hour by hour, versus what a bad one looks like.
-- What you procrastinate on, and what that costs you.
+- What you are good at that people do not expect, and what you are bad at
+  that they also do not expect.
+- Who matters to you, and how you refer to them. First names are fine. Say
+  who is who.
+- What a good week looks like, and what a bad one looks like.
+- What you put off, and what that costs you.
 - Your money situation, in whatever detail you are comfortable with.
-- Your health, sleep, and anything that reliably wrecks either.
-- What you want to be told immediately, and what can always wait for morning.
-- What you want an agent to *stop* you doing.
-- What would make you switch this thing off within a week.
+- Your health, your sleep, and anything that reliably gets in the way of
+  either.
+- What you want to be told straight away, and what can always wait until
+  morning.
+- What you want an agent to stop you doing.
+- What would make you switch this off within a week.
 - Anything you would be annoyed to have to explain twice.
-- Anything you are embarrassed to have written down but would rather it knew.
+- Anything you would rather it knew, even if you would not say it out loud.
 
-Take as long as you like. This is saved as you go — you can leave and come back.
+Take as long as you like. Your writing is saved as you go, so you can leave and
+come back.
 """
 
 QUESTION_SCHEMA = {
@@ -88,7 +91,7 @@ QUESTION_SCHEMA = {
             "type": "string",
             "description": "Three or four sentences: what you take from this so "
                            "far. Shown back to them, so second person, and "
-                           "honest rather than flattering.",
+                           "honest rather than flattering. No em dashes.",
         },
     },
     "required": ["questions", "read"],
@@ -102,7 +105,7 @@ Your job is to find what is missing. Read it closely and return follow-up
 questions about *what they wrote*, not from a checklist. The good ones usually
 come from:
 
-- something stated as a fact whose consequence is unclear ("I have a job" — what
+- something stated as a fact whose consequence is unclear ("I have a job": what
   hours, what does it cost you, is it the thing you care about?)
 - an obvious tension between two things they said
 - a person mentioned once and never explained
@@ -112,7 +115,7 @@ come from:
 - a date or deadline implied but not stated
 
 Do not ask anything answerable from what they already wrote. Do not ask more
-than one question at a time. Do not psychoanalyse — you are collecting facts and
+than one question at a time. Do not psychoanalyse: you are collecting facts and
 preferences, not interpreting them.
 
 Here is what they wrote:
@@ -147,40 +150,42 @@ follow-up questions, and a short form of hard facts.
 
 **Write the four identity files.** Use the Write tool. They are:
 
-`ledger/identity/about.md` — who this person is. The arc that got them here, what
+`ledger/identity/about.md`: who this person is. The arc that got them here, what
 they are like, what the evidence supports. Third person; it is written for
 whoever reads it next, including you tomorrow. Lead with what would change how
 you treat them, not with a chronology. Quote their own phrasing where it is
-distinctive — a person's own words about themselves are worth more than your
+distinctive: a person's own words about themselves are worth more than your
 summary of them.
 
-`ledger/identity/goals.md` — what they are chasing, with dates where they gave
+`ledger/identity/goals.md`: what they are chasing, with dates where they gave
 any, ranked. Everything the agent ever surfaces is ranked against this file, so
 vagueness here becomes noise in their notifications later. Include what would
 count as a good outcome and what would count as a bad one. Note explicitly
 anything they said they are *not* interested in: a rejection is as useful as a
 preference and it is the half that usually goes unrecorded.
 
-`ledger/identity/preferences.md` — how they want to be treated. Register, what
+`ledger/identity/preferences.md`: how they want to be treated. Register, what
 they want interrupted for, what can wait, what would make them stop using this.
 Their words, not a personality summary.
 
-`ledger/identity/constitution.md` — the personal half of the agent's operating
+`ledger/identity/constitution.md`: the personal half of the agent's operating
 rules, read by every session alongside the shared constitution. This one is not
 a description, it is instructions. It must contain, in this order:
 
 1. Who the agent belongs to, and what it is called.
-2. **The facts it must never have to look up** — allergies, medical conditions,
+2. **The facts it must never have to look up**: allergies, medical conditions,
    safety constraints, anything where being wrong once is unacceptable. State
    each one plainly and say what it means in practice. If they gave none, say
    that there are none rather than leaving the section out.
 3. How they want to be spoken to, in a form an agent can follow.
-4. Anything their institution, employer or circumstances forbid — an academic
+4. Anything their institution, employer or circumstances forbid: an academic
    integrity policy, an NDA, a compliance rule. Cite the source if they gave one.
 5. Anyone or anything that must never be written down or acted on.
 
 Rules for all four:
 
+- **Plain, professional prose.** No em dashes anywhere; use a comma, a colon or
+  a full stop. No motivational framing.
 - **Do not invent.** Everything must trace to something they said. Where you are
   extrapolating, say so in the file itself.
 - **Do not flatter.** A file that reads like an admiring profile is useless to
@@ -266,10 +271,12 @@ def status(state: State) -> tuple[str, str]:
     if len(written) == len(FILES):
         if _piece_path().exists():
             words = len(_piece_path().read_text().split())
-            return DONE, f"{len(written)} identity files, from {words} words you wrote"
-        return DONE, f"{len(written)} identity files (written outside the wizard)"
+            return DONE, f"written up, from {words} words you wrote"
+        return DONE, "written up"
     if _piece_path().exists() and _piece_path().read_text().strip():
-        return PARTIAL, f"started — at the {_stage(state)} stage"
+        return PARTIAL, {"ask": "written, not yet read", "answer": "follow-up questions waiting",
+                         "facts": "a short form to go", "writeup": "ready to write up"
+                         }.get(_stage(state), "started")
     return TODO, "your agent does not know who you are yet"
 
 
@@ -280,21 +287,21 @@ def prompt(state: State) -> Prompt:
     if stage == "write":
         return Prompt(
             title="Tell it who you are",
-            blurb="This is the part that makes the difference between an agent "
-                  "that can search your calendar and one that can tell you which "
-                  "thing on it matters.\n\n" + PROVOCATIONS,
+            blurb="This is what makes the difference between an agent that can "
+                  "search your calendar and one that can tell you which thing "
+                  "on it matters.\n\n" + PROVOCATIONS,
             fields=[Field(key="piece", label="", type="textarea", rows=30,
                           dictate=True, required=True,
                           default=_current_text(),
-                          help="Type or dictate. Saved as you go in the browser, "
-                               "and for good when you press the button.")],
+                          help="Type, or press Dictate and talk. Saved as you "
+                               "go, and kept for good when you press the button.")],
             action="Save and read it")
 
     if stage == "ask":
         return Prompt(
             title="Reading what you wrote",
-            blurb="One model pass, on your own subscription, to work out what to "
-                  "ask you next. It takes half a minute.",
+            blurb="Your agent now reads it once and works out what to ask you "
+                  "next. This takes about half a minute.",
             fields=[], immediate=True, action="Go ahead")
 
     if stage == "answer":
@@ -306,16 +313,16 @@ def prompt(state: State) -> Prompt:
                                 help="Skip any that are not worth answering."))
         return Prompt(
             title="A few things it wants to know",
-            blurb="These come from what you wrote rather than from a list. "
-                  "Answer the ones worth answering; leave the rest blank.",
+            blurb="These come from what you wrote, not from a list. Answer the "
+                  "ones worth answering and leave the rest blank.",
             fields=fields, action="Save these answers")
 
     if stage == "facts":
         return Prompt(
             title="The things it must never get wrong",
-            blurb="Prose is the wrong shape for a rule that has to hold every "
-                  "time. These go into your agent's operating rules, read by "
-                  "every session, and it is told never to have to look them up.",
+            blurb="Some things should not be left to a long piece of writing. "
+                  "What you put here goes into your agent's standing rules, "
+                  "which it reads at the start of every conversation.",
             fields=[
                 Field(key="critical", label="Anything where being wrong once is "
                                             "unacceptable", type="textarea", rows=4,
@@ -323,26 +330,27 @@ def prompt(state: State) -> Prompt:
                                   "constraints, a court order, a diet that is "
                                   "not a preference",
                       help="Say what it is and what it means in practice. Leave "
-                           "blank if there is genuinely nothing."),
+                           "blank if there is nothing."),
                 Field(key="forbidden", label="Anything your work, school or "
                                              "circumstances forbid",
                       type="textarea", rows=3,
                       placeholder="an academic integrity policy, an NDA, a "
-                                  "compliance rule, code you may not share",
-                      help="Quote the rule and where it comes from if you can — "
-                           "an approximate rule is one nobody can check."),
+                                  "confidentiality rule, code you may not share",
+                      help="Quote the rule and say where it comes from if you "
+                           "can. A rule stated exactly is one that can be "
+                           "followed exactly."),
                 Field(key="never_record", label="Anyone or anything that must "
                                                 "never be written down",
                       type="textarea", rows=3,
-                      help="People who did not agree to be in a database, "
-                           "subjects you do not want kept."),
+                      help="People who did not agree to be in your agent's "
+                           "notes, or subjects you do not want kept."),
                 Field(key="interrupt", label="What is always worth interrupting "
                                              "you for", type="textarea", rows=2,
                       placeholder="a deadline inside 48 hours; anything from my "
                                   "manager; nothing, ever"),
                 Field(key="quiet", label="When not to", type="text",
                       placeholder="after 22:00; during work hours; no quiet hours",
-                      help="Herald has no way to know this and will otherwise "
+                      help="Herald has no way to know this, and will otherwise "
                            "assume any time is fine."),
             ],
             action="Save and write it up")
@@ -350,19 +358,19 @@ def prompt(state: State) -> Prompt:
     if stage == "writeup":
         return Prompt(
             title="Writing it up",
-            blurb="One more pass — the important one — turning all of that into "
-                  "the four files your agent reads. This one uses the stronger "
-                  "model and takes a couple of minutes.\n\nYou get to read and "
-                  "edit everything it writes in the next step.",
+            blurb="One more pass, the important one, turning all of that into "
+                  "the notes your agent reads about you. This uses the more "
+                  "capable model and takes a few minutes.\n\nYou get to read "
+                  "and correct everything it writes in the next step.",
             fields=[], immediate=True, action="Write it")
 
     words = len(_piece_path().read_text().split())
     return Prompt(
         title="It knows who you are",
-        blurb=f"Written from {words} words of yours, kept at "
-              f"`ledger/identity/interview/`. Running this step again starts a "
-              f"new interview rather than editing the old one — to change "
-              f"something, edit the files directly or just tell your agent.",
+        blurb=f"Written from {words} words of yours. What you wrote is kept "
+              f"alongside the write-up, so it can always be gone back to.\n\n"
+              f"Running this step again starts a new interview rather than "
+              f"editing the old one. To change something, tell your agent.",
         fields=[], immediate=True, action="Start a new interview")
 
 
@@ -374,11 +382,12 @@ def apply(state: State, answers: dict) -> Outcome:
         piece = (answers.get("piece") or "").strip()
         if len(piece.split()) < 50:
             return Outcome(ok=False,
-                           message="That is too short to be worth a model pass.",
-                           detail="Fifty words is the floor and eight hundred is "
-                                  "the point. If you would rather do this later, "
-                                  "skip the step — everything else works without "
-                                  "it, just worse.")
+                           message="That is too short to work from.",
+                           detail="Fifty words is the minimum, and eight hundred "
+                                  "is where it starts to be useful. If you would "
+                                  "rather do this later, skip the step. "
+                                  "Everything else works without it, just not "
+                                  "as well.")
         _piece_path().write_text(piece)
         if _draft_path().exists():
             _draft_path().unlink()
@@ -394,7 +403,7 @@ def apply(state: State, answers: dict) -> Outcome:
                              cwd=config.ROOT, json_schema=QUESTION_SCHEMA,
                              allowed_tools=[], permission_mode="auto")
         if not result.ok:
-            return Outcome(ok=False, message="That pass failed.",
+            return Outcome(ok=False, message="That did not work. Try again.",
                            detail=result.error or "")
         payload = result.json() or {}
         step["questions"] = payload.get("questions", [])[:15]
@@ -422,7 +431,7 @@ def apply(state: State, answers: dict) -> Outcome:
         step["facts"] = facts
         step["facts_done"] = True
         (_dir() / "facts.json").write_text(json.dumps(facts, indent=2))
-        return Outcome(ok=True, message="Saved. Now the write-up.", more=True)
+        return Outcome(ok=True, message="Saved. Next, the write-up.", more=True)
 
     if stage == "writeup":
         who = config.person()
@@ -444,13 +453,15 @@ def apply(state: State, answers: dict) -> Outcome:
                              escalate=True, permission_mode="auto",
                              allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"])
         if not result.ok:
-            return Outcome(ok=False, message="The write-up failed.",
-                           detail=(result.error or "")[:500])
+            return Outcome(ok=False, message="The write-up did not finish.",
+                           detail="Press the button to try again. Nothing you "
+                                  "wrote is lost. " + (result.error or "")[:500])
         missing = [f for f in FILES if not (config.IDENTITY / f).exists()]
         if missing:
             return Outcome(ok=False,
-                           message=f"It did not write: {', '.join(missing)}",
-                           detail="Run this step again; nothing you typed is lost.")
+                           message="The write-up came back incomplete.",
+                           detail="Press the button to try again. Nothing you "
+                                  "wrote is lost.")
         payload = result.json() or {}
         step["summary"] = payload.get("summary", "")
         step["uncertain"] = payload.get("uncertain", [])
@@ -472,5 +483,5 @@ def apply(state: State, answers: dict) -> Outcome:
 
 
 STEP = Step(key="interview", title="Tell it who you are", optional=True,
-            summary="An hour of writing that everything else is ranked against",
+            summary="An hour of writing that everything else is judged against",
             status_fn=status, prompt_fn=prompt, apply_fn=apply)

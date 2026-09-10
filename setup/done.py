@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from herald import capabilities, config, extensions
 
+from .sources import friendly
+
 from .engine import DONE, Field, Outcome, Prompt, State, Step
 
 from . import services
@@ -32,39 +34,38 @@ def prompt(state: State) -> Prompt:
         "",
         "**What happens without you doing anything**",
         "",
-        "- every 30 minutes: it reads whatever you connected — "
-        + (", ".join(on) or "nothing yet"),
-        "- 06:30: a digest of what actually matters that day"
-        + (", to Telegram" if telegram else
-           ", as an ntfy notification" if ntfy else
-           ". **Nothing carries it to your phone yet** — it is written to "
-           "`ledger/digests/` and that is all. `herald setup --step telegram` "
-           "fixes that in five minutes."),
+        "- every 30 minutes: it reads whatever you connected ("
+        + (friendly(on) or "nothing yet") + ")",
+        "- 06:30: a digest of what matters that day"
+        + (", sent to Telegram" if telegram else
+           ", sent as a notification" if ntfy else
+           ". **Nothing carries it to your phone yet.** It is written to a file "
+           "in your Herald folder and that is all. `herald setup --step "
+           "telegram` fixes that in five minutes."),
         "- twice a day: it looks for opportunities and deadlines you would "
-        "otherwise miss, ranked against your goals",
-        "- the moment it finds something closing tomorrow: it interrupts you",
+        "otherwise miss, judged against your goals",
+        "- the moment it finds something closing tomorrow, it tells you",
         "",
         "**How to talk to it**",
         "",
     ]
     if telegram:
         lines.append("- message the bot. That is a real conversation with the "
-                     "same agent, and it remembers through the ledger rather "
-                     "than through the chat.")
+                     "same agent. It remembers through its notes, not through "
+                     "the chat history.")
     lines += [
-        "- `herald attach` on this machine, for a terminal session",
+        "- `herald attach` on this computer, for a conversation in the terminal",
         "- `herald brain url` gives a link that opens the same agent in the "
-        "Claude app or claude.ai/code",
+        "Claude app or at claude.ai/code",
         "",
         "**Worth knowing**",
         "",
-        "- `herald status` — what it has read, what it cost, what is failing",
-        "- `herald db \"select ...\"` — everything it knows, as SQL",
+        "- `herald status` shows what it has read, what it has cost, and "
+        "anything that is not working",
         "- Ask it to change itself. \"Read my library's events feed too\", "
-        "\"stop telling me about X\", \"send the digest at 7\" — it edits its own "
-        "source, and it knows how.",
-        "- Everything about you is in `" + str(config.HOME) + "`. Nothing there "
-        "is in the public repository, and you can read or delete any of it.",
+        "\"stop telling me about X\", \"send the digest at 7\". It knows how.",
+        "- Everything about you is in `" + str(config.HOME) + "`. None of it "
+        "is shared with anyone, and you can read or delete any of it.",
         "",
         "**How to stop it**",
         "",
@@ -72,11 +73,11 @@ def prompt(state: State) -> Prompt:
     if jobs:
         stop = ("systemctl --user stop 'herald-*'" if services.platform_name() == "systemd"
                 else "launchctl unload ~/Library/LaunchAgents/com.herald.*.plist")
-        lines.append(f"- `{stop}` stops everything immediately.")
-    lines.append("- Deleting " + str(config.HOME) + " deletes everything it knows "
-                 "about you.")
+        lines.append(f"- `{stop}` stops everything straight away.")
+    lines.append("- Deleting the folder " + str(config.HOME) + " deletes everything "
+                 "it knows about you.")
     if exts:
-        lines += ["", f"Extensions running: {', '.join(exts)}."]
+        lines += ["", f"Also running: {', '.join(exts)}."]
     return Prompt(title="Done", blurb="\n".join(lines), fields=[], immediate=True,
                   action="Finish")
 

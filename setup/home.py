@@ -70,11 +70,11 @@ def _gh_signed_in() -> bool:
                           text=True).returncode == 0
 
 
-GH_NOTE = ("The GitHub CLI is installed but not signed in, so the off-machine "
-           "backup is not offered yet. If you want one: run `gh auth login` in "
-           "a terminal, follow its prompts, and run this step again "
-           "(`herald setup --step home`). Without one, a dead disk takes the "
-           "ledger.")
+GH_NOTE = ("The GitHub tool is installed but not signed in, so the backup to "
+           "GitHub is not offered yet. If you would like one: run `gh auth "
+           "login` in a terminal window, follow its prompts, then come back to "
+           "this step (`herald setup --step home`). Without a backup, this "
+           "computer's disk is the only copy of your agent's notes.")
 
 
 def status(state: State) -> tuple[str, str]:
@@ -85,10 +85,10 @@ def status(state: State) -> tuple[str, str]:
     if _repo_exists(home):
         remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=home,
                                 capture_output=True, text=True).stdout.strip()
-        bits.append("versioned" + (f", backed up to {remote}" if remote else ", local only"))
+        bits.append("with history" + (f", backed up to {remote}" if remote else ", on this computer only"))
     else:
-        bits.append("not versioned")
-    return DONE, " — ".join(bits)
+        bits.append("no history kept")
+    return DONE, ", ".join(bits)
 
 
 def prompt(state: State) -> Prompt:
@@ -97,20 +97,20 @@ def prompt(state: State) -> Prompt:
     versioned = _repo_exists(home)
     has_gh = bool(shutil.which("gh"))
     blurb = (
-        f"Herald keeps two things apart. The program is this checkout, and it is "
-        f"the same for everyone. Everything about **you** goes in a directory of "
-        f"your own — `{home}` — which nothing public ever touches.\n\n"
-        f"That directory will hold your settings, your credentials, and the "
-        f"ledger: what your agent has read, what it has concluded, and what it "
+        f"Herald keeps two things apart. The program is the same for everyone. "
+        f"Everything about **you** lives in a folder of your own, `{home}`, "
+        f"which is private to this computer.\n\n"
+        f"That folder will hold your settings, your sign-in details, and your "
+        f"agent's notes: what it has read, what it has concluded, and what it "
         f"has written down about you.\n\n"
-        + ("It already exists, so this step will leave it alone.\n\n" if exists else "")
+        + ("It already exists, so this step leaves it as it is.\n\n" if exists else "")
     )
     fields = []
     if not versioned:
         fields.append(Field(
-            key="git", label="Keep a version history of it", type="bool", default=True,
-            help="A local git repository, so a bad edit to something the agent "
-                 "wrote about you can be undone. Nothing leaves the machine."))
+            key="git", label="Keep a history of changes to it", type="bool", default=True,
+            help="So that if your agent writes something wrong about you, the "
+                 "earlier version is still there. Nothing leaves this computer."))
     remote = ""
     if versioned:
         remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=home,
@@ -119,22 +119,23 @@ def prompt(state: State) -> Prompt:
         fields.append(Field(key="note", type="note", label="", help=GH_NOTE))
     elif has_gh and not remote:
         fields.append(Field(
-            key="github", label="Also back it up to a private GitHub repository",
+            key="github", label="Also keep a private backup on GitHub",
             type="bool", default=False,
-            help="Off by default, and think about it before you say yes. It "
-                 "would contain what the agent writes about you: your notes, "
-                 "your daily journal, and anything personal you tell it during "
-                 "setup. It would NOT contain your credentials, your mail, your "
-                 "messages, or the ingested database — those are never "
-                 "committed. Private means private to your GitHub account."))
+            help="Off unless you say otherwise, and worth a moment's thought. "
+                 "The backup would contain what your agent writes about you: "
+                 "its notes, its daily journal, and anything personal you tell "
+                 "it during setup. It would not contain your sign-in details, "
+                 "your mail, your messages, or the raw data it collects. "
+                 "Private means only your GitHub account can see it."))
         fields.append(Field(
-            key="repo_name", label="Repository name", default="herald-ledger",
+            key="repo_name", label="Name for the backup", default="herald-ledger",
             help="Only used if you said yes above."))
     elif not has_gh and not remote:
         fields.append(Field(
             key="note", type="note", label="",
-            help="Install the GitHub CLI (`gh`) if you later want an off-machine "
-                 "backup of the ledger. Without one, a dead disk takes it."))
+            help="If you later want a backup of your agent's notes somewhere "
+                 "other than this computer, install the GitHub tool (`gh`) and "
+                 "run this step again."))
     return Prompt(title="Where your Herald lives", blurb=blurb, fields=fields,
                   action="Create it" if not exists else "Continue",
                   immediate=not fields)
@@ -172,16 +173,15 @@ def apply(state: State, answers: dict) -> Outcome:
             r = subprocess.run(["git", "log", "--oneline", "-1"], cwd=home,
                                capture_output=True, text=True)
             if not r.stdout.strip():
-                warnings.append("the first commit did not happen; "
-                                "`git -C " + str(home) + " status` says why")
+                warnings.append("the history could not be started. Run "
+                                "`git -C " + str(home) + " status` to see why.")
 
     if answers.get("github"):
         name = (answers.get("repo_name") or "herald-ledger").strip()
         if not shutil.which("gh"):
-            warnings.append("the GitHub CLI is not installed, so no backup was made")
+            warnings.append("the GitHub tool is not installed, so no backup was made")
         elif not _gh_signed_in():
-            warnings.append("the GitHub CLI is not signed in, so no backup was "
-                            "made. " + GH_NOTE)
+            warnings.append("no backup was made. " + GH_NOTE)
         else:
             r = subprocess.run(
                 ["gh", "repo", "create", name, "--private", "--source=.",
@@ -198,5 +198,5 @@ def apply(state: State, answers: dict) -> Outcome:
 
 
 STEP = Step(key="home", title="Where your Herald lives",
-            summary="Create the private directory that holds everything about you",
+            summary="Create the private folder that holds everything about you",
             status_fn=status, prompt_fn=prompt, apply_fn=apply)

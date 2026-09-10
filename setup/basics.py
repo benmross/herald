@@ -81,16 +81,16 @@ def status(state: State) -> tuple[str, str]:
         return TODO, "Herald does not know your name yet"
     who = config.person()
     return DONE, (f"{name}, {who['subject']}/{who['object']}, "
-                  f"{config.get('timezone')}, agent called "
+                  f"{config.get('timezone')}, agent named "
                   f"{config.get('agent.name', 'Herald')}")
 
 
 def prompt(state: State) -> Prompt:
     return Prompt(
         title="You, briefly",
-        blurb="Four things. The long version comes later — this is just enough "
-              "for your agent to talk about you correctly and put your days in "
-              "the right timezone.",
+        blurb="A few short answers. The longer conversation about who you are "
+              "comes later. This is just enough for your agent to refer to you "
+              "correctly and to show times in your timezone.",
         fields=[
             Field(key="name", label="Your name", required=True,
                   default=config.get("user.name", ""),
@@ -98,38 +98,37 @@ def prompt(state: State) -> Prompt:
             Field(key="pronouns", label="Your pronouns", type="choice",
                   choices=PRONOUN_CHOICES,
                   default=config.get("user.pronouns", "they/them"),
-                  help="Used when your agent writes *about* you — in its own "
-                       "notes, and in the brief it reads each morning. Anything "
-                       "it writes *to* you is second person regardless."),
+                  help="Used when your agent writes about you in its own notes. "
+                       "When it talks to you, it says \"you\"."),
             Field(key="timezone", label="Timezone", required=True,
                   default=_own("timezone") or _guess_timezone(),
-                  help="An IANA name like Europe/London or America/New_York. "
-                       "Every time Herald ever shows you is in this."),
+                  help="Written like Europe/London or America/New_York. We have "
+                       "filled in our best guess from this computer's clock."),
             Field(key="email", label="Your email address",
                   default=config.get("user.email", ""),
-                  help="Only used to recognise your own messages in your own "
-                       "mailbox. Herald never sends it anywhere."),
+                  help="Only used to tell your own messages apart from other "
+                       "people's in your mailbox. It is never sent anywhere."),
             Field(key="agent_name", label="What to call your agent",
                   default=config.get("agent.name", "Herald"),
-                  help="Herald is the project. Your instance can be called "
-                       "whatever you like — it will use this name for itself."),
+                  help="Herald is the name of the program. Yours can have any "
+                       "name you like, and it will use it for itself."),
         ])
 
 
 def apply(state: State, answers: dict) -> Outcome:
     name = (answers.get("name") or "").strip()
     if not name:
-        return Outcome(ok=False, message="A name is the one thing this step needs.")
+        return Outcome(ok=False, message="Your name is the one thing this step needs.")
     tzname = (answers.get("timezone") or "UTC").strip()
     try:
         from zoneinfo import ZoneInfo
         ZoneInfo(tzname)
     except Exception:                                               # noqa: BLE001
         return Outcome(ok=False,
-                       message=f"{tzname!r} is not a timezone name.",
+                       message=f"\"{tzname}\" is not a timezone Herald recognises.",
                        detail="It should look like Europe/London or "
-                              "America/Chicago. `timedatectl` or the Date & "
-                              "Time settings will tell you which one you are in.")
+                              "America/Chicago: a region, a slash, and the "
+                              "nearest large city.")
     config.set_user("user.name", name)
     config.set_user("user.pronouns", (answers.get("pronouns") or "they/them").strip())
     config.set_user("timezone", tzname)

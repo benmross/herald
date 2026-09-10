@@ -20,39 +20,39 @@ from herald import config, constitution
 from .engine import DONE, TODO, Field, Outcome, Prompt, State, Step
 
 FILES = [
-    ("constitution.md", "The rules every session reads",
-     "Your agent's operating instructions. This is the one that has to be right."),
+    ("constitution.md", "The rules it follows for you",
+     "Your agent's standing instructions, read at the start of every "
+     "conversation. This is the one that has to be right."),
     ("about.md", "Who you are", "Read for context at the start of a conversation."),
-    ("goals.md", "What you are chasing",
-     "Everything it surfaces is ranked against this, so vagueness here becomes "
-     "noise in your notifications."),
+    ("goals.md", "What you are working towards",
+     "Everything it brings to your attention is judged against this, so "
+     "anything vague here becomes noise later."),
     ("preferences.md", "How you want to be treated", ""),
 ]
 
 TIERS = """\
-Your agent already follows these. They are worth understanding, because the
+Your agent already follows these rules. They are worth knowing, because the
 second one is the one people are surprised by.
 
-**It acts freely when nothing leaves the machine.** Reading anything, searching
-anything, writing to its own notes about you, drafting something for you to
-look at.
+**It acts freely when nothing leaves this computer.** Reading, searching,
+writing its own notes about you, drafting something for you to look at.
 
-**It acts, then tells you, for reversible things only you see** — putting an
-event it found on a calendar it manages, labelling an email, opening a task.
-Never silently: every one of these appears in the next digest.
+**It acts, then tells you, for things only you see and that can be undone.**
+Putting an event it found on a calendar it manages, labelling an email, adding
+a task. Never quietly: every one of these appears in your next digest.
 
-**It asks first, every time, for anything anyone else sees** — sending a
-message, posting anything, applying or registering for anything, spending money,
-deleting anything permanently. Overnight it does not ask; it queues the question
-for the morning.
+**It asks first, every time, for anything anyone else would see.** Sending a
+message, posting anything, applying or signing up for anything, spending money,
+deleting anything for good. Overnight it does not ask. It saves the question for
+the morning.
 
-Being asked to *look* at something is never permission to *change* it.
+Being asked to look at something is never permission to change it.
 """
 
 
 def status(state: State) -> tuple[str, str]:
     if not (config.IDENTITY / "constitution.md").exists():
-        return TODO, "nothing to review yet — do the interview first"
+        return TODO, "nothing to review yet (the interview comes first)"
     if not state.step("rules").get("reviewed"):
         return TODO, "not read through yet"
     return DONE, "reviewed"
@@ -66,19 +66,20 @@ def prompt(state: State) -> Prompt:
             continue
         fields.append(Field(key=f"file_{name}", label=label, type="textarea",
                             rows=18, default=path.read_text(),
-                            help=why + "  Edit anything that is wrong — it is "
-                                       "your file."))
+                            help=why + "  Change anything that is wrong. These "
+                                       "are your notes."))
     if not fields:
         return Prompt(
             title="Nothing to review",
             blurb="The interview has not produced anything yet. You can skip "
-                  "this and come back with `herald setup --step rules`.",
+                  "this and come back to it with `herald setup --step rules`.",
             fields=[], immediate=True, action="Continue")
     return Prompt(
         title="Read what it wrote, and what it may do",
         blurb="Two things worth five minutes now.\n\n" + TIERS
-              + "\n\nAnd this is what it wrote about you. Correct anything wrong; "
-                "a wrong fact here becomes a wrong assumption every morning.",
+              + "\n\nAnd below is what it wrote about you. Correct anything "
+                "wrong. A wrong fact here becomes a wrong assumption every "
+                "morning.",
         fields=fields, action="Save and continue")
 
 
@@ -101,10 +102,10 @@ def apply(state: State, answers: dict) -> Outcome:
     return Outcome(ok=True,
                    message=("Saved " + ", ".join(changed)) if changed
                            else "Left as written.",
-                   detail="Your agent reads the constitution at the start of "
-                          "every session, so this took effect immediately.")
+                   detail="Your agent reads these at the start of every "
+                          "conversation, so this has taken effect already.")
 
 
 STEP = Step(key="rules", title="Read what it wrote, and what it may do",
-            summary="Correct the files, and set the boundary",
+            summary="Correct its notes, and know what it will and will not do",
             status_fn=status, prompt_fn=prompt, apply_fn=apply)

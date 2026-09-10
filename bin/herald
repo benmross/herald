@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""herald — the one command.
+"""herald: the one command.
 
     herald status                  what's running, what it cost, what's stale
     herald doctor                  check the things that silently break
@@ -116,16 +116,16 @@ def cmd_status(args) -> int:
         waiting = upstream.unreleased()
         if waiting:
             print(f"  {'unreleased':16} {_c(str(len(waiting)) + ' commit(s)', WARN)}"
-                  f"  — `herald release --preview`")
+                  f". `herald release --preview`")
     elif current_mode == "tracking":
         if not upstream.hook_installed():
-            print(f"  {'commit hook':16} {_c('missing', WARN)} — `herald mode tracking`")
+            print(f"  {'commit hook':16} {_c('missing', WARN)}. Run `herald mode tracking`")
         local = upstream.local_changes()
         if local["modified"] or local["commits"]:
             note = (f"{len(local['modified'])} edited, "
                     f"{len(local['commits'])} committed")
             print(f"  {'local changes':16} {_c(note, BAD)}"
-                  f" — updates cannot fast-forward")
+                  f", so updates cannot be applied")
 
     exts = extensions.all_extensions()
     if exts:
@@ -167,7 +167,7 @@ def cmd_status(args) -> int:
     facts = db.query("SELECT source, kind, COUNT(*) n, MAX(ts) latest"
                      " FROM facts GROUP BY source, kind ORDER BY n DESC LIMIT 10")
     if not facts:
-        print(f"  {_c('empty — no collectors have run', DIM)}")
+        print(f"  {_c('empty: nothing has been read yet', DIM)}")
     for f in facts:
         print(f"  {f['source'] + '/' + f['kind']:<28}{f['n']:>7}  latest {f['latest'] or '-'}")
 
@@ -243,7 +243,7 @@ def cmd_doctor(args) -> int:
             pass
     from herald import google as google_mod  # noqa: PLC0415
     check("google token", google_mod.available(),
-          f"expected in {google_mod.credentials_dir()} — herald setup --step google")
+          f"expected in {google_mod.credentials_dir()}. Run `herald setup --step google`")
 
     _hdr("database")
     try:
@@ -711,7 +711,7 @@ def cmd_release(args) -> int:
         print(_c(f"  tagged locally, but the push failed: "
                  f"{(push.stderr or '').strip()[:300]}", BAD), file=sys.stderr)
         return 1
-    print(f"  released {_c(tag, OK)} — tracking installs will offer it within a day")
+    print(f"  released {_c(tag, OK)}. Installs that receive updates will offer it within a day")
     return 0
 
 
@@ -789,7 +789,7 @@ def cmd_constitution(args) -> int:
     print(f"  {'rewrote' if changed else 'already current:'} {constitution_mod.OUTPUT}")
     if not constitution_mod.PERSONAL.exists():
         print(_c(f"  no personal constitution yet at "
-                 f"{constitution_mod.PERSONAL} — run `herald setup`", WARN))
+                 f"{constitution_mod.PERSONAL}. Run `herald setup`", WARN))
     return 0
 
 

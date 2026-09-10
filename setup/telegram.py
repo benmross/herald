@@ -24,29 +24,29 @@ from herald import config
 from .engine import DONE, TODO, Field, Outcome, Prompt, State, Step
 
 BOTFATHER = """\
-**1.** Open Telegram and message [@BotFather](https://t.me/BotFather) — it is
-Telegram's own bot for making bots.
+**1.** Open Telegram and message [@BotFather](https://t.me/BotFather). It is
+Telegram's own bot for creating bots.
 
-**2.** Send it `/newbot`. It asks for a display name (anything: `{agent}`) and
-then a username, which must be unique and end in `bot` — something like
-`{suggestion}`.
+**2.** Send it `/newbot`. It asks for a display name (anything you like:
+`{agent}`), then a username, which has to be unique and end in `bot`. Something
+like `{suggestion}` works.
 
 **3.** It replies with a line like
 `Use this token to access the HTTP API: 8000123456:AAF-xxxxxxxxxxxxxxxxxxxx`.
 Copy that whole token and paste it below.
 
-That token is a password for the bot: anyone holding it can read and send its
-messages. Herald keeps it in `secrets.json` at mode 600 and nowhere else.
+Treat the token like a password: anyone who has it can read and send the bot's
+messages. Herald keeps it on this computer, readable only by you.
 """
 
 SAY_HELLO = """\
-The bot exists. Now it has to learn where to send things.
+The bot exists. Now it needs to learn where to send things.
 
-**Open Telegram, find your bot ({handle}), and send it any message** — "hello"
-is fine. Then press the button below.
+**Open Telegram, find your bot ({handle}), and send it any message.** "Hello" is
+fine. Then press the button below.
 
-Telegram will not let a bot message someone who has never messaged it first,
-which is a good rule and the reason for this step.
+Telegram does not let a bot message anyone who has not messaged it first, which
+is a good rule and the reason for this step.
 """
 
 
@@ -78,9 +78,9 @@ def _stage(state: State) -> str:
 def status(state: State) -> tuple[str, str]:
     token = config.secret("telegram.bot_token")
     if not token:
-        return TODO, "not set up — Herald can still be used from a terminal"
+        return TODO, "not set up (Herald still works from a terminal)"
     if not config.secret("telegram.chat_id"):
-        return TODO, "bot created, but it does not know where to send yet"
+        return TODO, "bot created, but it does not yet know where to send"
     handle = state.step("telegram").get("handle", "your bot")
     return DONE, f"@{handle} → chat {config.secret('telegram.chat_id')}"
 
@@ -92,8 +92,8 @@ def prompt(state: State) -> Prompt:
         agent = config.get("agent.name", "Herald")
         return Prompt(
             title="Telegram (recommended)",
-            blurb="How your agent reaches you when you are not at this machine, "
-                  "and how you answer it.\n\n"
+            blurb="How your agent reaches you when you are away from this "
+                  "computer, and how you reply.\n\n"
                   + BOTFATHER.format(agent=agent,
                                      suggestion=f"{agent.lower()}_{suffix}_bot"),
             fields=[Field(key="token", label="The bot token", type="secret",
@@ -108,10 +108,10 @@ def prompt(state: State) -> Prompt:
     handle = state.step("telegram").get("handle", "your bot")
     return Prompt(
         title="Telegram is connected",
-        blurb=f"@{handle} will carry your digests and anything urgent, and you "
-              f"can talk back to it in the same thread.\n\nRunning this step "
-              f"again starts over with a new token, which is what to do if you "
-              f"ever regenerate one.",
+        blurb=f"@{handle} will carry your morning digest and anything urgent, "
+              f"and you can reply to it in the same conversation.\n\nRunning "
+              f"this step again starts over with a new token, which is what to "
+              f"do if you ever create a new one.",
         fields=[], immediate=True, action="Start over")
 
 
@@ -125,13 +125,14 @@ def apply(state: State, answers: dict) -> Outcome:
         if ":" not in token:
             return Outcome(ok=False, message="That does not look like a bot token.",
                            detail="It should be a number, a colon, then a long "
-                                  "string — BotFather sends it on its own line.")
+                                  "run of letters. BotFather sends it on a line "
+                                  "of its own.")
         me = _api(token, "getMe")
         if not me.get("ok"):
-            return Outcome(ok=False, message="Telegram rejected that token.",
-                           detail=me.get("description", "")
-                                  + " Check you copied all of it, including the "
-                                    "part before the colon.")
+            return Outcome(ok=False, message="Telegram did not accept that token.",
+                           detail="Check you copied all of it, including the "
+                                  "number before the colon. Telegram said: "
+                                  + me.get("description", ""))
         handle = me["result"].get("username", "")
         config.set_secret("telegram.bot_token", token)
         state.step("telegram")["handle"] = handle
@@ -150,10 +151,11 @@ def apply(state: State, answers: dict) -> Outcome:
     if not messages:
         return Outcome(
             ok=False, message="Telegram has not seen a message to your bot yet.",
-            detail="Open Telegram, find the bot, and send it anything — then "
-                   "press the button again. If the Herald bridge is already "
-                   "running, stop it first (`systemctl --user stop "
-                   "herald-telegram`): Telegram only allows one reader at a time.")
+            detail="Open Telegram, find the bot, send it anything, then press "
+                   "the button again. If Herald is already running in the "
+                   "background on this computer, stop it first with "
+                   "`systemctl --user stop herald-telegram`, because Telegram "
+                   "only lets one program read a bot's messages at a time.")
     last = messages[-1]
     chat_id = (last.get("chat") or {}).get("id")
     user_id = (last.get("from") or {}).get("id")
@@ -169,13 +171,13 @@ def apply(state: State, answers: dict) -> Outcome:
         warnings.append(f"could not send a test message: {sent.get('description')}")
     return Outcome(
         ok=True,
-        message=f"Connected to {first or 'you'}. A test message just went to "
-                f"that chat.",
+        message=f"Connected to {first or 'you'}. A test message has just been "
+                f"sent to that chat.",
         warnings=warnings,
-        detail="Only messages from your own Telegram account are answered; "
-               "anyone else who finds the bot gets nothing.")
+        detail="Only messages from your own Telegram account are answered. "
+               "Anyone else who finds the bot gets no reply.")
 
 
 STEP = Step(key="telegram", title="Telegram", optional=True,
-            summary="How your agent reaches you, and how you answer it",
+            summary="How your agent reaches you, and how you reply",
             status_fn=status, prompt_fn=prompt, apply_fn=apply)

@@ -139,45 +139,49 @@ if __name__ == "__main__":
 '''
 
 CONSOLE_STEPS = """\
-Google will not let a program touch your account until *you* create a project
-that asks for permission. It takes about five minutes and you only ever do it
-once. Follow these in order — each line is one click.
+Google will not let a program read your account until you have told Google
+about that program yourself. That takes about five minutes on Google's website,
+and you only do it once. Each numbered item below is one page to visit; the
+links open in a new tab.
 
-**1. Make a project.** Open <https://console.cloud.google.com/projectcreate>,
-call it anything (`herald` is fine), and click Create. Wait for it to finish and
-make sure it is the selected project in the bar at the top.
+**1. Make a project.** Open <https://console.cloud.google.com/projectcreate>.
+Call it anything you like (`herald` is fine) and click Create. Wait for it to
+finish, and make sure it is the project selected in the bar at the top of the
+page.
 
-**2. Turn on the seven APIs it needs.** Each of these links opens one API's page
-in your project; click **Enable** on each, then come back:
+**2. Switch on the seven services Herald reads.** Each link opens one of them
+in your project. Click **Enable** on each, then come back here:
 
 {api_links}
 
-**3. Set up the consent screen.** Go to
-<https://console.cloud.google.com/auth/overview>. If it asks, choose **External**
-— that is the only choice available on a personal Google account and it does not
-publish anything. Fill in an app name (`Herald`), pick your own email address
-where it asks for support and developer contact, and save.
+**3. Set up the consent screen.** Open
+<https://console.cloud.google.com/auth/overview>. If it asks, choose
+**External**. That is the only choice on a personal Google account, and it does
+not make anything public. Give the app a name (`Herald`), enter your own email
+address where it asks for support and developer contact, and save.
 
-**4. Add yourself as a test user.** Still under that consent screen, find
-**Audience** → **Test users** → **Add users**, and add your own Google address.
-This is the step people miss; without it, the sign-in at the end fails with
-"access_denied".
+**4. Add yourself as a test user.** Still on the consent screen, find
+**Audience**, then **Test users**, then **Add users**, and add your own Google
+address. This is the step people miss. Without it, the sign-in at the end
+fails with the words "access_denied".
 
-**5. Create the credentials.** Go to
+**5. Create the credentials.** Open
 <https://console.cloud.google.com/auth/clients>, click **Create client**, choose
-**Desktop app** as the type, name it anything, and click Create. Then click the
-**download** icon on the client you just made — you get a small `.json` file.
+**Desktop app** as the type, give it any name, and click Create. Then click the
+**download** icon next to the client you just made. You get a small file ending
+in `.json`.
 
-Open that file in any text editor and paste the whole thing into the box below.
-It is not a password: it identifies the app you just made, not your account.
+Open that file in any text editor, copy everything in it, and paste it into the
+box below. It is not a password. It identifies the app you just made, not your
+account, and it stays on this computer.
 """
 
 VERIFY_WARNING = """\
 When you sign in, Google will say **"Google hasn't verified this app"**. That is
-correct and expected: the app is the one *you* created four minutes ago, it has
-never been submitted for review, and nobody else will ever use it. Click
-**Advanced** → **Go to Herald (unsafe)** to continue. You are granting access to
-your own account, to a program running on your own machine.
+expected. The app is the one you created a few minutes ago, nobody has reviewed
+it, and nobody else will ever use it. Click **Advanced**, then **Go to Herald
+(unsafe)**, to carry on. You are giving your own program access to your own
+account.
 """
 
 
@@ -190,9 +194,9 @@ def _ssh_note() -> str:
     from .engine import over_ssh  # noqa: PLC0415
     if not over_ssh():
         return ""
-    return (" You are connected over SSH, so Google's redirect has to reach this "
-            "machine: if you started the browser wizard with the `ssh -N -L` "
-            "line it printed, that is already covered; otherwise run\n\n"
+    return (" You are connected over SSH, so the end of the sign-in has to reach "
+            "this machine. If you started the browser setup with the `ssh -N -L` "
+            "line it printed, that is already covered. Otherwise run\n\n"
             f"    ssh -N -L 127.0.0.1:{DEFAULT_PORT}:127.0.0.1:{DEFAULT_PORT} "
             "USER@THIS-MACHINE\n\non the computer you are sitting at first.")
 
@@ -253,12 +257,14 @@ def authorize(port: int = DEFAULT_PORT, on_url=None, timeout: int = 900) -> str:
     server.server_close()
 
     if _Catcher.error:
-        raise RuntimeError(f"Google returned {_Catcher.error!r}. The usual cause "
-                           f"is not having added yourself as a test user.")
+        raise RuntimeError(f"Google answered \"{_Catcher.error}\". The usual "
+                           f"cause is step 4: you have not been added as a test "
+                           f"user on the consent screen.")
     if not _Catcher.code:
-        raise TimeoutError("no answer came back from Google. If this machine has "
-                           "no browser, you need the SSH port-forward described "
-                           "above before opening the URL.")
+        raise TimeoutError("nothing came back from Google. If you are setting "
+                           "this up on another computer over SSH, the "
+                           "port-forward described above has to be running "
+                           "before you open the link.")
 
     flow.fetch_token(code=_Catcher.code)
     token = directory / "token.json"
@@ -267,10 +273,27 @@ def authorize(port: int = DEFAULT_PORT, on_url=None, timeout: int = 900) -> str:
     return whoami()
 
 
+_whoami_cache: dict = {}
+
+
 def whoami() -> str:
-    """The address the stored token actually belongs to."""
+    """The address the stored token actually belongs to.
+
+    Cached against the token file's modification time, so the wizard's page
+    loads do not each cost a round trip to Google; a new sign-in writes the
+    file and invalidates it.
+    """
+    token = credentials_dir() / "token.json"
+    try:
+        stamp = token.stat().st_mtime
+    except OSError:
+        stamp = None
+    if _whoami_cache.get("stamp") == stamp and "email" in _whoami_cache:
+        return _whoami_cache["email"]
     profile = google_mod.service("gmail", "v1").users().getProfile(userId="me").execute()
-    return profile.get("emailAddress", "")
+    email = profile.get("emailAddress", "")
+    _whoami_cache.update(stamp=stamp, email=email)
+    return email
 
 
 def install_helpers() -> pathlib.Path:
@@ -309,7 +332,7 @@ def status(state: State) -> tuple[str, str]:
     try:
         return DONE, f"connected as {whoami()}"
     except Exception as exc:                                        # noqa: BLE001
-        return BLOCKED, f"the stored token no longer works ({type(exc).__name__}: {exc})"
+        return BLOCKED, f"the saved sign-in no longer works ({type(exc).__name__}: {exc})"
 
 
 def prompt(state: State) -> Prompt:
@@ -322,30 +345,29 @@ def prompt(state: State) -> Prompt:
             title="Connect your Google account",
             blurb=CONSOLE_STEPS.format(api_links=links),
             fields=[Field(
-                key="client_json", label="The downloaded .json file's contents",
+                key="client_json", label="What is in the downloaded file",
                 type="textarea", rows=8, required=True,
-                placeholder='{"installed":{"client_id":"…","project_id":"…"}}',
-                help="Paste the whole file. Herald stores it at mode 600 in "
-                     "your credentials directory and never sends it anywhere "
-                     "except to Google.")],
+                placeholder='{"installed":{"client_id":"...","project_id":"..."}}',
+                help="Paste the whole file, from the first { to the last }. It "
+                     "is kept on this computer, readable only by you, and is "
+                     "only ever sent to Google.")],
             action="Save and continue")
     if stage == "authorize":
         return Prompt(
             title="Sign in to Google",
-            blurb="Now the part where you say yes.\n\n" + VERIFY_WARNING
+            blurb="Now the part where you give permission.\n\n" + VERIFY_WARNING
                   + "\n\nWhen you press the button, a sign-in link appears. Open "
                     "it, choose the account this Herald is for, and tick every "
-                    "permission — Herald asks for mail, calendar, contacts, "
-                    "tasks, Drive, Docs and Sheets because that is the whole of "
-                    "what it does." + _ssh_note(),
+                    "permission it asks for. Herald asks for mail, calendar, "
+                    "contacts, tasks, Drive, Docs and Sheets because those are "
+                    "the things it reads and writes for you." + _ssh_note(),
             fields=[], immediate=True, action="Get my sign-in link")
     return Prompt(
         title="Google is connected",
         blurb=f"Signed in as **{status(state)[1].removeprefix('connected as ')}**. "
               f"Herald can read your mail, calendars, tasks and contacts, and "
-              f"write to the calendars you tell it to.\n\nRunning this step again "
-              f"replaces the sign-in, which is what to do if it ever stops "
-              f"working.",
+              f"add to the calendars you tell it to.\n\nRunning this step again "
+              f"signs in afresh, which is what to do if it ever stops working.",
         fields=[], immediate=True, action="Sign in again")
 
 
@@ -360,22 +382,22 @@ def apply(state: State, answers: dict) -> Outcome:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as exc:
-            return Outcome(ok=False, message="That is not valid JSON.",
-                           detail=f"{exc}. Paste the whole file, starting with "
-                                  f"{{ and ending with }}.")
+            return Outcome(ok=False, message="That does not look like the whole file.",
+                           detail="Paste everything in it, starting with { and "
+                                  "ending with }. (The exact problem: "
+                                  f"{exc}.)")
         if not (parsed.get("installed") or parsed.get("web")):
             return Outcome(
                 ok=False,
-                message="That JSON is not an OAuth client.",
-                detail="It should have an \"installed\" key at the top. If it "
-                       "has \"type\": \"service_account\", you created the wrong "
-                       "kind of credential — go back and choose Desktop app.")
+                message="That file is not the kind Herald needs.",
+                detail="If it contains the words \"service_account\", the "
+                       "wrong kind of credential was created. Go back to step "
+                       "5 and choose Desktop app.")
         if parsed.get("web"):
             return Outcome(
-                ok=False, message="That is a Web application client.",
-                detail="Create a new one and choose **Desktop app** as the "
-                       "application type. A web client needs a redirect URI you "
-                       "do not have.")
+                ok=False, message="That file is for a web application.",
+                detail="Go back to step 5, create a new client, and choose "
+                       "**Desktop app** as the type.")
         path = directory / "credentials.json"
         path.write_text(json.dumps(parsed, indent=2))
         path.chmod(0o600)
@@ -394,5 +416,5 @@ def apply(state: State, answers: dict) -> Outcome:
 
 
 STEP = Step(key="google", title="Connect your Google account",
-            summary="Mail, calendar, tasks and contacts — the spine of everything",
+            summary="Mail, calendar, tasks and contacts: the core of everything",
             status_fn=status, prompt_fn=prompt, apply_fn=apply)
