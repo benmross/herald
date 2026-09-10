@@ -50,6 +50,19 @@ class Checker:
         self.ok(name) if condition else self.fail(name, detail)
 
 
+def account_pattern(login: str) -> re.Pattern:
+    """Where a login name is evidence of a leak rather than an ordinary word.
+
+    A login is very often a real word -- `runner` on a CI machine, `pi` on a
+    Raspberry Pi, `admin`, `dev` -- so matching it as prose is useless. What
+    actually leaks is a path or an address: /home/<login>, ~login, login@host.
+    Anchoring on those is the difference between catching a tracked symlink
+    into somebody's home and flagging the phrase "the test runner".
+    """
+    account = re.escape(login.lower())
+    return re.compile(rf"[/~\\]{account}\b|\b{account}@")
+
+
 def python_files() -> list[pathlib.Path]:
     """Everything the invariants apply to -- including extensions.
 
@@ -352,14 +365,22 @@ def main() -> int:
         if len(value) >= 5:
             needles[value.lower()] = key
 
-    # The account name and the home paths, which a name-derived denylist misses
-    # entirely: five tracked symlinks once pointed at
-    # /home/<user>/.herald/extensions/..., publishing a username and the names
-    # of somebody's private extensions without containing their name anywhere.
-    import getpass
-    needles[getpass.getuser().lower()] = "this machine's account name"
+    # The home paths, which a name-derived denylist misses entirely: five
+    # tracked symlinks once pointed at /home/<user>/.herald/extensions/...,
+    # publishing a username and the names of somebody's private extensions
+    # without containing their name anywhere.
     for path in (config.HOME, pathlib.Path.home()):
         needles[str(path).lower()] = "an absolute path into this user's home"
+
+    # The account name, but only where it is a path or an address. A login is
+    # very often an ordinary word -- `runner` on a CI machine, `pi` on a
+    # Raspberry Pi, `admin`, `dev` -- and matching it as prose flagged
+    # "${{ runner.temp }}", "the test runner's PYTHONPATH" and "the bundled
+    # runner" on the public repo's very first CI run. What actually leaks is
+    # /home/<login>, ~login, or login@host, so that is what this looks for.
+    import getpass
+    contextual = [(account_pattern(getpass.getuser()),
+                   "this machine's account name, in a path or address")]
 
     def _walk(node, prefix=""):
         if isinstance(node, dict):
@@ -430,6 +451,12 @@ def main() -> int:
             line = next((i + 1 for i, l in enumerate(text.splitlines())
                          if pattern.search(l.lower())), 0)
             hits.append(f"{rel}:{line} contains {why}")
+        for pattern, why in contextual:
+            m = pattern.search(lowered)
+            if m:
+                line = next((i + 1 for i, l in enumerate(text.splitlines())
+                             if pattern.search(l.lower())), 0)
+                hits.append(f"{rel}:{line} contains {why}")
         for pattern, why in SHAPES:
             m = pattern.search(text)
             if m:

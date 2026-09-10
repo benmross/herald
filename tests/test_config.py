@@ -160,3 +160,45 @@ class VenvReExec(unittest.TestCase):
                                 capture_output=True, text=True).stdout.strip()
         self.assertEqual(pathlib.Path(prefix).resolve(),
                          (ROOT / "venv").resolve())
+
+
+class PersonalDataCheck(unittest.TestCase):
+    """`tools/check.py` refuses to let anything personal into the public tree,
+    and the account name is the needle that most easily cries wolf.
+
+    The public repository's very first CI run failed on three innocent lines --
+    `${{ runner.temp }}`, "the test runner's PYTHONPATH", "the bundled runner"
+    -- because the CI machine's login is `runner`. A check that fails on prose
+    is a check somebody switches off, and a red first build is what a stranger
+    sees before they read a line of the code.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "herald_check", ROOT / "tools" / "check.py")
+        cls.check = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.check)
+
+    def test_a_home_path_is_a_leak(self):
+        p = self.check.account_pattern("runner")
+        self.assertTrue(p.search("/home/runner/.herald/extensions/elms"))
+        self.assertTrue(p.search("~runner/notes"))
+        self.assertTrue(p.search("scp runner@box:/tmp/x ."))
+
+    def test_the_same_word_in_prose_is_not(self):
+        p = self.check.account_pattern("runner")
+        for innocent in ("${{ runner.temp }}/herald-home",
+                         "let the test runner's PYTHONPATH supply the program",
+                         "Use the bundled runner. It points Python at",
+                         "a runner-up"):
+            self.assertIsNone(p.search(innocent.lower()), innocent)
+
+    def test_a_two_letter_login_still_only_matches_paths(self):
+        """`pi` is the default login on a Raspberry Pi, and appears inside
+        every other word in the language."""
+        p = self.check.account_pattern("pi")
+        self.assertTrue(p.search("/home/pi/.herald"))
+        for innocent in ("pipeline", "the api", "pip install", "copying"):
+            self.assertIsNone(p.search(innocent), innocent)
