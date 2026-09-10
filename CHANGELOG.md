@@ -2,6 +2,10 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.6 — 10 September 2026
+
+- The installer checked venv support on the wrong interpreter
+
 ## v0.1.5 — 10 September 2026
 
 - Preflight tells WSL2 the truth about systemd
