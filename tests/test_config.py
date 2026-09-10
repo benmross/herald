@@ -181,14 +181,36 @@ class PersonalDataCheck(unittest.TestCase):
         cls.check = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.check)
 
+    # The fixtures below are assembled rather than written out, and that is not
+    # style. A home path spelt out in full here is, on a machine whose login is
+    # the one being tested, exactly the string the check exists to catch -- so
+    # writing the test the obvious way makes the test itself fail the check.
+    # That is how the second CI run went red, and the comment explaining it
+    # went red the same way. Do not "simplify" these back.
+    LOGIN = "runner"
+
     def test_a_home_path_is_a_leak(self):
-        p = self.check.account_pattern("runner")
-        self.assertTrue(p.search("/home/runner/.herald/extensions/elms"))
-        self.assertTrue(p.search("~runner/notes"))
-        self.assertTrue(p.search("scp runner@box:/tmp/x ."))
+        p = self.check.account_pattern(self.LOGIN)
+        self.assertTrue(p.search(f"/home/{self.LOGIN}/.herald/extensions/elms"))
+        self.assertTrue(p.search(f"/Users/{self.LOGIN}/.herald".lower()))
+        self.assertTrue(p.search(f"~{self.LOGIN}/notes"))
+        self.assertTrue(p.search(f"scp {self.LOGIN}@box:/tmp/x ."))
+
+    def test_a_system_path_that_happens_to_share_the_login_is_not(self):
+        """A login called `dev` must not flag /dev/null, and one called `bin`
+        must not flag every shebang in the tree. Only home directories and
+        addresses count; anything else is covered by the literal home-path
+        needles the caller builds separately."""
+        for login, innocent in (("dev", "cmd >/dev/null 2>&1"),
+                                ("dev", "read -r reply </dev/tty"),
+                                ("dev", "Summer2027-Internships/dev/.github/x.json"),
+                                ("bin", "#!/usr/bin/env python"),
+                                ("tmp", "written to /tmp/herald-probe")):
+            p = self.check.account_pattern(login)
+            self.assertIsNone(p.search(innocent), f"{login}: {innocent}")
 
     def test_the_same_word_in_prose_is_not(self):
-        p = self.check.account_pattern("runner")
+        p = self.check.account_pattern(self.LOGIN)
         for innocent in ("${{ runner.temp }}/herald-home",
                          "let the test runner's PYTHONPATH supply the program",
                          "Use the bundled runner. It points Python at",
@@ -198,7 +220,8 @@ class PersonalDataCheck(unittest.TestCase):
     def test_a_two_letter_login_still_only_matches_paths(self):
         """`pi` is the default login on a Raspberry Pi, and appears inside
         every other word in the language."""
-        p = self.check.account_pattern("pi")
-        self.assertTrue(p.search("/home/pi/.herald"))
+        short = "pi"
+        p = self.check.account_pattern(short)
+        self.assertTrue(p.search(f"/home/{short}/.herald"))
         for innocent in ("pipeline", "the api", "pip install", "copying"):
             self.assertIsNone(p.search(innocent), innocent)

@@ -54,13 +54,20 @@ def account_pattern(login: str) -> re.Pattern:
     """Where a login name is evidence of a leak rather than an ordinary word.
 
     A login is very often a real word -- `runner` on a CI machine, `pi` on a
-    Raspberry Pi, `admin`, `dev` -- so matching it as prose is useless. What
-    actually leaks is a path or an address: /home/<login>, ~login, login@host.
-    Anchoring on those is the difference between catching a tracked symlink
-    into somebody's home and flagging the phrase "the test runner".
+    Raspberry Pi, `admin`, `dev` -- so matching it as prose is useless. Matching
+    it after any slash is not much better: a login called `dev` then flags
+    /dev/null, /dev/tty and a GitHub branch called dev.
+
+    What actually leaks is a **home** directory or an address: /home/<login>,
+    /Users/<login>, ~login, login@host. Anchoring on those is the difference
+    between catching a tracked symlink into somebody's home and flagging half
+    the shell scripts in the tree.
+
+    Anything outside a home directory is covered by the home-path needles the
+    caller builds separately, which match the literal path this install uses.
     """
     account = re.escape(login.lower())
-    return re.compile(rf"[/~\\]{account}\b|\b{account}@")
+    return re.compile(rf"(?:/home/|/users/|~){account}\b|\b{account}@")
 
 
 def python_files() -> list[pathlib.Path]:
