@@ -63,10 +63,28 @@ EOF
 }
 
 pick_python() {
-  for candidate in python3.14 python3.13 python3.12 python3.11 python3; do
+  # The distro's own python3 first: it is the one whose -venv package is in
+  # the default repositories. A newer interpreter from a third-party
+  # repository is used only when the system one is too old.
+  for candidate in python3 python3.14 python3.13 python3.12 python3.11; do
     if python_ok "$candidate"; then echo "$candidate"; return 0; fi
   done
   return 1
+}
+
+venv_ok() {
+  # Can *this* interpreter make a virtualenv with pip in it? On Debian and
+  # Ubuntu the venv module imports fine but ensurepip is missing until
+  # pythonX.Y-venv is installed, and `python -m venv` then fails halfway,
+  # leaving a venv/ with a python and no pip. Checked on the chosen
+  # interpreter, because the first install that hit this had checked python3
+  # and then used python3.14.
+  "$1" -c "import venv, ensurepip" >/dev/null 2>&1
+}
+
+venv_package() {
+  # python3.14-venv, python3.12-venv: the apt package name for this interpreter.
+  "$1" -c 'import sys; print(f"python{sys.version_info[0]}.{sys.version_info[1]}-venv")'
 }
 
 install_macos_deps() {
@@ -91,13 +109,14 @@ install_macos_deps() {
 }
 
 install_linux_deps() {
-  local wanted=()
+  local wanted=() py
   have git || wanted+=(git)
   have tmux || wanted+=(tmux)
-  pick_python >/dev/null || wanted+=(python3 python3-venv)
-  # A venv needs python3-venv even when python3 is already present.
-  if have python3 && ! python3 -c "import venv" >/dev/null 2>&1; then
-    wanted+=(python3-venv)
+  if py="$(pick_python)"; then
+    # The venv package for the interpreter that will actually be used.
+    venv_ok "$py" || wanted+=("$(venv_package "$py")")
+  else
+    wanted+=(python3 python3-venv)
   fi
   [ ${#wanted[@]} -eq 0 ] && return 0
 
@@ -139,6 +158,7 @@ main() {
 
   local py latest; py="$(pick_python)" || die "No Python 3.$MIN_PY_MINOR or newer found."
   dim "Using $py ($("$py" --version 2>&1))"
+  venv_ok "$py" || die "$py cannot create a virtualenv. Install $(venv_package "$py") and run this again."
 
   # A checkout: either we are in one, or we make one.
   if [ -f "$(dirname "$0")/bin/herald" ] 2>/dev/null; then
@@ -169,9 +189,13 @@ main() {
 
   cd "$DEST"
 
-  if [ ! -x venv/bin/python ]; then
+  # A venv without pip is the leftover of a venv module that had no ensurepip
+  # -- what the check above now catches first. Rebuilt rather than trusted,
+  # because trusting it is how the second run failed on "./venv/bin/pip: No
+  # such file".
+  if [ ! -x venv/bin/python ] || [ ! -x venv/bin/pip ]; then
     bold "Creating the virtualenv"
-    "$py" -m venv venv
+    "$py" -m venv --clear venv
   fi
   bold "Installing Python dependencies"
   ./venv/bin/pip install --quiet --upgrade pip
