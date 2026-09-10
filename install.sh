@@ -137,7 +137,7 @@ main() {
 
   if [ "$os" = macos ]; then install_macos_deps; else install_linux_deps; fi
 
-  local py; py="$(pick_python)" || die "No Python 3.$MIN_PY_MINOR or newer found."
+  local py latest; py="$(pick_python)" || die "No Python 3.$MIN_PY_MINOR or newer found."
   dim "Using $py ($("$py" --version 2>&1))"
 
   # A checkout: either we are in one, or we make one.
@@ -146,11 +146,25 @@ main() {
     dim "Using this checkout: $DEST"
   elif [ -d "$DEST/.git" ]; then
     bold "Updating $DEST"
-    git -C "$DEST" pull --ff-only || warn "could not fast-forward; leaving it alone"
+    # Only ever forwards. `herald update` is the real path once installed;
+    # this is for a checkout whose setup never finished.
+    git -C "$DEST" fetch --tags --quiet origin || warn "could not reach $REPO; leaving it alone"
+    latest="$(git -C "$DEST" tag --list 'v[0-9]*' | sort -V | tail -1)"
+    if [ -n "$latest" ] && git -C "$DEST" merge --ff-only --quiet "$latest" 2>/dev/null; then
+      dim "Fast-forwarded to $latest"
+    fi
   else
     have git || die "git is required."
     bold "Cloning into $DEST"
-    git clone --depth 1 "$REPO" "$DEST"
+    git clone --quiet "$REPO" "$DEST"
+    # Start at the newest release, not at whatever main is this minute. main
+    # is where the maintainer works; a tag is where a change is meant for
+    # other people, and `herald update` moves between tags from here.
+    latest="$(git -C "$DEST" tag --list 'v[0-9]*' | sort -V | tail -1)"
+    if [ -n "$latest" ]; then
+      git -C "$DEST" checkout --quiet -B main "$latest"
+      dim "At release $latest"
+    fi
   fi
 
   cd "$DEST"

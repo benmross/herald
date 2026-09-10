@@ -37,7 +37,42 @@ def _guess_timezone() -> str:
             return out.split("zoneinfo/", 1)[1]
     except OSError:
         pass
+    # /etc/localtime is a copy rather than a link on plenty of machines
+    # (this one included). Debian keeps the name in /etc/timezone; systemd
+    # answers directly; macOS keeps it in the link above.
+    try:
+        name = pathlib.Path("/etc/timezone").read_text().strip()
+        if name and "/" in name:
+            return name
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["timedatectl", "show", "-p", "Timezone", "--value"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        if out and "/" in out:
+            return out
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     return "UTC"
+
+
+def _own(key: str):
+    """A value the person set themselves, ignoring config/defaults.json.
+
+    The shipped default timezone is UTC, and `config.get("timezone")` returns
+    it as if it had been chosen -- so the guess from the machine's clock never
+    ran and every rehearsal user landed in UTC. Only their own file counts.
+    """
+    import json  # noqa: PLC0415
+    try:
+        node = json.loads(config.CONFIG_PATH.read_text())
+    except (OSError, ValueError):
+        return None
+    for part in key.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
 
 
 def status(state: State) -> tuple[str, str]:
@@ -67,7 +102,7 @@ def prompt(state: State) -> Prompt:
                        "notes, and in the brief it reads each morning. Anything "
                        "it writes *to* you is second person regardless."),
             Field(key="timezone", label="Timezone", required=True,
-                  default=config.get("timezone") or _guess_timezone(),
+                  default=_own("timezone") or _guess_timezone(),
                   help="An IANA name like Europe/London or America/New_York. "
                        "Every time Herald ever shows you is in this."),
             Field(key="email", label="Your email address",
