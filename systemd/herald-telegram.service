@@ -1,0 +1,32 @@
+[Unit]
+Description=Herald — Telegram bridge (one session per conversation, not one forever)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH={{GOOGLE}}
+# Without this, Python buffers stdout when it is not a TTY and every log line
+# this service prints sits in the buffer indefinitely -- the journal showed the
+# service starting and nothing else while it was happily answering messages.
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-telegram
+Restart=always
+RestartSec=15
+
+MemoryHigh=1400M
+MemoryMax=2400M
+OOMScoreAdjust=400
+NoNewPrivileges=true
+
+# 8 Sep 2026: a connection leak ate the default 1024 in seven hours.
+# The leak is gone, but headroom gives herald-watchdog several 5-minute
+# ticks to catch a future one at 85% instead of finding the corpse.
+LimitNOFILE=4096
+
+[Install]
+WantedBy=default.target

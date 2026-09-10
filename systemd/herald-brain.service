@@ -1,0 +1,24 @@
+[Unit]
+Description=Herald — persistent conversational brain (Remote Control in tmux)
+Documentation=https://code.claude.com/docs/en/remote-control
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH={{GOOGLE}}
+ExecStart={{ROOT}}/bin/herald-brain start
+ExecStop={{ROOT}}/bin/herald-brain stop
+TimeoutStartSec=180
+
+# Unlike the cycles, this one should NOT be an attractive OOM victim -- killing
+# it drops a live conversation. The cycles are the sacrificial units.
+OOMScoreAdjust=-100
+MemoryHigh=1800M
+
+[Install]
+WantedBy=default.target

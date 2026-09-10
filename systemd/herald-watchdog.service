@@ -1,0 +1,12 @@
+[Unit]
+Description=Herald — check the daemons are still doing their job, not just running
+After=herald-brain.service herald-telegram.service herald-health-webhook.service
+
+[Service]
+Type=oneshot
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-watchdog
+TimeoutStartSec=180

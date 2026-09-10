@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Supervise the persistent conversational brain.
+#
+# `claude remote-control` wants a PTY and is meant to sit in a terminal, so it
+# lives in a tmux session rather than being spawned bare by systemd. That also
+# means the real terminal is attachable, from this machine or over SSH:
+#
+#     herald attach
+#
+# systemd owns liveness; tmux owns the terminal. The watchdog timer calls
+# `ensure` every few minutes so a crash heals without waiting for a reboot.
+set -uo pipefail
+
+HERALD_ROOT="${HERALD_ROOT:-$HOME/herald}"
+SESSION="${HERALD_TMUX_SESSION:-herald}"
+NAME="${HERALD_RC_NAME:-herald}"
+LOG="$HERALD_ROOT/logs/brain.log"
+
+# Server mode: sessions are created on demand from claude.ai/code and the phone,
+# each with its own context, all sharing this directory and therefore the ledger.
+#
+# That is deliberate, and it is the point was pushed back on. One agent is not
+# one session. `identity/`, `state/` and `facts.db` are Herald's memory; a
+# session is scratch paper. A single long-lived conversation would fill its context,
+# compact, and then pay for a growing accumulated history on every message --
+# while the actual memory sat in files it could re-read for free. A fresh
+# session that reads the ledger is the same Herald and starts cheap.
+#
+# Telegram runs as its own service (herald-telegram) rather than through
+# --channels, which only attaches to a single interactive session and would have
+# reintroduced exactly that problem for the surface the user uses most.
+
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+# An API key here would move the brain off the user's subscription onto metered
+# billing, silently and successfully. See lib/herald/config.py:agent_env.
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_PROFILE
+
+mkdir -p "$HERALD_ROOT/logs"
+
+alive() { tmux has-session -t "$SESSION" 2>/dev/null; }
+
+running_claude() {
+  pgrep -u "$(id -u)" -f 'claude remote-control' >/dev/null 2>&1
+}
+
+start() {
+  if alive; then echo "already running (tmux: $SESSION)"; return 0; fi
+  # No pipe on the command. Piping stdout into tee makes it a non-TTY, and
+  # Claude Code reasonably concludes it is being scripted and switches to
+  # --print mode -- which then fails for want of a prompt. tmux pipe-pane logs
+  # the same output without taking the terminal away.
+  tmux new-session -d -s "$SESSION" -x 200 -y 50 -c "$HERALD_ROOT" \
+    "exec claude remote-control --name '$NAME' --spawn same-dir"
+  tmux pipe-pane -o -t "$SESSION" "cat >> '$LOG'" 2>/dev/null || true
+  sleep 12
+  if alive; then echo "started (tmux: $SESSION)"; else echo "failed to start" >&2; return 1; fi
+}
+
+stop() {
+  if alive; then tmux kill-session -t "$SESSION" && echo "stopped"; else echo "not running"; fi
+}
+
+ensure() {
+  if alive && running_claude; then exit 0; fi
+  if alive; then
+    echo "$(date -Is) tmux session alive but claude is gone; restarting" >> "$LOG"
+    tmux kill-session -t "$SESSION" 2>/dev/null
+  else
+    echo "$(date -Is) brain not running; starting" >> "$LOG"
+  fi
+  start
+}
+
+status() {
+  if alive; then
+    echo "tmux session '$SESSION': up"
+    running_claude && echo "claude:            running" || echo "claude:            NOT running"
+    echo
+    tmux capture-pane -p -t "$SESSION" 2>/dev/null | sed -e 's/\x1b\[[0-9;]*m//g' |
+      grep -v '^[[:space:]]*$' | tail -8
+  else
+    echo "tmux session '$SESSION': down"
+    return 1
+  fi
+}
+
+case "${1:-status}" in
+  start)  start ;;
+  stop)   stop ;;
+  ensure) ensure ;;
+  status) status ;;
+  attach) exec tmux attach -t "$SESSION" ;;
+  url)    tmux capture-pane -p -t "$SESSION" 2>/dev/null |
+            sed -e 's/\x1b\[[0-9;]*m//g' | grep -o 'https://claude.ai/code[^ ]*' | tail -1 ;;
+  *) echo "usage: herald-brain {start|stop|ensure|status|attach|url}" >&2; exit 2 ;;
+esac

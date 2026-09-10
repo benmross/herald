@@ -1,0 +1,22 @@
+{
+  "name": "imessage",
+  "description": "Texts, from the Messages database on this Mac: who is waiting on a reply, who has gone quiet, and what was actually said.",
+  "version": "0.1.0",
+  "bundled": true,
+  "enabled": false,
+  "platform": "darwin",
+  "provides_capabilities": [
+    {
+      "key": "imessage",
+      "title": "iMessage",
+      "summary": "The conversations you are actually having. Herald reads them; it cannot send unless you turn sending on.",
+      "files": ["~/Library/Messages/chat.db"],
+      "setup_hint": "macOS only, and the process running Herald needs Full Disk Access: System Settings -> Privacy & Security -> Full Disk Access -> add your Terminal."
+    }
+  ],
+  "settings": {
+    "extensions.imessage.send": "off | ask | confirm -- see bin/imessage-send. Default off.",
+    "extensions.imessage.days": "how far back to read messages, default 30",
+    "extensions.imessage.quiet_after_days": "when a conversation counts as gone quiet, default 14"
+  }
+}

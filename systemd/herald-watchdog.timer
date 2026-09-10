@@ -1,0 +1,11 @@
+[Unit]
+Description=Herald — check every 5 minutes that the daemons still work
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=herald-watchdog.service
+
+[Install]
+WantedBy=timers.target

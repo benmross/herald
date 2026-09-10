@@ -1,0 +1,24 @@
+[Unit]
+Description=Herald — %i cycle (snapshot, one agent session, apply)
+Documentation=file:{{ROOT}}/README.md
+After=network-online.target herald-collect.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH={{GOOGLE}}
+ExecStart={{ROOT}}/bin/herald cycle %i
+TimeoutStartSec=1800
+MemoryHigh=1400M
+MemoryMax=2400M
+OOMScoreAdjust=800
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

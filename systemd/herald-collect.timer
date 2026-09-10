@@ -1,0 +1,11 @@
+[Unit]
+Description=Herald — collect every 30 minutes
+
+[Timer]
+OnCalendar=*:00/30
+Persistent=true
+RandomizedDelaySec=180
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

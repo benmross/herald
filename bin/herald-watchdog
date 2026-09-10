@@ -1,0 +1,287 @@
+#!/usr/bin/env python3
+"""Notice that a daemon has stopped working, not just that it has stopped.
+
+This exists because of 8 Sep 2026. herald-telegram leaked one SQLite
+connection per 50s poll (see the comment on db.session), exhausted its 1024-fd
+limit after seven hours, and went completely deaf on Telegram at 08:23 -- while
+`systemctl status` showed it green, `active (running)`, the whole time. The old
+watchdog only ran `herald-brain ensure`, so nothing noticed for two hours. The user
+noticed, which is the wrong way to find out.
+
+So the rule here: never ask "is the process alive", ask "is it still doing its
+job". Three kinds of probe, in rising order of how much they actually prove:
+
+  liveness   the unit is loaded and not failed          (systemd already knows)
+  pressure   fd headroom against the soft limit         (catches the *next*
+                                                         leak before EMFILE,
+                                                         not two hours after)
+  heartbeat  a timestamp the daemon itself moves        (the only probe that
+                                                         would have caught the
+                                                         Telegram outage)
+
+A heartbeat is the real test, so anything long-lived should have one. The
+Telegram bridge already did, for free: `_checkpoint()` writes
+collector_state.last_run on every quiet poll, so that row stops moving the
+instant the poll loop stops working, whatever systemd believes. The health
+webhook is request-driven and has no natural heartbeat, so it gets a socket
+connect instead -- weaker, but it does prove the listener is still accepting.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "lib"))
+
+from herald import activity, config, db, notify  # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+LOG = ROOT / "logs" / "watchdog.log"
+STATE = ROOT / "logs" / "watchdog-state.json"
+
+# Restart at 85% of the fd limit. The leak that caused this took seven hours to
+# climb; 85% leaves well over an hour of margin at that rate, and a leak fast
+# enough to cross 85% inside one 5-minute tick would have taken the service
+# down before any threshold could help.
+FD_WARN, FD_RESTART = 0.60, 0.85
+
+HEARTBEAT_STALE = 360    # 6 min: the bridge checkpoints every 50s poll
+HEARTBEAT_HARD = 900     # 15 min: wedged badly enough to override a live turn
+
+# A watchdog that can flap is worse than no watchdog -- it turns one broken
+# service into a restart loop that also loses whatever was mid-flight.
+MIN_RESTART_GAP = 900    # 15 min between restarts of the same unit
+MAX_RESTARTS_HOUR = 3    # then stop restarting and just shout
+
+
+def log(msg: str) -> None:
+    line = f"{dt.datetime.now(config.tz()).isoformat(timespec='seconds')} {msg}"
+    print(line, flush=True)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    with LOG.open("a") as fh:
+        fh.write(line + "\n")
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(state, indent=2))
+
+
+def unit_prop(unit: str, prop: str) -> str:
+    out = subprocess.run(["systemctl", "--user", "show", "-p", prop, "--value", unit],
+                         capture_output=True, text=True)
+    return out.stdout.strip()
+
+
+def fd_report(pid: int) -> tuple[int, int, str]:
+    """Open fds, the soft limit, and whatever dominates the table.
+
+    The dominant target is the whole diagnosis when this fires. On 8 Sep it
+    would have read `ledger/facts.db x510`, which names the bug outright
+    instead of leaving 'Too many open files' to be traced by hand.
+    """
+    fd_dir = pathlib.Path(f"/proc/{pid}/fd")
+    try:
+        fds = list(fd_dir.iterdir())
+    except OSError:
+        return 0, 0, "unreadable"
+
+    soft = 0
+    try:
+        for line in pathlib.Path(f"/proc/{pid}/limits").read_text().splitlines():
+            if line.startswith("Max open files"):
+                soft = int(line.split()[3])
+                break
+    except (OSError, ValueError, IndexError):
+        pass
+
+    counts: dict[str, int] = {}
+    for fd in fds:
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        counts[target] = counts.get(target, 0) + 1
+    top = max(counts.items(), key=lambda kv: kv[1], default=("", 0))
+    return len(fds), soft, f"{top[0]} x{top[1]}" if top[1] > 1 else "no single target"
+
+
+def _parse_ts(raw: str) -> dt.datetime | None:
+    """collector_state carries two shapes: tz-aware local ISO from db.now(),
+    and naive UTC from SQLite's datetime('now'). Guessing wrong on the second
+    would read as four hours stale and restart a perfectly healthy bridge."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    try:
+        stamp = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return stamp.replace(tzinfo=dt.timezone.utc) if stamp.tzinfo is None else stamp
+
+
+def heartbeat_age(collector: str) -> float | None:
+    """Seconds since the daemon last moved its own timestamp."""
+    try:
+        rows = db.query("SELECT last_run FROM collector_state WHERE collector = ?",
+                        (collector,))
+    except Exception as e:  # noqa: BLE001
+        log(f"heartbeat {collector}: cannot read ledger: {e}")
+        return None
+    if not rows:
+        return None
+    stamp = _parse_ts(rows[0]["last_run"])
+    if stamp is None:
+        return None
+    return (dt.datetime.now(dt.timezone.utc) - stamp).total_seconds()
+
+
+def port_open(host: str, port: int, timeout: float = 5.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def restart(unit: str, reason: str, state: dict) -> None:
+    """Restart, unless doing so would flap or interrupt a live turn."""
+    now = time.time()
+    hist = [t for t in state.get(unit, {}).get("restarts", []) if now - t < 3600]
+
+    if hist and now - hist[-1] < MIN_RESTART_GAP:
+        log(f"{unit}: WOULD RESTART ({reason}) but last restart was "
+            f"{int(now - hist[-1])}s ago; holding")
+        return
+
+    if len(hist) >= MAX_RESTARTS_HOUR:
+        log(f"{unit}: {len(hist)} restarts in the last hour and still broken "
+            f"({reason}); not restarting again -- this needs a person")
+        notify.tell("Herald watchdog gave up",
+                    f"{unit} has been restarted {len(hist)} times in an hour and is "
+                    f"still failing: {reason}. Restarts stopped so the loop doesn't "
+                    f"mask it. Check `journalctl --user -u {unit}`.",
+                    priority="high")
+        state.setdefault(unit, {})["restarts"] = hist
+        return
+
+    log(f"{unit}: RESTARTING -- {reason}")
+    result = subprocess.run(["systemctl", "--user", "restart", unit],
+                            capture_output=True, text=True)
+    ok = result.returncode == 0
+    hist.append(now)
+    state.setdefault(unit, {})["restarts"] = hist
+
+    if ok:
+        log(f"{unit}: restarted")
+        notify.tell("Herald watchdog restarted a service",
+                    f"{unit} was not doing its job: {reason}. Restarted it. "
+                    f"It had been broken silently -- worth a look at why.")
+    else:
+        log(f"{unit}: RESTART FAILED: {result.stderr.strip()}")
+        notify.tell("Herald watchdog could not restart a service",
+                    f"{unit} is broken ({reason}) and `systemctl restart` failed: "
+                    f"{result.stderr.strip()}", priority="high")
+
+
+def check_daemon(unit: str, state: dict, *, heartbeat: str | None = None,
+                 tcp: tuple[str, int] | None = None) -> None:
+    load_st = unit_prop(unit, "LoadState")
+    if load_st != "loaded":
+        log(f"{unit}: not loaded ({load_st}); skipping")
+        return
+
+    active_st = unit_prop(unit, "ActiveState")
+    if active_st == "failed":
+        restart(unit, "unit in failed state", state)
+        return
+    if active_st != "active":
+        # Restart=always is already handling this; saying so beats racing it.
+        log(f"{unit}: {active_st} (systemd is handling it)")
+        return
+
+    # --- pressure -----------------------------------------------------------
+    try:
+        pid = int(unit_prop(unit, "MainPID") or 0)
+    except ValueError:
+        pid = 0
+    if pid:
+        used, soft, top = fd_report(pid)
+        if soft:
+            ratio = used / soft
+            if ratio >= FD_RESTART:
+                restart(unit, f"fd exhaustion: {used}/{soft} open ({ratio:.0%}), "
+                              f"mostly {top}", state)
+                return
+            if ratio >= FD_WARN:
+                log(f"{unit}: WARN fds {used}/{soft} ({ratio:.0%}), mostly {top}")
+                notify.tell("Herald: a service is leaking file descriptors",
+                            f"{unit} holds {used} of {soft} fds ({ratio:.0%}), "
+                            f"mostly {top}. Not restarting yet -- it still works -- "
+                            f"but something is leaking.")
+            else:
+                log(f"{unit}: ok (fds {used}/{soft})")
+
+    # --- heartbeat ----------------------------------------------------------
+    if heartbeat:
+        age = heartbeat_age(heartbeat)
+        if age is None:
+            log(f"{unit}: no heartbeat row for '{heartbeat}' yet")
+        elif age > HEARTBEAT_STALE:
+            live = activity.active()
+            if live and age < HEARTBEAT_HARD:
+                # A turn genuinely in flight is the one case where waiting beats
+                # restarting: killing it loses a reply the user is waiting on.
+                log(f"{unit}: heartbeat {int(age)}s stale but {len(live)} turn(s) "
+                    f"in flight; deferring")
+            else:
+                restart(unit, f"heartbeat stale: last poll {int(age)}s ago "
+                              f"(expected under {HEARTBEAT_STALE}s)", state)
+                return
+        else:
+            log(f"{unit}: ok (heartbeat {int(age)}s)")
+
+    # --- listener -----------------------------------------------------------
+    if tcp and not port_open(*tcp):
+        restart(unit, f"not accepting connections on {tcp[0]}:{tcp[1]}", state)
+        return
+
+
+def main() -> int:
+    state = load_state()
+
+    # The brain has its own supervisor and its own idea of healthy (a tmux
+    # session with a live `claude remote-control` in it), so delegate rather
+    # than reimplement.
+    brain = subprocess.run([str(ROOT / "bin" / "herald-brain"), "ensure"],
+                           capture_output=True, text=True)
+    out = (brain.stdout or "").strip()
+    if brain.returncode != 0:
+        log(f"brain: ensure failed: {(brain.stderr or '').strip()}")
+    elif out and "already running" not in out:
+        log(f"brain: {out}")
+
+    check_daemon("herald-telegram.service", state, heartbeat="telegram")
+    check_daemon("herald-health-webhook.service", state,
+                 tcp=(config.secret("health.webhook_bind", "127.0.0.1"), 8790))
+
+    save_state(state)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

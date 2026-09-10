@@ -1,0 +1,41 @@
+{
+  "_comment": "Defaults every Herald install shares. The user's own settings live in $HERALD_HOME/config.json and are merged over this file, so a default improved in a Herald update reaches installs that never touched it. Nothing personal belongs here.",
+  "name": "herald",
+  "agent": {
+    "name": "Herald",
+    "_name_comment": "What this install's agent calls itself. Set at setup; the personal constitution in ledger/identity/constitution.md is where it is stated to the agent."
+  },
+  "timezone": "UTC",
+  "engines": {
+    "primary": {
+      "cmd": "claude",
+      "model": "sonnet",
+      "escalate_model": "opus",
+      "permission_mode": "auto"
+    },
+    "_timeout_comment": "think_timeout_seconds is an absolute ceiling for a runaway loop, not a budget for how long real work may take. The deadline that normally fires is think_idle_timeout_seconds: how long the engine may emit nothing at all before it counts as hung. Generous because one long tool call is silent while it runs.",
+    "think_timeout_seconds": 7200,
+    "think_idle_timeout_seconds": 900
+  },
+  "notify": {
+    "ntfy_url": "https://ntfy.sh",
+    "default_tags": "scroll"
+  },
+  "calendars": {
+    "_comment": "Which calendar each kind of event is written to, and -- more importantly -- what each existing calendar is evidence OF. Google's accessRole says 'owner' for a calendar the user's own scraper writes into, which is true and completely misleading.",
+    "write": {
+      "default": "primary"
+    },
+    "roles": {},
+    "role_meanings": {
+      "mine": "The user's own commitments. Evidence about them.",
+      "feed": "Public events they could attend. Machine-populated, deliberately over-inclusive. NEVER evidence that they are enrolled in, a member of, or committed to anything.",
+      "reference": "Holidays, institutional calendars. Context, not commitments.",
+      "other-person": "Someone else's calendar. Their commitments, not the user's."
+    }
+  },
+  "capabilities": {},
+  "google": {
+    "credentials_dir": "~/.config/google-agent"
+  }
+}

@@ -1,0 +1,3 @@
+{
+  "_comment": "Project-level Claude Code settings for sessions Herald runs. `herald ext sync` writes .claude/settings.json from this file plus every enabled extension's hooks/hooks.json, so edit this rather than the generated file."
+}

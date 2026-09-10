@@ -1,0 +1,29 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv venv
+          ./venv/bin/pip install --quiet -r requirements.txt
+      - name: Invariants
+        # A clean checkout has no $HERALD_HOME, which is the point: this runs
+        # the same check a fresh install runs, against an empty one.
+        env:
+          HERALD_HOME: ${{ runner.temp }}/herald-home
+        run: ./venv/bin/python tools/check.py
+      - name: Tests
+        env:
+          HERALD_HOME: ${{ runner.temp }}/herald-home
+        run: ./venv/bin/python -m unittest discover -s tests

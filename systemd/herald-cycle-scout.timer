@@ -1,0 +1,16 @@
+[Unit]
+Description=Herald — scout for opportunities
+
+[Timer]
+# Twice daily. Recruiting posts land during business hours and the point of this
+# cycle is not to be the last to know; 08:15 catches overnight listserv digests
+# after the dawn cycle has run, 16:45 catches the working day.
+OnCalendar=*-*-* 08:15:00
+OnCalendar=*-*-* 16:45:00
+Persistent=true
+RandomizedDelaySec=600
+AccuracySec=2min
+Unit=herald-cycle@scout.service
+
+[Install]
+WantedBy=timers.target

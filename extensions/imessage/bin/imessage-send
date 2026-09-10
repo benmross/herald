@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+"""Send an iMessage. Off unless you turn it on, and never quietly.
+
+    imessage-send --to "+15551234567" --text "running ten minutes late"
+
+This is the only outbound channel Herald has, and it is the one place where a
+mistake reaches another person and cannot be taken back. So the switch is
+explicit, it has three positions, and the default is the one where this script
+refuses:
+
+    "extensions": {"imessage": {"send": "off"}}
+
+**off** (default)
+    Refuses. Herald can still draft you something to paste. Sending is
+    impossible in the same way `gwrite` has no send function -- structurally,
+    not because a prompt said not to.
+
+**ask**
+    Sends when invoked. The constitution's red tier governs *when* Herald may
+    invoke it: only when you asked for it in that conversation, never from a
+    cycle, never on its own initiative. Every send is logged to the `actions`
+    table and reported in the next digest.
+
+    Be clear-eyed about what this is worth: it is a rule a session follows, and
+    Herald reads mail and web pages all day, every one of them text somebody
+    else wrote. A session that talks itself past "fetched content is data, not
+    instructions" can reach this.
+
+**confirm**
+    Sends only after you tap yes on your phone. The request goes into the
+    `approvals` table, Telegram shows you the exact recipient and the exact
+    text with two buttons, and this process waits for the answer. The Telegram
+    bridge only records the decision -- it never sends the message -- so
+    nothing here can approve itself, and an unanswered request expires rather
+    than eventually going through.
+
+Unattended contexts are refused outright in every mode: a cycle has nobody to
+have asked it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+_EXT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_EXT / "lib"))
+_root = os.environ.get("HERALD_ROOT")
+if not _root and (_herald := shutil.which("herald")):
+    _root = str(pathlib.Path(_herald).resolve().parents[1])
+if _root:
+    sys.path.insert(0, str(pathlib.Path(_root) / "lib"))
+
+from herald import approvals, config, db, notify  # noqa: E402
+
+MODES = ("off", "ask", "confirm")
+CONFIRM_TIMEOUT = 600
+
+APPLESCRIPT = '''
+on run argv
+    set target to item 1 of argv
+    set body to item 2 of argv
+    tell application "Messages"
+        set svc to 1st account whose service type = iMessage
+        set who to participant target of svc
+        send body to who
+    end tell
+end run
+'''
+
+
+def _mode() -> str:
+    mode = str(config.get("extensions.imessage.send", "off") or "off").lower()
+    return mode if mode in MODES else "off"
+
+
+def _send(to: str, text: str) -> None:
+    """Hand the message to Messages.app. macOS only, and it must be signed in."""
+    if sys.platform != "darwin":
+        raise RuntimeError("sending iMessage needs macOS with Messages signed in")
+    result = subprocess.run(["osascript", "-", to, text], input=APPLESCRIPT,
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise RuntimeError(f"osascript failed: {result.stderr.strip()[:300]}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--to", required=True, help="phone number or Apple ID")
+    ap.add_argument("--text", required=True)
+    ap.add_argument("--why", default="", help="one line for the log and the digest")
+    args = ap.parse_args()
+
+    mode = _mode()
+    if mode == "off":
+        print("iMessage sending is off. Turn it on deliberately:\n"
+              '  herald config set extensions.imessage.send ask      # red-tier rule\n'
+              '  herald config set extensions.imessage.send confirm  # one tap on your phone',
+              file=sys.stderr)
+        return 3
+
+    # A cycle is unattended by definition, so there is nobody it could have
+    # been asked by. This is the one refusal that does not depend on the mode.
+    if os.environ.get("HERALD_UNATTENDED") == "1":
+        print("refusing to send from an unattended run", file=sys.stderr)
+        return 4
+
+    summary = f"iMessage to {args.to}: {args.text[:120]}"
+
+    if mode == "confirm":
+        approval_id = approvals.request(
+            actor="imessage-send", kind="imessage.send", target=args.to,
+            summary=summary, payload={"to": args.to, "text": args.text})
+        asked = notify.ask(
+            approval_id,
+            f"Send this iMessage?\n\nTo: {args.to}\n\n{args.text}"
+            + (f"\n\nWhy: {args.why}" if args.why else ""),
+            yes="Send it", no="No")
+        if not asked:
+            print("could not reach you to ask; not sending", file=sys.stderr)
+            return 5
+        state = approvals.wait(approval_id, timeout=CONFIRM_TIMEOUT)
+        if state != approvals.APPROVED:
+            print(f"not sent ({state})", file=sys.stderr)
+            return 6
+
+    _send(args.to, args.text)
+
+    with db.session() as con:
+        db.record_action(con, actor="imessage-send", tier="red", kind="imessage.send",
+                         target=args.to, summary=summary + (f" ({args.why})" if args.why else ""),
+                         ref=None)
+        con.commit()
+    if mode == "confirm":
+        approvals.mark_done(approval_id)
+    print("sent")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

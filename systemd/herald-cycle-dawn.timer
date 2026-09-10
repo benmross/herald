@@ -1,0 +1,12 @@
+[Unit]
+Description=Herald — dawn cycle (the morning digest)
+
+[Timer]
+OnCalendar=*-*-* 06:30:00
+Persistent=true
+RandomizedDelaySec=120
+AccuracySec=1min
+Unit=herald-cycle@dawn.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,841 @@
+#!/usr/bin/env python3
+"""Telegram bridge — Herald's walking surface, with a session lifecycle.
+
+Why this exists rather than the channel plugin.
+
+The plugin pushes messages into one long-lived interactive session, and
+`--channels` only attaches to that shape. That makes every text land in a
+conversation that grows forever, compacts when it fills, and pays for the whole
+accumulated history on each message -- while Herald's actual memory sits in the
+ledger, re-readable for free.
+
+One agent is not one session. `identity/`, `state/` and `facts.db` are the
+memory; a session is scratch paper. A fresh session that reads them is the same
+Herald, and it starts cheap. So this bridge owns the lifecycle explicitly:
+
+  - a conversation continues while it is live, so follow-ups keep their thread
+  - it rotates after a stretch of silence, because the next message is a new
+    subject and does not need the last one
+  - it rotates after enough turns that compaction would otherwise kick in
+
+Whatever mattered went into the ledger during the conversation. That is what
+makes throwing the session away safe, and it is the whole design.
+
+Two things follow from that.
+
+Topics. Telegram forum topics each carry a message_thread_id, so a topic maps
+exactly onto a session. Someone can have "coursework", "job hunt" and "quick
+questions" running at once, none of them polluting each other's context, all of
+them the same Herald reading the same ledger. Without a forum, everything lands
+in one thread and behaves as before.
+
+Documents. A syllabus, a contract, a schedule -- anything with dates in it that
+no feed publishes -- is the highest-value thing someone can hand over. The
+quiz that turned up in a digest arrived by luck, from a notification email. So
+anything the user sends is downloaded, archived, and handed to a session whose job is
+to file it properly and pull the dates out of it.
+"""
+
+from __future__ import annotations
+
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
+
+from herald import activity, approvals, config, db, think  # noqa: E402
+
+NAME = "telegram"
+POLL_TIMEOUT = 50          # seconds of long-polling per request
+TYPING_REFRESH = 4         # Telegram clears the typing indicator after ~5s
+STATUS_EVERY_SECONDS = 120  # while a turn runs, report where it is this often
+# A topic IS the conversation, for as long as the user wants it to be.
+#
+# This started at five hours of silence, which was the right policy when
+# everything shared one thread: a fresh subject did not need the last one, and
+# an unbounded conversation would fill its context and compact. Topics solved
+# that structurally -- a topic is already scoped to a subject -- so time-based
+# rotation now only destroys continuity the user asked for. Sending a message to a
+# topic from last week should pick up where it left off.
+#
+# What handles growth instead is Claude Code's own compaction, plus the rule
+# that anything durable belongs in the ledger rather than the transcript. The
+# turn ceiling is a safety valve against a pathological thread, not a policy.
+#
+# The cost of this is honest and worth stating: resuming a long-idle topic
+# re-sends its accumulated context uncached, so an old thread costs more per
+# message than a new one. `/new` in any topic starts that topic over.
+#
+# General is the one exception. It is where digests land and where quick
+# questions go -- never a place the user is building a persistent conversation --
+# so it keeps the old five-hour policy instead: a fresh subject there really
+# doesn't need the last one. A forum's General topic is the one with no
+# message_thread_id, same as a plain (non-forum) chat, so it is told apart by
+# chat type instead: a group/supergroup with no thread id is General, a
+# private chat with no thread id is just a DM and gets the long-lived policy.
+GENERAL_IDLE_ROTATE_HOURS = 5
+IDLE_ROTATE_DAYS = 90      # only to avoid resuming something Claude Code may have pruned
+MAX_TURNS = 250            # safety valve; compaction does the real work
+MAX_REPLY = 3900
+INBOX = "documents/inbox"
+MAX_DOWNLOAD = 45 * 1024 * 1024      # Telegram's own bot download cap is 20 MB
+
+# Per-topic model override. None means "no command has set one yet in this
+# topic" -- the chat default (DEFAULT_MODEL) applies. All three commands set
+# an explicit model, /sonnet included: config's engines.primary.model is a
+# separate knob (what cycles run on, kept cheap on purpose -- see
+# CLAUDE.md's "Spending their subscription well"), so /sonnet has to name the
+# model itself rather than deferring to a value that is free to drift out
+# from under it.
+DEFAULT_MODEL = "opus"
+MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
+
+PREAMBLE = """\
+This message arrived from the user over Telegram. The user is probably on their phone, and
+possibly walking, so answer like a person texting back: short, direct, no
+headers, no bullet lists unless the user asked for one. If the answer is genuinely
+long, lead with the answer and offer the detail.
+
+You have the full ledger and every skill. If you learn something durable about
+them, or do something the user will want a record of, write it to the ledger before you
+reply -- this conversation will be thrown away and the ledger will not.
+
+The same rules apply here as anywhere: read freely, write deliberately, and
+nothing that another person sees goes out without them asking for it in this
+conversation.
+
+The line below "---" gives when the user actually sent this (America/New_York) --
+use it. "Sent 11:58 PM" means everything is closed right now even if the user is
+asking in general terms; a question at 7am reads differently than the same
+one at midnight.
+"""
+
+
+EASTERN = ZoneInfo("America/New_York")
+
+
+def sent_at_line(msg: dict) -> str:
+    """Telegram stamps every message with a Unix send time; a session otherwise
+    has no way to tell 11:58pm-everything's-closed from 7am-just-opened, or a
+    slow reply written at 2am from one written on the walk to class."""
+    ts = msg.get("date")
+    if not ts:
+        return ""
+    when = datetime.fromtimestamp(ts, tz=EASTERN)
+    return f"Sent {when.strftime('%A, %B %-d, %Y, %-I:%M %p %Z')}.\n\n"
+
+
+def api(method: str, **params):
+    token = config.secret("telegram.bot_token")
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    req = urllib.request.Request(
+        url, data=json.dumps(params).encode(), method="POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=POLL_TIMEOUT + 15) as r:
+            return json.load(r)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        print(f"telegram api {method}: {e}", file=sys.stderr)
+        return None
+
+
+_ITALIC_MAP = {}
+for _i, _ch in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
+    _ITALIC_MAP[_ch] = chr(0x1D434 + _i)
+for _i, _ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
+    _ITALIC_MAP[_ch] = chr(0x1D44E + _i)
+_ITALIC_MAP["h"] = "ℎ"  # italic math h has no codepoint in the main block
+
+
+def italic(text: str) -> str:
+    """Unicode italic, not Markdown. Renders slanted in Telegram with zero
+    parsing involved -- nothing to misparse, so it can't be corrupted by a
+    literal `*` or `_` the way parse_mode="Markdown" could (see send()'s
+    docstring). This is exactly why it's used for the periodic status notice,
+    which embeds a live progress snippet that can contain anything a
+    tool call did -- a URL, a shell command, punctuation Markdown would trip
+    on. Letters only; digits and punctuation pass through unchanged since the
+    Unicode math-italic block doesn't define them."""
+    return "".join(_ITALIC_MAP.get(c, c) for c in text)
+
+
+class Working:
+    """Keep the chat showing "typing…" for as long as the turn takes.
+
+    A turn here runs anywhere from two seconds to three minutes: startup is a
+    couple of seconds, then it depends entirely on whether the question needs
+    the ledger, the web, or nothing. That variance is honest -- what was broken
+    is that the user could not tell a slow answer from a dead one. The user got a "…"
+    message and then silence.
+
+    Telegram's typing indicator is the right primitive: it expires after about
+    five seconds, so refreshing it is itself a liveness signal, and it vanishes
+    on its own if this process dies.
+    """
+
+    def __init__(self, chat_id: int, thread_id: int | None = None):
+        self.chat_id = chat_id
+        self.thread_id = thread_id
+        self.started = time.monotonic()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._progress_lock = threading.Lock()
+        self._progress = ""
+        self._steps = 0           # tool calls seen so far this turn
+        self._reported_steps = -1  # step count at the last status message
+        self._next_status = STATUS_EVERY_SECONDS
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=2)
+        return False
+
+    @property
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def on_progress(self, text: str) -> None:
+        """Pass straight to think.think() as on_progress= -- called from
+        whatever tool call is happening right now, read from stream-json
+        output that's already flowing, so this costs no extra time or tokens."""
+        with self._progress_lock:
+            self._progress = text
+            self._steps += 1
+
+    def _status(self) -> str:
+        """One line saying where the turn is right now. the user asked for this on
+        8 Sep 2026: a single "still on it" at 75s told them the turn was alive
+        once and then went silent again for however long it took, which on a
+        ten-minute self-edit is most of the wait. So this fires every
+        STATUS_EVERY_SECONDS instead, and says what changed -- elapsed time,
+        how many tool calls have happened, and the one running now. If the
+        count has not moved since the last status, it says so, because a
+        turn stuck on one long command looks identical to a dead one
+        otherwise."""
+        with self._progress_lock:
+            snippet, steps, prev = self._progress, self._steps, self._reported_steps
+            self._reported_steps = steps
+        minutes = int(self.elapsed // 60)
+        head = f"{minutes} min in"
+        if not snippet:
+            return f"{head}, still thinking -- no tool calls yet."
+        if steps == prev:
+            return f"{head}, still on the same step: {snippet}"
+        return f"{head}, {steps} step{'s' if steps != 1 else ''} so far, now: {snippet}"
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            extra = {"message_thread_id": self.thread_id} if self.thread_id else {}
+            api("sendChatAction", chat_id=self.chat_id, action="typing", **extra)
+            if self.elapsed >= self._next_status:
+                self._next_status += STATUS_EVERY_SECONDS
+                send(self.chat_id, italic(self._status()), self.thread_id)
+            self._stop.wait(TYPING_REFRESH)
+
+
+def send(chat_id: int, text: str, thread_id: int | None = None) -> None:
+    """Plain text, deliberately no parse_mode.
+
+    This used to try `parse_mode="Markdown"` first and fall back to plain text
+    only if Telegram rejected the message outright -- which handles an
+    *unbalanced* asterisk, but not a *balanced* one. Two literal asterisks
+    anywhere in the same message (two URLs carrying a literal asterisk,
+    each shaped `RecNumAndPort=119388*1`) parse as a valid bold span: Telegram
+    accepts the send and silently strips both `*` characters, corrupting both
+    URLs into wrong recipe numbers with no error at either end. That failure
+    is quiet, not loud, so a fallback-on-rejection never catches it. Plain
+    text never does this and costs nothing here -- these replies are already
+    written to read like texts, not documents.
+    """
+    extra = {"message_thread_id": thread_id} if thread_id else {}
+    for i in range(0, len(text), MAX_REPLY):
+        chunk = text[i:i + MAX_REPLY]
+        api("sendMessage", chat_id=chat_id, text=chunk,
+            link_preview_options={"is_disabled": True}, **extra)
+
+
+def download(file_id: str, suggested: str) -> pathlib.Path | None:
+    """Pull an attachment onto the box and keep it.
+
+    Archived under ledger/documents/inbox with the date in the name, because the user
+    does not delete things and a syllabus is worth having in its original form
+    even after a session has read it and filed what it said.
+    """
+    info = api("getFile", file_id=file_id)
+    if not (info and info.get("ok")):
+        return None
+    meta = info["result"]
+    if (meta.get("file_size") or 0) > MAX_DOWNLOAD:
+        return None
+
+    token = config.secret("telegram.bot_token")
+    url = f"https://api.telegram.org/file/bot{token}/{meta['file_path']}"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", suggested).strip("-") or "attachment"
+    dest = config.LEDGER / INBOX / f"{time.strftime('%Y-%m-%d')}-{safe}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with urllib.request.urlopen(url, timeout=180) as r, dest.open("wb") as fh:
+            fh.write(r.read())
+    except (urllib.error.URLError, OSError) as e:
+        print(f"download failed: {e}", file=sys.stderr)
+        return None
+    return dest
+
+
+_remember_lock = threading.Lock()
+
+
+def remember(field: str, value) -> None:
+    # Read-modify-write on one shared file -- only matters in the narrow
+    # window before user_id/chat_id are first learned, but two topics
+    # discovering them in the same instant is exactly a concurrency bug this
+    # rewrite exists to rule out, not add.
+    with _remember_lock:
+        path = config.SECRETS_PATH
+        data = json.loads(path.read_text())
+        data.setdefault("telegram", {})[field] = value
+        path.write_text(json.dumps(data, indent=2))
+        path.chmod(0o600)
+        config.reload()
+
+
+def load_state() -> dict:
+    with db.session() as con:
+        row = con.execute("SELECT cursor FROM collector_state WHERE collector = ?",
+                          (NAME,)).fetchone()
+    if row and row["cursor"]:
+        try:
+            return json.loads(row["cursor"])
+        except json.JSONDecodeError:
+            pass
+    return {"offset": 0, "threads": {}}
+
+
+def save_state(state: dict) -> None:
+    with db.session() as con:
+        con.execute("""
+            INSERT INTO collector_state (collector, last_run, last_ok, cursor)
+            VALUES (?, datetime('now'), datetime('now'), ?)
+            ON CONFLICT (collector) DO UPDATE SET
+                last_run = excluded.last_run, last_ok = excluded.last_ok,
+                cursor = excluded.cursor
+        """, (NAME, json.dumps(state)))
+        con.commit()
+
+
+def thread_state(state: dict, key: str) -> dict:
+    """Per-topic session bookkeeping.
+
+    Keyed on Telegram's message_thread_id where there is one, so each forum
+    topic keeps its own conversation, and on "main" otherwise.
+    """
+    state.setdefault("threads", {})
+    return state["threads"].setdefault(
+        key, {"session_id": None, "turns": 0, "last_ts": 0, "model": None})
+
+
+def should_rotate(ts: dict, is_general: bool = False) -> str | None:
+    """Why this message should start a new session, or None to continue."""
+    if not ts.get("session_id"):
+        return "no session yet"
+    idle_hours = (time.time() - ts.get("last_ts", 0)) / 3600
+    if is_general:
+        if idle_hours >= GENERAL_IDLE_ROTATE_HOURS:
+            return f"{idle_hours:.1f} hours since the last message (General)"
+    elif idle_hours / 24 >= IDLE_ROTATE_DAYS:
+        return f"{idle_hours / 24:.0f} days since the last message"
+    if ts.get("turns", 0) >= MAX_TURNS:
+        return f"{ts['turns']} turns"
+    return None
+
+
+# Voice notes are deliberately not transcribed here.
+#
+# The obvious build was Whisper on this box, or the OpenAI API for a few cents a
+# month. Both are worse than what the phone already carries: dictation on the iPhone
+# and Watch is on-device, instant, free, and better than a base model on a
+# small server that is already busy. Sending audio to a service
+# to do worse speech-to-text than the microphone in their hand would be building
+# infrastructure for its own sake.
+#
+# So the walking case is: hold the mic key on the keyboard, speak, send text.
+# From the Watch it is the same gesture and there is no keyboard to avoid.
+# Herald gets clean text, no audio ever leaves their phone, and there is nothing
+# on the server to maintain.
+VOICE_REPLY = (
+    "That came through as audio, which I can't read.\n\n"
+    "Use dictation instead - the mic key on the iOS keyboard, or just talk to "
+    "the Watch. It's on-device, it's better than anything I'd run here, and I "
+    "get it as text straight away."
+)
+
+
+DOCUMENT_PREAMBLE = """\
+The user has sent you a file. It is already downloaded and archived at the path
+below; the original stays there permanently, so your job is to read it and do
+whatever makes it useful, not to assume any particular kind of document.
+
+**Read it first and work out what it actually is.** Most of what the user sends is
+ordinary and has nothing to do with courses: a photo the user wants edited, a
+screenshot, a receipt, a menu, a reference for something the user's building.
+Handle it on its own terms -- answer the question it implies, or use your
+judgment about whether it belongs anywhere in the ledger at all. Plenty of
+things don't, and that's the normal case, not an exception worth flagging.
+
+If, and only if, it turns out to be a syllabus or other course document:
+
+- File it in `ledger/state/areas/<AREA>.md` -- one file per ongoing thing in
+  their life: a course, a client, a project, a treatment. Create the file if it
+  does not exist, merge into it if it does, and never silently drop what was
+  already there.
+- Pull out every date -- deadlines, exams, renewals, appointments -- and open a
+  `commitments` row for each one still ahead, kind 'deadline'. Check for
+  duplicates first. A feed may already carry some of these; the ones no feed
+  publishes are why this matters.
+- Record what isn't a date but will matter later: grading weights, attendance
+  and late policy, office hours, instructor name and contact, required
+  materials, how they prefer to be contacted.
+
+Then reply to them briefly -- what it was and what you did with it, if
+anything. Two or three sentences, like you're texting.
+"""
+
+
+def _topic_key(update: dict) -> str | None:
+    """Same rule `handle()` uses to key a topic, exposed standalone so the
+    dispatcher can pick a per-topic lock before `handle()` starts running."""
+    msg = update.get("message") or update.get("edited_message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not chat_id:
+        return None
+    thread_id = msg.get("message_thread_id")
+    return f"{chat_id}:{thread_id}" if thread_id else f"{chat_id}:main"
+
+
+def handle(update: dict, state: dict) -> None:
+    msg = update.get("message") or update.get("edited_message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    if not chat_id:
+        return
+
+    # Authorise on the SENDER, not the chat.
+    #
+    # A chat id is per-conversation: their DM with the bot has one, and the moment
+    # the user makes a group so the user can run topics, that group has a different one and
+    # every message from it would be dropped as a stranger. Their user id is the
+    # same everywhere. So the user id is the allowlist, and the chat id is just
+    # where replies go.
+    sender = (msg.get("from") or {}).get("id")
+    owner = config.secret("telegram.user_id")
+    if owner is None and sender:
+        # First speaker wins. Only the user knows the bot's name, and this process is
+        # the sole consumer of updates -- nothing else can call getUpdates
+        # without a 409, which is why discovery happens here and not in notify.
+        remember("user_id", sender)
+        owner = sender
+        print(f"learned user_id {sender}")
+    if sender != owner:
+        print(f"ignoring message from user {sender}", file=sys.stderr)
+        return
+
+    # Where digests and alerts go. Their DM stays the default; a group only takes
+    # over if the user asks for it, so scheduled pushes do not silently move.
+    if config.secret("telegram.chat_id") is None and chat.get("type") == "private":
+        remember("chat_id", chat_id)
+        print(f"learned chat_id {chat_id}")
+
+    # A forum topic is its own conversation. Without a forum this is None and
+    # everything shares one thread, exactly as before.
+    thread_id = msg.get("message_thread_id")
+    key = _topic_key(update)
+    ts = thread_state(state, key)
+
+    # General is the forum's default topic, which carries no thread id of its
+    # own -- indistinguishable from a plain chat by thread id alone. Chat type
+    # is what tells them apart: a DM is "private", General is a "group" or
+    # "supergroup" topic with thread_id still None.
+    is_general = thread_id is None and chat.get("type") != "private"
+
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    attachment = None
+
+    if msg.get("voice") or msg.get("audio") or msg.get("video_note"):
+        send(chat_id, VOICE_REPLY, thread_id)
+        return
+
+    if doc := msg.get("document"):
+        attachment = download(doc["file_id"],
+                              doc.get("file_name") or f"{doc['file_id']}.bin")
+    elif photos := msg.get("photo"):
+        largest = max(photos, key=lambda p: p.get("file_size") or 0)
+        attachment = download(largest["file_id"], f"{largest['file_id']}.jpg")
+
+    if (msg.get("document") or msg.get("photo")) and attachment is None:
+        send(chat_id, "That file wouldn't download - too big, or Telegram "
+                      "refused it. Try again or send it another way.", thread_id)
+        return
+
+    if not text and not attachment:
+        return
+
+    if text.strip().lower() in ("/new", "/clear", "/reset"):
+        ts["session_id"] = None
+        ts["turns"] = 0
+        ts["last_ts"] = time.time()
+        send(chat_id, "Fresh start in this topic. Anything worth keeping is in "
+                      "the ledger, so I have not forgotten you - just this "
+                      "conversation.", thread_id)
+        print(f"[{key}] cleared on request")
+        return
+
+    cmd = text.strip().lower()
+    if cmd in MODEL_COMMANDS:
+        model = MODEL_COMMANDS[cmd]
+        ts["model"] = model
+        send(chat_id, f"This topic runs on {model} from here on, until "
+                      f"you switch it again. Same conversation, nothing else "
+                      f"changed.", thread_id)
+        print(f"[{key}] model set to {model}")
+        return
+
+    reason = should_rotate(ts, is_general)
+    resume = None if reason else ts.get("session_id")
+
+    sent_at = sent_at_line(msg)
+
+    if attachment:
+        prompt = (f"{DOCUMENT_PREAMBLE}\n---\n\n{sent_at}File: `{attachment}`\n\n"
+                  + (f"What the user said with it: {text}" if text
+                     else "The user sent it without a caption."))
+        label = "telegram:document"
+        print(f"→ file {attachment.name} [{key}]")
+    else:
+        prompt = f"{PREAMBLE}\n---\n\n{sent_at}{text}"
+        label = "telegram"
+        print(f"→ {text[:60]!r} [{key}] "
+              f"({'new session' if reason else 'continuing'})")
+
+    # Marks this topic active for exactly as long as a `claude restart --defer`
+    # issued from *inside* this turn needs to stay pending -- see
+    # lib/herald/activity.py and cmd_restart in bin/herald.
+    # per-topic override from /fable, /opus, /sonnet, else the chat default.
+    model = ts.get("model") or DEFAULT_MODEL
+    with activity.Turn("telegram", key):
+        with Working(chat_id, thread_id) as working:
+            result = think.think(
+                prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
+                permission_mode="auto",
+                allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
+                               "WebSearch", "WebFetch", "Bash"],
+                on_progress=working.on_progress, cancel_key=key,
+            )
+            took = working.elapsed
+
+        cost = f"${result.cost_usd:.3f}" if result.cost_usd is not None else "?"
+        outcome = "CANCELLED" if result.cancelled else ("ok" if result.ok else "FAILED")
+        print(f"← {outcome} in {took:.1f}s {cost} [{key}]")
+
+        # A stored session id can go stale -- pruned, or written by a version
+        # that no longer resumes. Losing the thread is survivable; losing their
+        # message is not, so retry once without it rather than failing outright.
+        if not result.ok and not result.cancelled and resume \
+                and "resume" in (result.error or "").lower():
+            print(f"[{key}] resume failed, retrying fresh")
+            with Working(chat_id, thread_id) as working:
+                result = think.think(
+                    prompt, label=label, model=model, cwd=config.ROOT, resume=None,
+                    permission_mode="auto",
+                    allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
+                                   "WebSearch", "WebFetch", "Bash"],
+                    on_progress=working.on_progress, cancel_key=key)
+            if result.ok:
+                send(chat_id, italic("(lost this topic's earlier transcript, so I "
+                                      "re-read the ledger instead)"), thread_id)
+                reason = "resume failed"
+
+        if result.ok:
+            send(chat_id, result.text or "(no reply)", thread_id)
+            ts["session_id"] = result.session_id or ts.get("session_id")
+            ts["turns"] = 1 if reason else ts.get("turns", 0) + 1
+        elif result.cancelled:
+            # /stop already told them it stopped -- see _handle_stop. A second
+            # message here would just be noise. The interrupted session may
+            # have been mid-tool-call when it died, so don't trust --resume
+            # with it; next message in this topic starts clean.
+            print(f"[{key}] cancelled by user")
+            ts["session_id"] = None
+        else:
+            send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id)
+            if reason:
+                ts["session_id"] = None
+            elif result.session_id:
+                # A failed turn can still have done an hour of real work --
+                # a timeout kills the process, not the transcript. Keep its
+                # session so their next message continues that work instead of
+                # starting fresh on top of half-written files. If the id
+                # turns out not to resume (killed mid-tool-call), the
+                # resume-failed retry above falls back to fresh on its own.
+                ts["session_id"] = result.session_id
+        ts["last_ts"] = time.time()
+
+
+_state_lock = threading.Lock()          # guards save_state() itself
+_topic_locks_guard = threading.Lock()   # guards creation of the locks below
+_topic_locks: dict[str, threading.Lock] = {}
+
+# update_ids currently being handled, so a checkpoint never claims to have
+# finished one that's still running. Without this, two topics dispatched
+# concurrently would have the *live* offset (advanced up front, for the next
+# getUpdates call) get persisted early by whichever one finishes first -- and
+# a crash between that save and the slower update actually completing would
+# make the saved offset skip past it on restart, silently, forever.
+_inflight_lock = threading.Lock()
+_inflight: set[int] = set()
+
+
+def _lock_for(key: str) -> threading.Lock:
+    """One lock per topic, created lazily. Two different topics get two
+    different locks and never wait on each other; two messages landing in the
+    *same* topic close together queue on this lock instead of running two
+    `claude -p` processes against the same --resume session id at once."""
+    with _topic_locks_guard:
+        return _topic_locks.setdefault(key, threading.Lock())
+
+
+def _checkpoint(state: dict) -> None:
+    """Persist state, capping the saved offset at the oldest update still in
+    flight (or the live offset, if nothing is).
+
+    Never fatal, deliberately. This runs on the main polling loop, so an
+    exception here does not fail one checkpoint -- it exits main(), takes the
+    process down, and kills every `claude -p` turn running under it. That is
+    exactly what happened seven times on 9 Sep 2026: `collector.run` holds a
+    single write transaction open for the whole length of a collector,
+    network fetches and all, so a collect overlapping a turn made this
+    `sqlite3.OperationalError: database is locked`, and two of those crashes
+    landed on live turns and cost the user the replies.
+
+    A missed checkpoint is close to free. The live offset in `state` is
+    untouched, so polling continues from the right place; the next quiet poll
+    writes it. The only thing a lost checkpoint risks is re-delivering an
+    update after a crash, which is what capping at the oldest in-flight
+    update above already exists to make safe.
+    """
+    with _inflight_lock:
+        safe_offset = min(_inflight) if _inflight else state["offset"]
+    to_save = dict(state, offset=safe_offset)
+    try:
+        with _state_lock:
+            save_state(to_save)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"checkpoint skipped ({type(e).__name__}: {e}); "
+              f"retrying on the next quiet poll", file=sys.stderr, flush=True)
+
+
+def _maybe_restart() -> None:
+    """Run after every dispatched update, from the dispatching thread -- never
+    from inside a Turn, so this is never checking whether it is its own
+    blocker. See lib/herald/activity.py."""
+    req = activity.pending_restart()
+    if not req:
+        return
+    if activity.active():
+        return  # still someone mid-turn somewhere; try again after the next update
+    activity.clear_restart_request()
+    print(f"restarting {', '.join(req['units'])}: {req.get('reason', '')}")
+    for unit in req["units"]:
+        subprocess.run(["systemctl", "--user", "restart", unit])
+        # This process is very likely one of those units. If so, everything
+        # from here on never runs -- systemd has already sent the signal.
+
+
+def _handle_callback(update: dict) -> None:
+    """A tap on an approval button.
+
+    This records the decision and nothing else. The process that asked for the
+    approval is the one that carries the action out -- see
+    lib/herald/approvals.py -- so the bridge never becomes a way to make
+    something happen, only a way to answer a question about it.
+    """
+    cq = update["callback_query"]
+    data = (cq.get("data") or "")
+    sender = (cq.get("from") or {}).get("id")
+    owner = config.secret("telegram.user_id")
+    if sender != owner:
+        api("answerCallbackQuery", callback_query_id=cq["id"],
+            text="Not your Herald.")
+        print(f"ignoring callback from user {sender}", file=sys.stderr)
+        return
+    action, _, raw_id = data.partition(":")
+    if action not in ("approve", "deny") or not raw_id.isdigit():
+        api("answerCallbackQuery", callback_query_id=cq["id"])
+        return
+    approval_id = int(raw_id)
+    row = approvals.get(approval_id)
+    state = approvals.APPROVED if action == "approve" else approvals.DENIED
+    ok = approvals.decide(approval_id, state, by=f"telegram:{sender}")
+    if ok:
+        answer = "Approved" if state == approvals.APPROVED else "Denied"
+    elif row:
+        answer = f"Already {row['state']}"
+    else:
+        answer = "That request is gone"
+    api("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+
+    # Take the buttons off so the same tap cannot be made twice, and leave the
+    # outcome written where the original question was asked.
+    message = cq.get("message") or {}
+    if message.get("message_id"):
+        original = message.get("text") or ""
+        api("editMessageText", chat_id=(message.get("chat") or {}).get("id"),
+            message_id=message["message_id"],
+            text=f"{original}\n\n-- {answer.lower()}")
+    print(f"approval {approval_id}: {answer}")
+
+
+def _is_stop_command(update: dict) -> bool:
+    msg = update.get("message") or update.get("edited_message") or {}
+    text = (msg.get("text") or "").strip().lower()
+    return text == "/stop"
+
+
+def _handle_stop(update: dict, key: str) -> None:
+    """Interrupt whatever this topic's turn is doing, right now.
+
+    Deliberately does not go through `handle()` or `_lock_for(key)` -- a turn
+    already in flight holds that lock for as long as `think.think()` blocks,
+    which is the entire point of interrupting it. This runs on the dispatch
+    thread instead, before that lock is ever touched, and reaches the
+    subprocess directly via `think.cancel()`.
+    """
+    msg = update.get("message") or update.get("edited_message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    if not chat_id:
+        return
+    # Same authorisation as handle(): the sender, not the chat.
+    sender = (msg.get("from") or {}).get("id")
+    owner = config.secret("telegram.user_id")
+    if sender != owner:
+        print(f"ignoring /stop from user {sender}", file=sys.stderr)
+        return
+    thread_id = msg.get("message_thread_id")
+    if think.cancel(key):
+        send(chat_id, italic("Stopped -- abandoning whatever that was."), thread_id)
+        print(f"[{key}] stopped on request")
+    else:
+        send(chat_id, italic("Nothing running here."), thread_id)
+
+
+def _try_steer(update: dict, key: str) -> bool:
+    """If `key` already has a live turn still accepting input, fold this
+    message into it instead of waiting for `_lock_for(key)` -- which a turn
+    in progress holds for its entire duration, so a second message would
+    otherwise just sit until the first fully finishes. Returns whether it
+    landed; False means dispatch as normal.
+
+    Deliberately does not go through `handle()`, same reasoning as
+    `_handle_stop`: this runs before `_lock_for(key)` is ever touched, and
+    reaches the live subprocess directly via `think.steer()`.
+    """
+    msg = update.get("message") or update.get("edited_message") or {}
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
+    if not chat_id:
+        return False
+    sender = (msg.get("from") or {}).get("id")
+    if sender != config.secret("telegram.user_id"):
+        return False  # let the normal path's own authorisation ignore it
+    if msg.get("document") or msg.get("photo") or msg.get("voice") or msg.get("audio"):
+        return False  # attachments always take the normal path, never steer
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    if not text or text.lower() in ("/new", "/clear", "/reset", "/stop",
+                                     *MODEL_COMMANDS):
+        return False  # commands always take the normal path, never steer
+
+    if not think.steer(key, f"{sent_at_line(msg)}{text}"):
+        return False
+
+    thread_id = msg.get("message_thread_id")
+    snippet = think.current_progress(key)
+    after = f" after: {snippet}" if snippet else " after the current step"
+    send(chat_id, italic(f"Got it -- folding this in{after}."), thread_id)
+    print(f"[{key}] steered mid-turn ({snippet or 'no progress yet'})")
+    return True
+
+
+def _dispatch(update: dict, state: dict) -> None:
+    """Runs in its own thread per update so one slow topic (a `claude -p` call
+    can take minutes) never delays a reply in a different one."""
+    key = _topic_key(update) or f"unkeyed:{update.get('update_id')}"
+    try:
+        if update.get("callback_query"):
+            _handle_callback(update)
+        elif _is_stop_command(update):
+            _handle_stop(update, key)
+        elif _try_steer(update, key):
+            pass  # folded into the turn already running; no new handle() call
+        else:
+            with _lock_for(key):
+                try:
+                    handle(update, state)
+                except Exception as e:                        # noqa: BLE001
+                    print(f"handler error: {e}", file=sys.stderr)
+    finally:
+        with _inflight_lock:
+            _inflight.discard(update["update_id"])
+    _checkpoint(state)
+    _maybe_restart()
+
+
+def main() -> int:
+    if not config.secret("telegram.bot_token"):
+        print("no telegram.bot_token in config/secrets.json", file=sys.stderr)
+        return 1
+
+    state = load_state()
+    threads = state.get("threads", {})
+    print(f"herald-telegram up (offset {state['offset']}, "
+          f"{len(threads)} conversation(s): {', '.join(threads) or 'none yet'})")
+
+    while True:
+        resp = api("getUpdates", offset=state["offset"], timeout=POLL_TIMEOUT,
+                   allowed_updates=["message", "edited_message", "callback_query"])
+        if not resp or not resp.get("ok"):
+            time.sleep(10)
+            continue
+
+        for update in resp.get("result", []):
+            # The live offset has to advance here, synchronously, regardless of
+            # how long this update takes to handle -- it is what tells the next
+            # getUpdates call not to hand back what is already in flight. The
+            # *persisted* offset is a separate, more careful number -- see
+            # _checkpoint.
+            with _inflight_lock:
+                _inflight.add(update["update_id"])
+            state["offset"] = update["update_id"] + 1
+            threading.Thread(target=_dispatch, args=(update, state),
+                             daemon=True).start()
+
+        if not resp.get("result"):
+            _checkpoint(state)
+            _maybe_restart()  # a quiet poll is also a chance to notice we're idle
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

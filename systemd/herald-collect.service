@@ -1,0 +1,24 @@
+[Unit]
+Description=Herald — run all collectors (deterministic ingestion, no model calls)
+Documentation=file:{{ROOT}}/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH={{GOOGLE}}
+ExecStart={{ROOT}}/bin/herald collect
+TimeoutStartSec=900
+MemoryHigh=1400M
+MemoryMax=2400M
+OOMScoreAdjust=800
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

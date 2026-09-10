@@ -1,0 +1,41 @@
+#!/bin/sh
+# Run Python against the user's authenticated Google APIs.
+#
+# Sets the two things that are easy to forget: an interpreter that has the
+# Google client libraries, and PYTHONPATH pointing at the shared google_api
+# helper next to the credentials.
+#
+# Herald's own venv is used when it exists, because it already has those
+# libraries and a second virtualenv for the same packages is a second thing to
+# keep working. A standalone google-agent venv is honoured if one is there,
+# which is how installs that predate Herald keep running unchanged.
+#
+# Usage: grun script.py [args...]
+
+set -e
+
+HERALD_ROOT="${HERALD_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd)}"
+CONFIG_DIR="${GOOGLE_AGENT_DIR:-$HOME/.config/google-agent}"
+
+for candidate in \
+    "$HOME/.local/share/google-agent/venv/bin/python" \
+    "$HERALD_ROOT/venv/bin/python"; do
+    if [ -x "$candidate" ]; then
+        PY="$candidate"
+        break
+    fi
+done
+
+if [ -z "${PY:-}" ]; then
+    echo "grun: no interpreter with the Google libraries." >&2
+    echo "grun: run 'herald setup --step google' to create one." >&2
+    exit 1
+fi
+
+if [ ! -f "$CONFIG_DIR/token.json" ]; then
+    echo "grun: no token.json in $CONFIG_DIR — this account is not authorized yet." >&2
+    echo "grun: run 'herald setup --step google'." >&2
+    exit 1
+fi
+
+PYTHONPATH="$CONFIG_DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$PY" "$@"

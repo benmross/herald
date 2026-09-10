@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Herald — setup</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --panel: #ffffff; --ink: #1b1a18; --muted: #6b6862;
+    --line: #e6e2db; --accent: #7a5c2e; --accent-ink: #ffffff;
+    --ok: #2f6f4f; --warn: #8a6d1f; --bad: #9b3a2f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #171614; --panel: #1e1d1a; --ink: #ece8e1; --muted: #9a958c;
+      --line: #302e2a; --accent: #c9a45e; --accent-ink: #1b1a18;
+      --ok: #7fb894; --warn: #d6b45c; --bad: #e08a7c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 ui-serif, Georgia, "Iowan Old Style", Palatino, serif;
+  }
+  .wrap { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+  @media (max-width: 820px) { .wrap { grid-template-columns: 1fr; } aside { position: static !important; height: auto !important; } }
+
+  aside {
+    border-right: 1px solid var(--line); padding: 28px 20px;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  }
+  aside h1 {
+    font-size: 17px; letter-spacing: .02em; margin: 0 0 4px;
+  }
+  aside p.sub { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
+  ol.steps { list-style: none; margin: 0; padding: 0; }
+  ol.steps li {
+    display: flex; gap: 10px; align-items: baseline; padding: 7px 8px;
+    border-radius: 7px; cursor: pointer; font-size: 14px;
+  }
+  ol.steps li:hover { background: color-mix(in oklab, var(--line) 55%, transparent); }
+  ol.steps li.current { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--line); }
+  .dot.done { background: var(--ok); }
+  .dot.partial { background: var(--warn); }
+  .dot.blocked { background: var(--bad); }
+  .stepname { flex: 1; }
+  .stepdetail { display: block; color: var(--muted); font-size: 12px; line-height: 1.35; }
+
+  main { padding: 48px 44px 96px; max-width: 780px; }
+  h2 { font-size: 30px; line-height: 1.2; margin: 0 0 18px; letter-spacing: -.01em; }
+  .prose p { margin: 0 0 14px; }
+  .prose ul { margin: 0 0 14px; padding-left: 22px; }
+  .prose li { margin: 0 0 6px; }
+  .prose code {
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: color-mix(in oklab, var(--line) 60%, transparent);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  .prose pre {
+    background: color-mix(in oklab, var(--line) 45%, transparent);
+    padding: 12px 14px; border-radius: 8px; overflow-x: auto;
+    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .prose a { color: var(--accent); }
+  .prose strong { font-weight: 700; }
+
+  .field { margin: 22px 0; }
+  .field label { display: block; font-weight: 600; margin-bottom: 5px; }
+  .field .help { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+  input[type=text], input[type=password], textarea, select {
+    width: 100%; padding: 10px 12px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, sans-serif;
+  }
+  textarea { font: 15px/1.7 ui-serif, Georgia, serif; resize: vertical; }
+  input:focus, textarea:focus, select:focus {
+    outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
+    outline-offset: 1px;
+  }
+  .checkline { display: flex; gap: 10px; align-items: flex-start; }
+  .checkline input { margin-top: 5px; width: 17px; height: 17px; flex: 0 0 17px; }
+  .checkline label { font-weight: 600; margin: 0; }
+
+  .rowbtns { display: flex; gap: 10px; align-items: center; margin-top: 28px; }
+  button {
+    font: 15px/1 ui-sans-serif, system-ui, sans-serif; padding: 11px 18px;
+    border-radius: 8px; border: 1px solid var(--accent); cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font-weight: 600;
+  }
+  button.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
+  button[disabled] { opacity: .55; cursor: default; }
+  .dictate { font-size: 13px; padding: 6px 11px; }
+  .dictate.on { background: var(--bad); border-color: var(--bad); color: #fff; }
+
+  .note { margin-top: 26px; padding: 14px 16px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); }
+  .note.ok { border-color: color-mix(in oklab, var(--ok) 50%, var(--line)); }
+  .note.bad { border-color: color-mix(in oklab, var(--bad) 55%, var(--line)); }
+  .note h4 { margin: 0 0 6px; font-size: 15px; }
+  .note pre { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); margin: 8px 0 0; }
+  .warn { color: var(--warn); font-size: 14px; margin-top: 6px; }
+  .signin { display: block; margin-top: 12px; word-break: break-all; font: 13px/1.5 ui-monospace, Menlo, monospace; }
+  .counter { color: var(--muted); font-size: 13px; text-align: right; margin-top: 4px; }
+  .spin { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; vertical-align: -2px; margin-right: 7px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside>
+    <h1 id="agent">Herald</h1>
+    <p class="sub">setup</p>
+    <ol class="steps" id="steps"></ol>
+  </aside>
+  <main>
+    <h2 id="title">…</h2>
+    <div class="prose" id="blurb"></div>
+    <form id="form"></form>
+    <div class="rowbtns">
+      <button id="go" type="button">Continue</button>
+      <button id="skip" class="ghost" type="button">Skip this</button>
+      <span id="working" style="display:none;color:var(--muted);font-size:14px"></span>
+    </div>
+    <div id="result"></div>
+  </main>
+</div>
+<script>
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const api = (path, opts = {}) => fetch(path + (path.includes("?") ? "&" : "?") + "token=" + TOKEN,
+  Object.assign({headers: {"Content-Type": "application/json", "X-Herald-Token": TOKEN}}, opts));
+
+let current = null, fields = [], recog = null;
+
+/* Enough Markdown for these blurbs: headings, bold, code, links, bullets,
+   indented blocks. A dependency for this would be absurd. */
+function md(src) {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = s => esc(s)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+    .replace(/&lt;(https?:\/\/[^&]+)&gt;/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  const out = [];
+  for (const block of src.split(/\n\s*\n/)) {
+    const lines = block.split("\n");
+    const solid = lines.filter(l => l.trim());
+    if (solid.length && solid.every(l => /^ {4}|\t/.test(l))) {
+      out.push("<pre>" + esc(block.replace(/^( {4}|\t)/gm, "")) + "</pre>");
+    } else if (lines[0] && /^#{1,4} /.test(lines[0])) {
+      const level = lines[0].match(/^#+/)[0].length;
+      out.push(`<h${level + 2}>${inline(lines[0].replace(/^#+ /, ""))}</h${level + 2}>`);
+      if (lines.length > 1) out.push("<p>" + inline(lines.slice(1).join(" ")) + "</p>");
+    } else if (lines[0] && /^\s*[-*] /.test(lines[0])) {
+      const items = [];
+      let buf = "";
+      for (const line of lines) {
+        if (/^\s*[-*] /.test(line)) { if (buf) items.push(buf); buf = line.replace(/^\s*[-*] /, ""); }
+        else buf += " " + line.trim();
+      }
+      if (buf) items.push(buf);
+      out.push("<ul>" + items.map(i => "<li>" + inline(i) + "</li>").join("") + "</ul>");
+    } else {
+      out.push("<p>" + inline(lines.join(" ")) + "</p>");
+    }
+  }
+  return out.join("\n");
+}
+
+function field(f) {
+  const wrap = document.createElement("div");
+  wrap.className = "field";
+  const id = "f_" + f.key;
+  if (f.type === "note") {
+    wrap.innerHTML = (f.label ? `<label>${f.label}</label>` : "") +
+      `<div class="help">${md(f.help || "")}</div>`;
+    return wrap;
+  }
+  if (f.type === "bool") {
+    wrap.innerHTML = `<div class="checkline">
+        <input type="checkbox" id="${id}" ${f.default ? "checked" : ""}>
+        <div><label for="${id}">${f.label}</label>
+        <div class="help">${md(f.help || "")}</div></div></div>`;
+    return wrap;
+  }
+  let control;
+  if (f.type === "choice") {
+    control = `<select id="${id}">` + (f.choices || []).map(c =>
+      `<option ${c === f.default ? "selected" : ""}>${c}</option>`).join("") + "</select>";
+  } else if (f.type === "textarea") {
+    control = `<textarea id="${id}" rows="${f.rows || 4}" placeholder="${f.placeholder || ""}">${(f.default || "")}</textarea>`;
+  } else {
+    const type = f.type === "secret" ? "password" : "text";
+    control = `<input type="${type}" id="${id}" value="${f.type === "secret" ? "" : (f.default || "")}" placeholder="${f.placeholder || ""}">`;
+  }
+  wrap.innerHTML = (f.label ? `<label for="${id}">${f.label}${f.required ? " *" : ""}</label>` : "") +
+    (f.help ? `<div class="help">${md(f.help)}</div>` : "") + control;
+  if (f.type === "textarea" && f.dictate && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
+    const btn = document.createElement("button");
+    btn.type = "button"; btn.className = "ghost dictate"; btn.textContent = "🎤 Dictate";
+    btn.onclick = () => dictate(btn, wrap.querySelector("textarea"));
+    wrap.appendChild(btn);
+  }
+  if (f.type === "textarea" && f.dictate) {
+    const counter = document.createElement("div");
+    counter.className = "counter";
+    const ta = wrap.querySelector("textarea");
+    const tick = () => {
+      const n = (ta.value.trim().match(/\S+/g) || []).length;
+      counter.textContent = n + " words";
+      if (current === "interview") api("/api/draft", {method: "POST", body: JSON.stringify({piece: ta.value})});
+    };
+    ta.addEventListener("input", debounce(tick, 700));
+    tick();
+    wrap.appendChild(counter);
+  }
+  return wrap;
+}
+
+function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+/* Dictation is the browser's own, on-device where the browser does it that way.
+   Nothing is uploaded by this page: the audio never reaches Herald, only the
+   text the browser hands back. */
+function dictate(btn, textarea) {
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (recog) { recog.stop(); recog = null; btn.classList.remove("on"); btn.textContent = "🎤 Dictate"; return; }
+  recog = new Rec();
+  recog.continuous = true; recog.interimResults = false; recog.lang = navigator.language || "en-US";
+  recog.onresult = e => {
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) {
+        const text = e.results[i][0].transcript.trim();
+        textarea.value += (textarea.value && !/\s$/.test(textarea.value) ? " " : "") + text;
+        textarea.dispatchEvent(new Event("input"));
+      }
+    }
+  };
+  recog.onerror = () => { btn.classList.remove("on"); btn.textContent = "🎤 Dictate"; recog = null; };
+  recog.onend = () => { if (recog) { btn.classList.remove("on"); btn.textContent = "🎤 Dictate"; recog = null; } };
+  recog.start();
+  btn.classList.add("on"); btn.textContent = "■ Stop";
+}
+
+function collect() {
+  const answers = {};
+  for (const f of fields) {
+    if (f.type === "note") continue;
+    const el = document.getElementById("f_" + f.key);
+    if (!el) continue;
+    answers[f.key] = f.type === "bool" ? el.checked : el.value;
+  }
+  return answers;
+}
+
+async function load(step) {
+  const r = await api("/api/state" + (step ? "?step=" + step : ""));
+  const data = await r.json();
+  current = data.current;
+  document.getElementById("agent").textContent = data.agent || "Herald";
+  document.getElementById("title").textContent = data.prompt.title;
+  document.getElementById("blurb").innerHTML = md(data.prompt.blurb || "");
+  document.getElementById("go").textContent = data.prompt.action || "Continue";
+  document.getElementById("result").innerHTML = "";
+  const form = document.getElementById("form");
+  form.innerHTML = "";
+  fields = data.prompt.fields || [];
+  for (const f of fields) form.appendChild(field(f));
+
+  const list = document.getElementById("steps");
+  list.innerHTML = "";
+  data.steps.forEach(s => {
+    const li = document.createElement("li");
+    li.className = s.key === current ? "current" : "";
+    li.innerHTML = `<span class="dot ${s.status}"></span>
+      <span class="stepname">${s.title}<span class="stepdetail">${s.detail || ""}</span></span>`;
+    li.onclick = () => load(s.key);
+    list.appendChild(li);
+  });
+  const skip = document.getElementById("skip");
+  const order = data.steps.map(s => s.key);
+  skip.style.display = order.indexOf(current) < order.length - 1 ? "" : "none";
+  skip.onclick = () => load(order[order.indexOf(current) + 1]);
+}
+
+async function go() {
+  const button = document.getElementById("go");
+  const working = document.getElementById("working");
+  button.disabled = true;
+  working.style.display = "";
+  working.innerHTML = '<span class="spin"></span>working…';
+  const r = await api("/api/apply", {method: "POST",
+    body: JSON.stringify({step: current, answers: collect()})});
+  const {job} = await r.json();
+  const result = document.getElementById("result");
+  let shownUrl = false;
+  while (true) {
+    await new Promise(res => setTimeout(res, 900));
+    const state = await (await api("/api/job/" + job)).json();
+    if (state.url && !shownUrl) {
+      shownUrl = true;
+      result.innerHTML = `<div class="note"><h4>Open this and sign in</h4>
+        <a class="signin" href="${state.url}" target="_blank" rel="noreferrer">${state.url}</a>
+        <p style="margin:10px 0 0;color:var(--muted);font-size:14px">
+        Google will warn that the app is unverified. It is your own app, made
+        minutes ago. Waiting for you to finish…</p></div>`;
+    }
+    if (state.state === "done") {
+      const o = state.outcome || {};
+      button.disabled = false;
+      working.style.display = "none";
+      result.innerHTML = `<div class="note ${o.ok ? "ok" : "bad"}">
+        <h4>${o.ok ? "" : "That did not work — "}${(o.message || "").replace(/</g, "&lt;")}</h4>
+        ${o.detail ? `<pre>${o.detail.replace(/</g, "&lt;")}</pre>` : ""}
+        ${(o.warnings || []).map(w => `<div class="warn">! ${w.replace(/</g, "&lt;")}</div>`).join("")}
+      </div>`;
+      if (o.ok) {
+        const next = document.createElement("button");
+        next.textContent = o.more ? "Next" : "Continue";
+        next.style.marginTop = "16px";
+        /* `more` means this step has another screen; otherwise let the
+           server pick the next step that is not done. */
+        next.onclick = () => load(o.more ? current : null);
+        result.appendChild(next);
+      }
+      return;
+    }
+  }
+}
+
+document.getElementById("go").onclick = go;
+load(null);
+</script>
+</body>
+</html>

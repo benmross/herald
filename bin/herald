@@ -1,0 +1,806 @@
+#!/usr/bin/env python3
+"""herald — the one command.
+
+    herald status                  what's running, what it cost, what's stale
+    herald doctor                  check the things that silently break
+    herald think "..."             one metered agent invocation
+    herald db "select ..."         query the ledger
+    herald notify "title" "body"   push to the user's phone
+    herald check                   do the architecture's invariants still hold
+    herald restart [unit ...]      check, then restart
+    herald brain [start|stop|status|url]
+    herald attach                  attach to the brain's terminal
+    herald collect [name ...]      run collectors
+    herald cycle <name>            run one cycle end to end
+    herald setup                   set it up, or fix one part of it
+    herald ext                     personal collectors, cycles and skills
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+# Re-exec into the project venv if we are not already in it. Anything that
+# touches Google needs googleapiclient, and the system interpreter does not
+# have it; the failure mode otherwise is an ImportError out of a systemd timer
+# at 06:30.
+#
+# The test is sys.prefix, not the interpreter path. `venv/bin/python` is a
+# symlink chain ending at /usr/bin/python3, so resolving it and comparing to
+# sys.executable said "already in the venv" while running under the system
+# interpreter with none of the venv's packages -- silently, because everything
+# that needed them ran as a subprocess through config.python() rather than
+# in-process. The first in-process import of googleapiclient (the setup
+# wizard's Google step) is what finally surfaced it.
+_VENV_PY = ROOT / "venv" / "bin" / "python"
+if _VENV_PY.exists() and pathlib.Path(sys.prefix).resolve() != (ROOT / "venv").resolve():
+    _self = str(pathlib.Path(__file__).resolve())
+    os.execv(str(_VENV_PY), [str(_VENV_PY), _self, *sys.argv[1:]])
+
+sys.path.insert(0, str(ROOT / "lib"))
+
+from herald import (activity, capabilities, config,  # noqa: E402
+                    constitution as constitution_mod, db, extensions, notify,
+                    think as think_mod)
+
+BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
+OK, WARN, BAD = "\033[32m", "\033[33m", "\033[31m"
+
+
+def _c(s: str, colour: str) -> str:
+    return s if not sys.stdout.isatty() else f"{colour}{s}{OFF}"
+
+
+def _hdr(s: str) -> None:
+    print(f"\n{_c(s, BOLD)}")
+
+
+# --------------------------------------------------------------------------- status
+
+def cmd_status(args) -> int:
+    cfg = config.load()
+    print(f"{_c('herald', BOLD)} {_c('· ' + cfg['name'], DIM)}  "
+          f"{os.uname().nodename}  {config.ROOT}")
+
+    _hdr("engine")
+    cmd = config.get("engines.primary.cmd", "claude")
+    path = shutil.which(cmd, path=config.agent_env()["PATH"])
+    if path:
+        try:
+            ver = subprocess.run([path, "--version"], capture_output=True,
+                                 text=True, timeout=15).stdout.strip().splitlines()[0]
+        except Exception:
+            ver = "?"
+        print(f"  {'engine':9} {_c('ok', OK)}   {cmd:7} {ver}")
+    else:
+        print(f"  {'engine':9} {_c('MISSING', BAD)}  {cmd}")
+
+    _hdr("spend  (client-side estimate, not your bill)")
+    rows = db.query("""
+        SELECT label,
+               COUNT(*)                          AS runs,
+               ROUND(SUM(COALESCE(cost_usd,0)),4) AS usd
+        FROM runs WHERE ts >= datetime('now','-7 days')
+        GROUP BY label ORDER BY usd DESC LIMIT 12
+    """)
+    if not rows:
+        print(f"  {_c('no runs recorded yet', DIM)}")
+    else:
+        print(f"  {'label':<28}{'runs':>6}{'usd':>10}")
+        for r in rows:
+            print(f"  {r['label']:<28}{r['runs']:>6}{r['usd'] or 0:>10.4f}")
+        tot = db.query("SELECT ROUND(SUM(COALESCE(cost_usd,0)),4) t,"
+                       " COUNT(*) n FROM runs WHERE ts >= datetime('now','-7 days')")[0]
+        print(f"  {_c(f'{tot['n']} runs / ${tot['t'] or 0:.4f} in the last 7 days', DIM)}")
+
+    exts = extensions.all_extensions()
+    if exts:
+        _hdr("extensions")
+        for ext in exts:
+            state = _c("on ", OK) if ext.enabled else _c("off", DIM)
+            print(f"  {state} {ext.name:14} {ext.description[:60]}")
+
+    _hdr("capabilities")
+    for key, cap in sorted(capabilities.registry().items()):
+        why = capabilities.missing(key)
+        where = f" ({cap.extension})" if cap.extension else ""
+        if why is None:
+            print(f"  {key:16} {_c('on', OK)}{where}")
+        elif why == "not enabled":
+            print(f"  {key:16} {_c('off', DIM)}{where}")
+        else:
+            print(f"  {key:16} {_c('needs setup', WARN)}{where}  {why}")
+
+    _hdr("collectors")
+    rows = db.query("SELECT * FROM collector_state ORDER BY collector")
+    if not rows:
+        print(f"  {_c('none registered yet', DIM)}")
+    for r in rows:
+        fails = r["consecutive_failures"]
+        state = _c("ok", OK) if not fails else _c(f"failing x{fails}", BAD if fails > 2 else WARN)
+        print(f"  {r['collector']:<20} {state:<22} last ok {r['last_ok'] or 'never'}")
+
+    _hdr("ledger")
+    facts = db.query("SELECT source, kind, COUNT(*) n, MAX(ts) latest"
+                     " FROM facts GROUP BY source, kind ORDER BY n DESC LIMIT 10")
+    if not facts:
+        print(f"  {_c('empty — no collectors have run', DIM)}")
+    for f in facts:
+        print(f"  {f['source'] + '/' + f['kind']:<28}{f['n']:>7}  latest {f['latest'] or '-'}")
+
+    openc = db.query("SELECT COUNT(*) n FROM commitments WHERE status='open'")[0]["n"]
+    print(f"  {'open commitments':<28}{openc:>7}")
+
+    if config.DB_PATH.exists():
+        print(f"  {_c(f'facts.db {config.DB_PATH.stat().st_size / 1e6:.1f} MB', DIM)}")
+    return 0
+
+
+# --------------------------------------------------------------------------- doctor
+
+def cmd_doctor(args) -> int:
+    problems = 0
+
+    def check(name: str, ok: bool, detail: str = "") -> None:
+        nonlocal problems
+        if not ok:
+            problems += 1
+        mark = _c("PASS", OK) if ok else _c("FAIL", BAD)
+        print(f"  {mark}  {name}{('  ' + detail) if detail else ''}")
+
+    _hdr("paths")
+    print(f"        {_c('program  ' + str(config.ROOT), DIM)}")
+    print(f"        {_c('home     ' + str(config.HOME)
+                        + ('  (pre-split layout)' if config.LEGACY_LAYOUT else ''), DIM)}")
+    for p in (config.CONFIG_PATH, config.LEDGER, config.IDENTITY, config.STATE):
+        try:
+            label = str(p.relative_to(config.HOME))
+        except ValueError:
+            label = str(p)
+        check(label, p.exists())
+
+    _hdr("credentials")
+    env = config.agent_env()
+    check("no ANTHROPIC_API_KEY leaking into agent env",
+          "ANTHROPIC_API_KEY" not in env,
+          "an API key would silently move Herald onto metered billing")
+    creds = pathlib.Path.home() / ".claude" / ".credentials.json"
+    check("claude logged in", creds.exists())
+    if creds.exists():
+        try:
+            sub = json.loads(creds.read_text()).get("claudeAiOauth", {}).get("subscriptionType")
+            print(f"        {_c('subscription: ' + str(sub), DIM)}")
+        except Exception:
+            pass
+    from herald import google as google_mod  # noqa: PLC0415
+    check("google token", google_mod.available(),
+          f"expected in {google_mod.credentials_dir()} — herald setup --step google")
+
+    _hdr("database")
+    try:
+        with db.session() as con:
+            tables = {r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        for t in ("facts", "runs", "commitments", "collector_state", "notifications"):
+            check(f"table {t}", t in tables)
+    except Exception as e:
+        check("open facts.db", False, str(e))
+
+    print()
+    if problems:
+        print(_c(f"{problems} problem(s)", BAD))
+    else:
+        print(_c("all good", OK))
+    return 1 if problems else 0
+
+
+# --------------------------------------------------------------------------- think
+
+def cmd_check(args) -> int:
+    """Do the architecture's invariants still hold? Run before restarting."""
+    return subprocess.run([config.python(), str(config.ROOT / "tools" / "check.py")],
+                          cwd=str(config.ROOT), env=_child_env()).returncode
+
+
+def cmd_restart(args) -> int:
+    """Check first, then restart. Refuses on a failing check.
+
+    `--defer` writes a restart request instead of restarting immediately, and
+    returns right away -- safe to call from inside a live turn, unlike a bare
+    restart. Restarting herald-telegram.service from the subprocess handling
+    the very message you're replying to kills the process that was going to
+    deliver that reply, and there is no way to tell from inside that
+    subprocess whether some *other* Telegram topic is also mid-turn right
+    now. `bin/herald-telegram`'s own main loop is what actually acts on a
+    deferred request, once its activity registry is empty -- see
+    lib/herald/activity.py.
+
+    herald-brain has no equivalent idle signal -- it's one continuous `claude
+    remote-control` session in a tmux pane, not a subprocess per turn, so
+    there is no hook to know when it is safe. `--defer` therefore only ever
+    covers herald-telegram.service; anything else stays untouched and gets
+    reported as skipped rather than restarted blind, which would reintroduce
+    the exact bug this exists to prevent, just for the other surface.
+    """
+    if cmd_check(args) != 0:
+        print(_c("\nnot restarting: fix the failures above first", BAD),
+              file=sys.stderr)
+        return 1
+    units = args.units or ["herald-telegram.service", "herald-brain.service"]
+
+    if getattr(args, "defer", False):
+        deferrable = [u for u in units if u == "herald-telegram.service"]
+        skipped = [u for u in units if u != "herald-telegram.service"]
+        if deferrable:
+            activity.request_restart(deferrable, args.reason or "requested")
+            print(f"  requested: {', '.join(deferrable)} "
+                  f"(will restart once no Telegram topic is mid-turn)")
+        for u in skipped:
+            print(f"  skipped {u}: no idle signal for this surface -- "
+                  f"restart it by hand (`herald restart {u}`) when nothing "
+                  f"is using it")
+        return 0
+
+    # The docstring above has always described this failure. Describing it was
+    # not enough: on 9 Sep 2026 a session fixed bin/herald-telegram, committed,
+    # and ran a bare `herald restart` to load its own fix. herald-telegram is
+    # the first unit in the default list, so systemd stopped the very process
+    # running that command -- killing its own reply mid-sentence and, as
+    # collateral, an unrelated fable turn that had been working for 17 minutes
+    # in another topic. The loop never reached the second unit. So the rule is
+    # enforced here rather than merely documented: if any topic is mid-turn,
+    # a non-deferred restart of the bridge is refused, because `--defer` does
+    # exactly this correctly and costs nothing but a wait.
+    live = [t for t in activity.active() if t.get("service") == "telegram"]
+    if live and "herald-telegram.service" in units and not getattr(args, "force", False):
+        print(_c(f"\nnot restarting: {len(live)} Telegram topic(s) mid-turn",
+                 BAD), file=sys.stderr)
+        for t in live:
+            age = int(time.time() - (t.get("started") or time.time()))
+            print(f"    {t.get('key')} ({age}s in)", file=sys.stderr)
+        print("\n  Restarting herald-telegram now kills those turns, and if you\n"
+              "  are one of them it kills the reply you are writing. Use:\n"
+              "      herald restart --defer\n"
+              "  which restarts as soon as no topic is mid-turn. `--force`\n"
+              "  overrides this, and should be a decision, not a reflex.",
+              file=sys.stderr)
+        return 1
+
+    rc = 0
+    for u in units:
+        r = subprocess.run(["systemctl", "--user", "restart", u])
+        rc = rc or r.returncode
+        print(f"  restarted {u}" if r.returncode == 0 else f"  FAILED {u}")
+    return rc
+
+
+def cmd_think(args) -> int:
+    prompt = args.prompt or sys.stdin.read()
+    if not prompt.strip():
+        print("nothing to think about", file=sys.stderr)
+        return 2
+    r = think_mod.think(prompt, label=args.label, escalate=args.escalate,
+                        model=args.model, cwd=args.cwd)
+    if not r.ok:
+        print(r.error or "failed", file=sys.stderr)
+        return 1
+    print(r.text)
+    if args.verbose:
+        note = f"{r.engine}/{r.model} {r.duration_ms}ms"
+        if r.cost_usd is not None:
+            note += f" ${r.cost_usd:.4f}"
+        print(_c(note, DIM), file=sys.stderr)
+    return 0
+
+
+# --------------------------------------------------------------------------- db
+
+SCHEMA_HELP = """\
+The ledger is one SQLite file at ledger/facts.db. There is no sqlite3 CLI on
+this machine -- use `herald db` or Python. Do not go looking for one.
+
+TABLES
+  facts          everything ingested. source + kind + external_id + ts
+                 + title + body + data(JSON) + ingested_at
+  opportunities  things to apply for, with a lifecycle
+  commitments    open loops
+  runs           every agent invocation and what it cost
+  collector_state, notifications
+
+REACHING INTO data
+  json_extract(data, '$.field')      -- use this, not LIKE on the JSON text
+
+WHAT IS IN facts  (source/kind, and the fields worth knowing)
+"""
+
+
+def cmd_db(args) -> int:
+    if args.schema:
+        print(SCHEMA_HELP)
+        rows = db.query("""
+            SELECT source, kind, COUNT(*) n, MAX(ts) latest
+            FROM facts GROUP BY source, kind ORDER BY source, n DESC
+        """)
+        for r in rows:
+            print(f"  {r['source'] + '/' + r['kind']:<26}{r['n']:>7}  latest {r['latest'] or '-'}")
+        print("\n  People are matched on facts.title, which holds the contact"
+              " name as the address book has it -- a full name, not a"
+              " nickname.\n")
+        for t in ("opportunities", "commitments"):
+            cols = [c["name"] for c in db.query(f"PRAGMA table_info({t})")]
+            print(f"  {t}: {', '.join(cols)}")
+        return 0
+    rows = db.query(args.sql)
+    if args.json:
+        print(json.dumps([dict(r) for r in rows], indent=2, default=str))
+        return 0
+    if not rows:
+        print(_c("(no rows)", DIM))
+        return 0
+    cols = rows[0].keys()
+    widths = {c: max(len(c), *(len(str(r[c])) for r in rows)) for c in cols}
+    widths = {c: min(w, 60) for c, w in widths.items()}
+    print(_c("  ".join(c.ljust(widths[c]) for c in cols), BOLD))
+    for r in rows:
+        print("  ".join(str(r[c])[:widths[c]].ljust(widths[c]) for c in cols))
+    print(_c(f"({len(rows)} rows)", DIM))
+    return 0
+
+
+# --------------------------------------------------------------------------- notify
+
+def cmd_notify(args) -> int:
+    ok = notify.push(args.title, args.body, priority=args.priority, tags=args.tags,
+                     click=args.click)
+    if not ok:
+        print("notification failed", file=sys.stderr)
+    return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------- collect / cycle
+
+def _child_env() -> dict:
+    env = config.agent_env()
+    google = pathlib.Path(
+        str(config.get("google.credentials_dir", "~/.config/google-agent"))).expanduser()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(config.ROOT / "lib"), str(google), *extensions.lib_paths(),
+         env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
+    env["HERALD_HOME"] = str(config.HOME)
+    # Extensions live outside the program and need to find it. Passing the
+    # path beats every alternative: an extension that hardcodes ~/herald
+    # breaks the moment someone clones it somewhere else.
+    env["HERALD_ROOT"] = str(config.ROOT)
+    return env
+
+
+def _discover(kind: str) -> dict[str, pathlib.Path]:
+    """Built-in modules of this kind, plus every enabled extension's.
+
+    An extension's collector is a collector: same contract, same timer, same
+    rules, discovered the same way. The only difference is that it lives in
+    the user's private home rather than in the program.
+    """
+    d = config.ROOT / kind
+    found = {p.stem: p for p in sorted(d.glob("*.py")) if not p.stem.startswith("_")}
+    extra = extensions.collectors() if kind == "collectors" else extensions.cycles()
+    for name, (path, _ext) in extra.items():
+        found.setdefault(name, path)
+    return found
+
+
+def _cadence(path: pathlib.Path) -> int:
+    """Minutes between runs, as the collector itself declares.
+
+    Read out of the source rather than imported, because importing a collector
+    to ask how often it should run would connect to its source to find out.
+    """
+    m = re.search(r"^CADENCE_MINUTES\s*=\s*(\d+)", path.read_text(), re.M)
+    return int(m.group(1)) if m else 30
+
+
+def _requires(path: pathlib.Path) -> tuple[str, ...]:
+    """The capabilities a collector declares. Read, not imported, for the same
+    reason as the cadence: asking a collector what it needs must not connect to
+    the thing it needs."""
+    m = re.search(r"^REQUIRES\s*=\s*\(([^)]*)\)", path.read_text(), re.M)
+    if not m:
+        return ()
+    return tuple(part.strip().strip("\"'") for part in m.group(1).split(",") if part.strip())
+
+
+def _due(name: str, minutes: int) -> tuple[bool, str]:
+    """Whether this collector is due, and how long since it last succeeded."""
+    row = db.query("SELECT last_ok FROM collector_state WHERE collector = ?", (name,))
+    if not row or not row[0]["last_ok"]:
+        return True, "never run"
+    try:
+        last = dt.datetime.fromisoformat(row[0]["last_ok"])
+    except ValueError:
+        return True, "unparseable timestamp"
+    now = dt.datetime.now(last.tzinfo) if last.tzinfo else dt.datetime.now()
+    age = (now - last).total_seconds() / 60
+    return age >= minutes, f"{age:.0f}m ago"
+
+
+def cmd_brain(args) -> int:
+    return subprocess.run([str(config.ROOT / "bin" / "herald-brain"), args.action]).returncode
+
+
+def cmd_attach(args) -> int:
+    """Attach to the brain's real terminal. Ctrl-b d to detach."""
+    return subprocess.run([str(config.ROOT / "bin" / "herald-brain"), "attach"]).returncode
+
+
+def cmd_collect(args) -> int:
+    """Run the collectors that are due.
+
+    Everything used to run on one 30-minute timer, which meant the address book
+    was refetched 48 times a day and nine scraped event sites were read 48 times
+    a day to learn nothing. Each collector now declares how often it is worth
+    running, and naming one explicitly runs it regardless.
+    """
+    available = _discover("collectors")
+    if not available:
+        print(_c("no collectors installed yet", DIM))
+        return 0
+
+    explicit = bool(args.names)
+    names = args.names or list(available)
+    rc, skipped, off = 0, [], []
+
+    for n in names:
+        if n not in available:
+            print(f"unknown collector: {n}", file=sys.stderr)
+            rc = 2
+            continue
+        # A source the user never connected is off, not broken. Naming it
+        # explicitly still refuses, because running it anyway would only
+        # produce a traceback about a credential nobody was ever asked for.
+        unmet = capabilities.unmet(_requires(available[n]))
+        if unmet:
+            why = "; ".join(f"{k}: {reason}" for k, reason in unmet)
+            if explicit:
+                print(f"{n}: off -- {why}", file=sys.stderr)
+                rc = rc or 3
+            else:
+                off.append(f"{n} ({why})")
+            continue
+        if not explicit and not args.force:
+            minutes = _cadence(available[n])
+            due, age = _due(n, minutes)
+            if not due:
+                skipped.append(f"{n} ({age}, every {minutes}m)")
+                continue
+        print(_c(f"→ {n}", BOLD))
+        r = subprocess.run([config.python(), str(available[n])],
+                           cwd=str(config.ROOT), env=_child_env())
+        rc = rc or r.returncode
+
+    if skipped:
+        print(_c("not due: " + ", ".join(skipped), DIM))
+    if off:
+        print(_c("off: " + ", ".join(off), DIM))
+    return rc
+
+
+def cmd_services(args) -> int:
+    """Install, enable or inspect the background jobs on this platform."""
+    sys.path.insert(0, str(config.ROOT))
+    from setup import services  # noqa: PLC0415
+    if args.action == "status":
+        rows = services.status()
+        if not rows:
+            print(_c(f"  no scheduler support on this platform", DIM))
+            return 0
+        for unit, state in rows:
+            colour = OK if state in ("active", "loaded") else DIM
+            print(f"  {_c(f'{state:<12}', colour)} {unit}")
+        return 0
+    try:
+        result = services.install(force=getattr(args, "force", False))
+    except services.ForeignInstall as exc:
+        print(_c("  " + str(exc), BAD), file=sys.stderr)
+        return 1
+    if result["platform"] == "none":
+        print(_c("  " + result.get("note", "nothing to install"), WARN))
+        return 0
+    for name in result["written"]:
+        print(f"  installed {name}")
+    if not result["written"]:
+        print(_c("  already current", DIM))
+    if args.action == "enable":
+        telegram = bool(config.secret("telegram.bot_token"))
+        units = services.wanted_units(telegram)
+        if result["platform"] == "systemd":
+            for unit, ok, err in services.enable_systemd(units):
+                print(f"  {'enabled' if ok else 'FAILED '} {unit}"
+                      + (f"  {err}" if err else ""))
+            linger_ok, how = services.enable_linger()
+            if not linger_ok:
+                print(_c(f"  run `{how}` so they survive logging out", WARN))
+        else:
+            print(_c(f"  {len(units)} agent(s) loaded", DIM))
+    else:
+        print(_c("  `herald services enable` to start them", DIM))
+    return 0
+
+
+def cmd_setup(args) -> int:
+    """The wizard. One engine, two frontends -- see setup/engine.py."""
+    sys.path.insert(0, str(config.ROOT))
+    from setup import cli as setup_cli  # noqa: PLC0415
+    argv = []
+    if args.step:
+        argv += ["--step", args.step]
+    if args.list:
+        argv += ["--list"]
+    if args.web:
+        argv += ["--web", "--port", str(args.port)]
+    return setup_cli.main(argv)
+
+
+def cmd_constitution(args) -> int:
+    """Rebuild CLAUDE.md from the shared rules plus this person's own.
+
+    Generated rather than imported: Claude Code will not follow the `ledger`
+    symlink out of the project to resolve an @import, and a silently dropped
+    import here drops medical facts and academic-integrity rules. See
+    lib/herald/constitution.py.
+    """
+    if args.check:
+        if constitution_mod.current():
+            print(_c("  CLAUDE.md is current", OK))
+            return 0
+        print(_c("  CLAUDE.md has drifted from its sources", BAD), file=sys.stderr)
+        return 1
+    changed = constitution_mod.write()
+    print(f"  {'rewrote' if changed else 'already current:'} {constitution_mod.OUTPUT}")
+    if not constitution_mod.PERSONAL.exists():
+        print(_c(f"  no personal constitution yet at "
+                 f"{constitution_mod.PERSONAL} — run `herald setup`", WARN))
+    return 0
+
+
+def cmd_config(args) -> int:
+    """Read or write one setting.
+
+    Writes only ever touch $HERALD_HOME/config.json: config/defaults.json
+    belongs to whoever packaged Herald. So anything set here survives an
+    update, and anything never set here follows one.
+    """
+    if args.action == "get":
+        value = config.get(args.path) if args.path else config.load()
+        print(json.dumps(value, indent=2, default=str))
+        return 0
+    if args.action == "path":
+        print(config.CONFIG_PATH)
+        return 0
+    raw = args.value
+    if raw is None:
+        print("nothing to set", file=sys.stderr)
+        return 2
+    try:
+        value = json.loads(raw)          # numbers, true/false, lists, objects
+    except json.JSONDecodeError:
+        value = raw                      # a bare string is a string
+    config.set_user(args.path, value)
+    print(f"  {args.path} = {json.dumps(value)}")
+    return 0
+
+
+def cmd_test(args) -> int:
+    """The offline suite: the program's, plus every enabled extension's.
+
+    Extensions ship tests for the same reason Herald does -- the parsing in
+    one is exactly the kind of thing that breaks quietly -- and a suite that
+    only covers the program would stop covering most of the code the moment
+    someone's life moved into an extension.
+    """
+    rc = subprocess.run([config.python(), "-m", "unittest", "discover",
+                         "-s", "tests", *args.extra],
+                        cwd=str(config.ROOT), env=_child_env()).returncode
+    for path in extensions.test_paths():
+        print(_c(f"\n{path.parent.name} extension", BOLD))
+        r = subprocess.run([config.python(), "-m", "unittest", "discover",
+                            "-s", str(path), *args.extra],
+                           cwd=str(path.parent), env=_child_env()).returncode
+        rc = rc or r
+    return rc
+
+
+def cmd_ext(args) -> int:
+    """Extensions: the code that is about this person's life, not about Herald."""
+    if args.action in ("list", None):
+        found = extensions.all_extensions()
+        if not found:
+            print(_c(f"no extensions in {config.EXTENSIONS}", DIM))
+            print(_c("  herald ext new <name>   to start one", DIM))
+            return 0
+        for ext in found:
+            state = _c("on ", OK) if ext.enabled else _c("off", DIM)
+            parts = []
+            if ext.collectors():
+                parts.append(f"{len(ext.collectors())} collector(s)")
+            if ext.cycles():
+                parts.append(f"{len(ext.cycles())} cycle(s)")
+            if ext.units():
+                parts.append(f"{len(ext.units())} unit(s)")
+            if ext.skills():
+                parts.append(f"{len(ext.skills())} skill(s)")
+            if ext.hooks():
+                parts.append("hooks")
+            print(f"  {state} {ext.name:14} {ext.description[:70]}")
+            if parts:
+                print(f"      {_c(', '.join(parts), DIM)}")
+        return 0
+
+    if args.action == "new":
+        path = extensions.scaffold(args.name)
+        print(f"  {path}")
+        print(_c("  drop a collector in collectors/ and it runs on the next timer",
+                 DIM))
+        return 0
+
+    if args.action in ("enable", "disable"):
+        ext = extensions.set_enabled(args.name, args.action == "enable")
+        print(f"  {ext.name} {'enabled' if ext.enabled else 'disabled'}")
+        report = extensions.sync()
+        _print_sync(report)
+        if ext.units():
+            print(_c("  it ships systemd units: run tools/install-units.sh", DIM))
+        return 0
+
+    if args.action == "sync":
+        _print_sync(extensions.sync())
+        return 0
+    return 2
+
+
+def _print_sync(report: dict) -> None:
+    for name in report.get("skills_linked", []):
+        print(f"  linked skill {name}")
+    for name in report.get("skills_removed", []):
+        print(f"  unlinked skill {name}")
+    events = report.get("hook_events") or []
+    print(_c(f"  .claude/settings.json written"
+             f"{' (hooks: ' + ', '.join(events) + ')' if events else ' (no hooks)'}",
+             DIM))
+
+
+def cmd_cycle(args) -> int:
+    available = _discover("cycles")
+    if args.name not in available:
+        print(f"unknown cycle: {args.name}. have: {', '.join(available) or '(none yet)'}",
+              file=sys.stderr)
+        return 2
+    env = _child_env()
+    # Nobody is at a keyboard. Tools that may only act on a request made in a
+    # conversation read this and refuse; the session itself is told the same
+    # thing in the prompt, and this is the half that does not depend on the
+    # session believing it.
+    env["HERALD_UNATTENDED"] = "1"
+    return subprocess.run([config.python(), str(available[args.name])],
+                          cwd=str(config.ROOT), env=env).returncode
+
+
+# --------------------------------------------------------------------------- main
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.dedent(__doc__ or ""))
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
+    sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)
+    sub.add_parser("check", help="do the architecture's invariants still hold").set_defaults(fn=cmd_check)
+
+    rs = sub.add_parser("restart", help="check, then restart services")
+    rs.add_argument("units", nargs="*",
+                    help="default: herald-telegram and herald-brain")
+    rs.add_argument("--defer", action="store_true",
+                    help="request a restart instead of doing one now -- safe "
+                         "mid-turn; see cmd_restart's docstring")
+    rs.add_argument("--reason", help="why, for whoever reads the request later")
+    rs.add_argument("--force", action="store_true",
+                    help="restart even while a Telegram topic is mid-turn, "
+                         "killing it -- see cmd_restart")
+    rs.set_defaults(fn=cmd_restart)
+
+    t = sub.add_parser("think", help="one metered agent invocation")
+    t.add_argument("prompt", nargs="?")
+    t.add_argument("--label", default="ask")
+    t.add_argument("--model")
+    t.add_argument("--escalate", action="store_true", help="use the escalate model")
+    t.add_argument("--cwd")
+    t.add_argument("-v", "--verbose", action="store_true")
+    t.set_defaults(fn=cmd_think)
+
+    d = sub.add_parser("db", help="query the ledger")
+    d.add_argument("sql", nargs="?", default="select 1")
+    d.add_argument("--json", action="store_true")
+    d.add_argument("--schema", action="store_true",
+                   help="what is in the ledger and how to query it")
+    d.set_defaults(fn=cmd_db)
+
+    n = sub.add_parser("notify", help="push to the user's phone")
+    n.add_argument("title")
+    n.add_argument("body")
+    n.add_argument("--priority", default="default")
+    n.add_argument("--tags")
+    n.add_argument("--click")
+    n.set_defaults(fn=cmd_notify)
+
+    b = sub.add_parser("brain", help="the persistent conversational session")
+    b.add_argument("action", nargs="?", default="status",
+                   choices=["start", "stop", "ensure", "status", "url"])
+    b.set_defaults(fn=cmd_brain)
+
+    sub.add_parser("attach", help="attach to the brain's terminal").set_defaults(fn=cmd_attach)
+
+    c = sub.add_parser("collect", help="run collectors that are due")
+    c.add_argument("names", nargs="*",
+                   help="run these regardless of cadence; omit to run what is due")
+    c.add_argument("--force", action="store_true",
+                   help="run everything, ignoring cadence")
+    c.set_defaults(fn=cmd_collect)
+
+    sv = sub.add_parser("services", help="the background jobs")
+    sv.add_argument("action", nargs="?", default="install",
+                    choices=["install", "enable", "status"])
+    sv.add_argument("--force", action="store_true",
+                    help="install over units belonging to another checkout")
+    sv.set_defaults(fn=cmd_services)
+
+    su = sub.add_parser("setup", help="set Herald up, or fix one part of it")
+    su.add_argument("--step", help="run one step on its own")
+    su.add_argument("--list", action="store_true", help="what is set up so far")
+    su.add_argument("--web", action="store_true", help="use the browser wizard")
+    su.add_argument("--port", type=int, default=8799)
+    su.set_defaults(fn=cmd_setup)
+
+    cn = sub.add_parser("constitution",
+                        help="rebuild CLAUDE.md from the shared and personal rules")
+    cn.add_argument("--check", action="store_true", help="only say whether it is current")
+    cn.set_defaults(fn=cmd_constitution)
+
+    cf = sub.add_parser("config", help="read or write one setting")
+    cf.add_argument("action", choices=["get", "set", "path"])
+    cf.add_argument("path", nargs="?")
+    cf.add_argument("value", nargs="?")
+    cf.set_defaults(fn=cmd_config)
+
+    ts = sub.add_parser("test", help="the offline suite, program and extensions")
+    ts.add_argument("extra", nargs="*", help="passed through to unittest")
+    ts.set_defaults(fn=cmd_test)
+
+    e = sub.add_parser("ext", help="extensions: personal collectors, cycles and skills")
+    e.add_argument("action", nargs="?", default="list",
+                   choices=["list", "new", "enable", "disable", "sync"])
+    e.add_argument("name", nargs="?")
+    e.set_defaults(fn=cmd_ext)
+
+    y = sub.add_parser("cycle", help="run one cycle")
+    y.add_argument("name")
+    y.set_defaults(fn=cmd_cycle)
+
+    args = p.parse_args()
+    config.ensure_dirs()
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
