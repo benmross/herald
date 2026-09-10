@@ -27,3 +27,18 @@ jobs:
         env:
           HERALD_HOME: ${{ runner.temp }}/herald-home
         run: ./venv/bin/python -m unittest discover -s tests
+
+      - name: Bundled extension tests
+        # These ship to everyone, so they are tested whether or not any given
+        # install has the extension turned on. The iMessage parsing in
+        # particular can only be exercised this way off a Mac.
+        env:
+          HERALD_HOME: ${{ runner.temp }}/herald-home
+          HERALD_ROOT: ${{ github.workspace }}
+          PYTHONPATH: ${{ github.workspace }}/lib
+        run: |
+          for suite in extensions/*/tests; do
+            [ -d "$suite" ] || continue
+            echo "== $suite"
+            ./venv/bin/python -m unittest discover -s "$suite"
+          done

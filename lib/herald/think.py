@@ -167,6 +167,30 @@ def _stage_prompt(prompt: str, workdir: Path) -> tuple[str, Path | None]:
             f"instructions for this task. Follow them."), path
 
 
+@dataclass
+class Progress:
+    """One thing that just happened inside a running turn.
+
+    `kind` is "text" for the model's own narration -- the sentences it writes
+    between tool calls, explaining what it is about to do and what it found --
+    and "tool" for a call it made. Both come out of the stream-json output that
+    is already flowing, so neither costs a token or a millisecond.
+
+    The narration used to be dropped on the floor here, which is why watching a
+    turn from Telegram felt so much worse than watching one in a terminal: the
+    terminal shows what the model is thinking through, and Telegram was showing
+    a list of file paths.
+    """
+    kind: str
+    text: str
+
+
+def _text_summary(block: dict) -> str:
+    """The model's narration, collapsed to something a chat line can hold."""
+    text = " ".join((block.get("text") or "").split())
+    return text[:400]
+
+
 def _tool_summary(block: dict) -> str:
     """A short human-readable line for one tool_use block -- 'Bash: curl ...',
     'Read: menu.py', not the full call. Used only for a live progress snippet;
@@ -202,12 +226,23 @@ def _handle_stream_line(line: str, state: dict, on_progress,
         message = candidate.get("message") or {}
         state["last_assistant_usage"] = message.get("usage")
         for block in message.get("content") or []:
-            if not (isinstance(block, dict) and block.get("type") == "tool_use"):
+            if not isinstance(block, dict):
                 continue
-            summary = _tool_summary(block)
+            kind = block.get("type")
+            if kind == "tool_use":
+                summary = _tool_summary(block)
+            elif kind == "text":
+                summary = _text_summary(block)
+                if not summary:
+                    continue
+            else:
+                continue
             if on_progress:
-                on_progress(summary)
-            if active_key:
+                on_progress(Progress("tool" if kind == "tool_use" else "text",
+                                     summary))
+            if kind == "tool_use" and active_key:
+                # `current_progress` answers "what is it doing right now", so
+                # it tracks the tool call rather than the commentary around it.
                 with _active_lock:
                     entry = _active.get(active_key)
                     if entry is not None:
@@ -532,7 +567,9 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     `label` is what shows up in the runs table — use `cycle:dawn`,
     `collector:opportunities`, `ask`, so spend can be attributed later.
 
-    `on_progress` receives public progress from the CLI's event stream.
+    `on_progress` receives a `Progress` for each thing the turn does: the
+    model's own narration as it writes it, and each tool call as it makes
+    it. Both come from the event stream that is already flowing.
 
     `cancel_key`, if given, registers the underlying subprocess with
     `cancel()` under that key for exactly as long as this call is running --

@@ -53,12 +53,19 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, think  # noqa: E402
+from herald import activity, approvals, config, db, tgtext, think  # noqa: E402
 
 NAME = "telegram"
 POLL_TIMEOUT = 50          # seconds of long-polling per request
 TYPING_REFRESH = 4         # Telegram clears the typing indicator after ~5s
-STATUS_EVERY_SECONDS = 120  # while a turn runs, report where it is this often
+# The live transcript: how long before the first one appears, how often it may
+# be edited after that, and how much of it to keep. The delay exists so a
+# two-second answer never gets a progress message at all.
+PROGRESS_AFTER_SECONDS = 6
+PROGRESS_EDIT_SECONDS = 4
+PROGRESS_LINES = 24
+PROGRESS_LIMIT = 3400
+TOOL_BULLET = "\u2023"      # a single right-pointing bracket
 # A topic IS the conversation, for as long as the user wants it to be.
 #
 # This started at five hours of silence, which was the right policy when
@@ -149,38 +156,40 @@ def api(method: str, **params):
         return None
 
 
-_ITALIC_MAP = {}
-for _i, _ch in enumerate("ABCDEFGHIJKLMNOPQRSTUVWXYZ"):
-    _ITALIC_MAP[_ch] = chr(0x1D434 + _i)
-for _i, _ch in enumerate("abcdefghijklmnopqrstuvwxyz"):
-    _ITALIC_MAP[_ch] = chr(0x1D44E + _i)
-_ITALIC_MAP["h"] = "ℎ"  # italic math h has no codepoint in the main block
-
-
-def italic(text: str) -> str:
-    """Unicode italic, not Markdown. Renders slanted in Telegram with zero
-    parsing involved -- nothing to misparse, so it can't be corrupted by a
-    literal `*` or `_` the way parse_mode="Markdown" could (see send()'s
-    docstring). This is exactly why it's used for the periodic status notice,
-    which embeds a live progress snippet that can contain anything a
-    tool call did -- a URL, a shell command, punctuation Markdown would trip
-    on. Letters only; digits and punctuation pass through unchanged since the
-    Unicode math-italic block doesn't define them."""
-    return "".join(_ITALIC_MAP.get(c, c) for c in text)
+# The Unicode math-italic table that used to live here is gone. It existed to
+# get slanted text without a parse_mode, back when any parse_mode risked
+# silently corrupting somebody else's URL. Now that Herald generates the HTML
+# itself and escapes everything else first (lib/herald/tgtext.py), a real <i>
+# is available, copyable, and does not double the message length against
+# Telegram's UTF-16 limit.
 
 
 class Working:
-    """Keep the chat showing "typing…" for as long as the turn takes.
+    """One message per turn, edited as the turn runs, showing what it is doing.
 
-    A turn here runs anywhere from two seconds to three minutes: startup is a
-    couple of seconds, then it depends entirely on whether the question needs
-    the ledger, the web, or nothing. That variance is honest -- what was broken
-    is that the user could not tell a slow answer from a dead one. The user got a "…"
-    message and then silence.
+    A turn here runs anywhere from two seconds to twenty minutes, and the thing
+    that was broken was never the waiting -- it was not being able to tell a
+    slow answer from a dead one, and not being able to see any of the reasoning
+    that a terminal shows for free.
 
-    Telegram's typing indicator is the right primitive: it expires after about
-    five seconds, so refreshing it is itself a liveness signal, and it vanishes
-    on its own if this process dies.
+    Two mechanisms, doing different jobs:
+
+    **Telegram's typing indicator** is the liveness signal. It expires after
+    about five seconds, so refreshing it *is* the proof this process is alive,
+    and it vanishes on its own if the process dies.
+
+    **A single edited message** is the transcript. Until 10 September 2026 this
+    posted a fresh "still on it, now: Read: foo.py" every two minutes, which
+    buried the conversation in status lines and threw away the interesting half
+    -- the sentences the model writes between tool calls, explaining what it is
+    about to do and what it just found. Those now arrive as `Progress` events
+    alongside the tool calls, accumulate into one message, and that message is
+    edited in place. The chat gets one growing block instead of a dozen
+    interruptions, and it reads like watching the terminal.
+
+    Editing is rate-limited and only happens when the text actually changed:
+    Telegram rejects an edit to identical content, and hammering editMessageText
+    earns a 429.
     """
 
     def __init__(self, chat_id: int, thread_id: int | None = None):
@@ -189,11 +198,15 @@ class Working:
         self.started = time.monotonic()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
-        self._progress_lock = threading.Lock()
-        self._progress = ""
-        self._steps = 0           # tool calls seen so far this turn
-        self._reported_steps = -1  # step count at the last status message
-        self._next_status = STATUS_EVERY_SECONDS
+        self._lock = threading.Lock()
+        self._lines: list[str] = []       # rendered transcript, newest last
+        self._latest = ""                 # the most recent tool call
+        self._steps = 0                   # tool calls seen so far this turn
+        self._dirty = False
+        self._msg_id: int | None = None
+        self._sent_text = ""
+        self._last_edit = 0.0
+        self._settled = False
 
     def __enter__(self):
         self._thread.start()
@@ -201,71 +214,160 @@ class Working:
 
     def __exit__(self, *exc):
         self._stop.set()
-        self._thread.join(timeout=2)
+        self._thread.join(timeout=3)
+        # settle() is the normal path and knows what the answer was. This is
+        # the backstop for the paths that never reach it -- an exception, or a
+        # caller that forgot.
+        if not self._settled:
+            self._finish(failed=exc[0] is not None)
         return False
 
     @property
     def elapsed(self) -> float:
         return time.monotonic() - self.started
 
-    def on_progress(self, text: str) -> None:
-        """Pass straight to think.think() as on_progress= -- called from
-        whatever tool call is happening right now, read from stream-json
-        output that's already flowing, so this costs no extra time or tokens."""
-        with self._progress_lock:
-            self._progress = text
-            self._steps += 1
+    def on_progress(self, event) -> None:
+        """Passed straight to think.think() as on_progress=.
 
-    def _status(self) -> str:
-        """One line saying where the turn is right now. the user asked for this on
-        8 Sep 2026: a single "still on it" at 75s told them the turn was alive
-        once and then went silent again for however long it took, which on a
-        ten-minute self-edit is most of the wait. So this fires every
-        STATUS_EVERY_SECONDS instead, and says what changed -- elapsed time,
-        how many tool calls have happened, and the one running now. If the
-        count has not moved since the last status, it says so, because a
-        turn stuck on one long command looks identical to a dead one
-        otherwise."""
-        with self._progress_lock:
-            snippet, steps, prev = self._progress, self._steps, self._reported_steps
-            self._reported_steps = steps
-        minutes = int(self.elapsed // 60)
-        head = f"{minutes} min in"
-        if not snippet:
-            return f"{head}, still thinking -- no tool calls yet."
-        if steps == prev:
-            return f"{head}, still on the same step: {snippet}"
-        return f"{head}, {steps} step{'s' if steps != 1 else ''} so far, now: {snippet}"
+        Called from the thread reading the CLI's stream-json output, which is
+        already flowing, so nothing here costs time or tokens. `event` is a
+        `think.Progress`: narration or a tool call.
+        """
+        kind = getattr(event, "kind", "tool")
+        text = getattr(event, "text", str(event))
+        if not text:
+            return
+        with self._lock:
+            if kind == "text":
+                self._lines.append(text)
+            else:
+                self._steps += 1
+                self._latest = text
+                self._lines.append(f"{TOOL_BULLET} {text}")
+            # A long turn can produce hundreds of these; the message has a hard
+            # 4096-character limit and nobody scrolls back through a live one
+            # anyway. Keep the recent end.
+            del self._lines[:-PROGRESS_LINES]
+            self._dirty = True
+
+    def _render(self, *, done: bool = False, failed: bool = False) -> str:
+        with self._lock:
+            lines, steps = list(self._lines), self._steps
+        seconds = int(self.elapsed)
+        clock = f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60}s"
+        step_note = f" · {steps} step{'' if steps == 1 else 's'}" if steps else ""
+        if done:
+            head = f"{'stopped' if failed else 'done'} · {clock}{step_note}"
+        else:
+            head = f"working · {clock}{step_note}"
+        body = "\n".join(lines) if lines else "thinking..."
+        if len(body) > PROGRESS_LIMIT:
+            body = "..." + body[-PROGRESS_LIMIT:]
+        # The transcript goes in <pre>: it is full of file paths and shell
+        # commands, which should stay monospaced and copyable, and which must
+        # never be read as formatting. tgtext escapes the contents.
+        return f"<i>{tgtext.escape(head)}</i>\n{tgtext.code_block(body)}"
+
+    def _publish(self, *, done: bool = False, failed: bool = False) -> None:
+        text = self._render(done=done, failed=failed)   # already HTML
+        if text == self._sent_text:
+            return
+        extra = {"message_thread_id": self.thread_id} if self.thread_id else {}
+        if self._msg_id is None:
+            resp = api("sendMessage", chat_id=self.chat_id, text=text,
+                       parse_mode="HTML",
+                       link_preview_options={"is_disabled": True}, **extra)
+            if resp and resp.get("ok"):
+                self._msg_id = (resp.get("result") or {}).get("message_id")
+                self._sent_text = text
+            return
+        resp = api("editMessageText", chat_id=self.chat_id,
+                   message_id=self._msg_id, text=text, parse_mode="HTML",
+                   link_preview_options={"is_disabled": True})
+        if resp and resp.get("ok"):
+            self._sent_text = text
+        self._last_edit = time.monotonic()
+
+    def settle(self, reply: str = "", *, stopped: bool = False) -> None:
+        """Called once the turn's answer is known, before it is sent.
+
+        Trims the tail of the transcript, because the model's *final* message
+        arrives through the same stream as its narration -- so without this the
+        progress block ends with the first 400 characters of the reply and the
+        reply then arrives underneath it, saying the same thing twice.
+        """
+        head = " ".join((reply or "").split())[:120].lower()
+        if head:
+            with self._lock:
+                while self._lines:
+                    last = " ".join(self._lines[-1].split()).lower()
+                    if last.startswith(TOOL_BULLET):
+                        break
+                    # A narration line that the reply opens with, or that opens
+                    # the reply, is the reply.
+                    if head.startswith(last[:120]) or last.startswith(head[:80]):
+                        self._lines.pop()
+                        continue
+                    break
+        self._settled = True
+        self._finish(failed=stopped)
+
+    def _finish(self, *, failed: bool = False) -> None:
+        """Leave the transcript in the chat, marked finished.
+
+        Deliberately not deleted: what the turn actually did is the part worth
+        keeping, and the reply that follows says what came of it rather than how.
+        """
+        if self._msg_id is None and not self._lines:
+            return
+        self._publish(done=True, failed=failed)
 
     def _run(self) -> None:
         while not self._stop.is_set():
             extra = {"message_thread_id": self.thread_id} if self.thread_id else {}
             api("sendChatAction", chat_id=self.chat_id, action="typing", **extra)
-            if self.elapsed >= self._next_status:
-                self._next_status += STATUS_EVERY_SECONDS
-                send(self.chat_id, italic(self._status()), self.thread_id)
+            with self._lock:
+                dirty = self._dirty
+            due = (time.monotonic() - self._last_edit) >= PROGRESS_EDIT_SECONDS
+            first = self._msg_id is None and self.elapsed >= PROGRESS_AFTER_SECONDS
+            if (dirty and due) or (first and dirty):
+                with self._lock:
+                    self._dirty = False
+                self._publish()
             self._stop.wait(TYPING_REFRESH)
 
 
-def send(chat_id: int, text: str, thread_id: int | None = None) -> None:
-    """Plain text, deliberately no parse_mode.
+def send(chat_id: int, text: str, thread_id: int | None = None,
+         *, markup: bool = True) -> None:
+    """One reply, as HTML this process generated itself.
 
-    This used to try `parse_mode="Markdown"` first and fall back to plain text
-    only if Telegram rejected the message outright -- which handles an
-    *unbalanced* asterisk, but not a *balanced* one. Two literal asterisks
-    anywhere in the same message (two URLs carrying a literal asterisk,
-    each shaped `RecNumAndPort=119388*1`) parse as a valid bold span: Telegram
-    accepts the send and silently strips both `*` characters, corrupting both
-    URLs into wrong recipe numbers with no error at either end. That failure
-    is quiet, not loud, so a fallback-on-rejection never catches it. Plain
-    text never does this and costs nothing here -- these replies are already
-    written to read like texts, not documents.
+    Markdown mode was tried and removed, for a reason worth keeping in mind
+    before anyone reaches for it again: Telegram's parser gets applied to text
+    Herald did not write, and two literal asterisks in two URLs formed a valid
+    bold span -- accepted, silently stripped, both URLs delivered wrong. Since
+    nothing was rejected, no retry could have caught it.
+
+    So `lib/herald/tgtext.py` converts the Markdown here and escapes everything
+    else *first*, which means no character in anybody's mail subject or event
+    title can become a tag. If Telegram rejects the markup anyway, the same
+    text goes out unformatted rather than not at all -- that is a guard against
+    a bug in the converter, not against content.
+
+    `markup=False` sends the text exactly as given, for the few places that
+    have already built their own HTML.
     """
     extra = {"message_thread_id": thread_id} if thread_id else {}
-    for i in range(0, len(text), MAX_REPLY):
-        chunk = text[i:i + MAX_REPLY]
-        api("sendMessage", chat_id=chat_id, text=chunk,
+    if not markup:
+        api("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
             link_preview_options={"is_disabled": True}, **extra)
+        return
+    for chunk in tgtext.chunks(text, MAX_REPLY):
+        resp = api("sendMessage", chat_id=chat_id, text=tgtext.to_html(chunk),
+                   parse_mode="HTML",
+                   link_preview_options={"is_disabled": True}, **extra)
+        if not (resp and resp.get("ok")):
+            api("sendMessage", chat_id=chat_id, text=chunk,
+                link_preview_options={"is_disabled": True}, **extra)
 
 
 def download(file_id: str, suggested: str) -> pathlib.Path | None:
@@ -545,6 +647,8 @@ def handle(update: dict, state: dict) -> None:
                 on_progress=working.on_progress, cancel_key=key,
             )
             took = working.elapsed
+            working.settle(result.text if result.ok else "",
+                           stopped=result.cancelled or not result.ok)
 
         cost = f"${result.cost_usd:.3f}" if result.cost_usd is not None else "?"
         outcome = "CANCELLED" if result.cancelled else ("ok" if result.ok else "FAILED")
@@ -564,8 +668,8 @@ def handle(update: dict, state: dict) -> None:
                                    "WebSearch", "WebFetch", "Bash"],
                     on_progress=working.on_progress, cancel_key=key)
             if result.ok:
-                send(chat_id, italic("(lost this topic's earlier transcript, so I "
-                                      "re-read the ledger instead)"), thread_id)
+                send(chat_id, "*(lost this topic's earlier transcript, so I "
+                              "re-read the ledger instead)*", thread_id)
                 reason = "resume failed"
 
         if result.ok:
@@ -736,10 +840,10 @@ def _handle_stop(update: dict, key: str) -> None:
         return
     thread_id = msg.get("message_thread_id")
     if think.cancel(key):
-        send(chat_id, italic("Stopped -- abandoning whatever that was."), thread_id)
+        send(chat_id, "*Stopped — abandoning whatever that was.*", thread_id)
         print(f"[{key}] stopped on request")
     else:
-        send(chat_id, italic("Nothing running here."), thread_id)
+        send(chat_id, "*Nothing running here.*", thread_id)
 
 
 def _try_steer(update: dict, key: str) -> bool:
@@ -774,7 +878,7 @@ def _try_steer(update: dict, key: str) -> bool:
     thread_id = msg.get("message_thread_id")
     snippet = think.current_progress(key)
     after = f" after: {snippet}" if snippet else " after the current step"
-    send(chat_id, italic(f"Got it -- folding this in{after}."), thread_id)
+    send(chat_id, f"*Got it — folding this in{after}.*", thread_id)
     print(f"[{key}] steered mid-turn ({snippet or 'no progress yet'})")
     return True
 

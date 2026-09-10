@@ -219,7 +219,7 @@ def main() -> int:
     # fallback that always fires is just a second buzz.
     body = [f"_{now:%A %-d %B}_", "", digest.strip()]
     if questions:
-        body += ["", "*Want me to?*"] + [f"• {q}" for q in questions]
+        body += ["", "**Want me to?**"] + [f"• {q}" for q in questions]
     where = notify.tell(headline, "\n".join(body), priority=priority,
                         tags="sunrise", click=_brain_url())
 

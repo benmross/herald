@@ -200,7 +200,22 @@ def lib_paths() -> list[str]:
 
 
 def test_paths() -> list[pathlib.Path]:
-    return [ext.path / "tests" for ext in enabled() if (ext.path / "tests").is_dir()]
+    """Test directories to run.
+
+    Every enabled extension, plus every *bundled* one whether enabled or not.
+    A bundled extension is Herald's own code and ships to everyone, so its
+    tests belong in the suite regardless of whether this particular install has
+    turned it on -- otherwise the iMessage parsing, which is the fiddliest code
+    in the repository, is only ever tested on a Mac.
+    """
+    out = []
+    for ext in all_extensions():
+        if not (ext.enabled or ext.bundled):
+            continue
+        path = ext.path / "tests"
+        if path.is_dir():
+            out.append(path)
+    return out
 
 
 # --------------------------------------------------------------------------

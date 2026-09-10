@@ -10,7 +10,7 @@ import json
 import urllib.error
 import urllib.request
 
-from . import config, db
+from . import config, db, tgtext
 
 PRIORITIES = ("min", "low", "default", "high", "urgent")
 
@@ -96,7 +96,8 @@ def push(title: str, message: str, *, priority: str = "default",
 # thing itself.
 # --------------------------------------------------------------------------
 
-TELEGRAM_LIMIT = 3900          # the API cap is 4096; leave room for chunk markers
+#: Kept as an alias; the real value and the chunker live in tgtext.
+TELEGRAM_LIMIT = tgtext.LIMIT
 
 
 def _telegram_api(method: str, **params) -> dict | None:
@@ -144,25 +145,6 @@ def _updates_thread_id() -> int | None:
     return config.secret("telegram.updates_thread_id")
 
 
-def _chunks(text: str) -> list[str]:
-    """Split on paragraph boundaries so a digest never breaks mid-sentence."""
-    if len(text) <= TELEGRAM_LIMIT:
-        return [text]
-    out, current = [], ""
-    for para in text.split("\n\n"):
-        if len(current) + len(para) + 2 > TELEGRAM_LIMIT and current:
-            out.append(current.rstrip())
-            current = ""
-        # A single paragraph over the limit still has to go somewhere.
-        while len(para) > TELEGRAM_LIMIT:
-            out.append(para[:TELEGRAM_LIMIT])
-            para = para[TELEGRAM_LIMIT:]
-        current += para + "\n\n"
-    if current.strip():
-        out.append(current.rstrip())
-    return out
-
-
 def telegram(text: str, *, record: bool = True,
              thread_id: int | None = None) -> bool:
     """Send the long version. Returns whether it landed.
@@ -171,15 +153,16 @@ def telegram(text: str, *, record: bool = True,
     group's Updates topic -- see `_updates_thread_id`. Pass one explicitly
     only to land somewhere else on purpose.
 
-    Plain text, deliberately no parse_mode. This used to try
-    `parse_mode="Markdown"` first and fall back to plain text on rejection --
-    which catches an *unbalanced* asterisk, but not a *balanced* one. Two
-    literal asterisks anywhere in the same message (a digest citing two
-    URLs each shaped `RecNumAndPort=119388*1`, is
-    exactly how this was found) parse as a valid bold span: Telegram accepts
-    the send and silently strips both `*` characters, corrupting both URLs
-    with no error anywhere. A fallback keyed on rejection never catches a
-    send that succeeds. Plain text never does this.
+    Sent as HTML that Herald generated itself -- see `lib/herald/tgtext.py`.
+    Markdown mode was tried and removed because Telegram's parser is applied to
+    text Herald did not write, and two literal asterisks in two URLs formed a
+    valid bold span: accepted, silently stripped, both URLs delivered wrong.
+    Converting the Markdown here and escaping everything else first means a
+    stray asterisk arrives as an asterisk.
+
+    If Telegram still rejects the markup, the same text goes out unformatted
+    rather than not at all. That fallback is for a bug in the converter, not
+    for anybody's content: content cannot produce a tag any more.
     """
     chat_id = _telegram_chat_id()
     if not chat_id:
@@ -188,10 +171,15 @@ def telegram(text: str, *, record: bool = True,
         thread_id = _updates_thread_id()
 
     ok = True
-    for part in _chunks(text):
+    for part in tgtext.chunks(text):
         extra = {"message_thread_id": thread_id} if thread_id else {}
-        resp = _telegram_api("sendMessage", chat_id=chat_id, text=part,
+        resp = _telegram_api("sendMessage", chat_id=chat_id,
+                             text=tgtext.to_html(part), parse_mode="HTML",
                              link_preview_options={"is_disabled": True}, **extra)
+        if not (resp and resp.get("ok")):
+            resp = _telegram_api("sendMessage", chat_id=chat_id, text=part,
+                                 link_preview_options={"is_disabled": True},
+                                 **extra)
         ok = ok and bool(resp and resp.get("ok"))
 
     if record:
@@ -224,7 +212,8 @@ def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
         thread_id = _updates_thread_id()
     extra = {"message_thread_id": thread_id} if thread_id else {}
     resp = _telegram_api(
-        "sendMessage", chat_id=chat_id, text=text[:TELEGRAM_LIMIT],
+        "sendMessage", chat_id=chat_id,
+        text=tgtext.to_html(text[:tgtext.LIMIT]), parse_mode="HTML",
         link_preview_options={"is_disabled": True},
         reply_markup={"inline_keyboard": [[
             {"text": yes, "callback_data": f"approve:{approval_id}"},
@@ -250,7 +239,9 @@ def tell(title: str, body: str, *, priority: str = "default",
     Telegram first. ntfy only if Telegram failed, because a fallback that always
     fires is not a fallback, it is a second notification.
     """
-    message = f"*{title}*\n\n{body}" if title else body
+    # Bold, not italic: a digest headline is the one line that has to be
+    # readable at a glance on a watch.
+    message = f"**{title}**\n\n{body}" if title else body
     if telegram(message, thread_id=thread_id):
         return "telegram"
     if push(title or "Herald", body, priority=priority, tags=tags, click=click):
