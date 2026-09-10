@@ -59,7 +59,7 @@ CATEGORIES = {"Software", "AI/ML/Data", "Hardware", "Quant", "Product",
 # Pennsylvania too. Anchor on the state, or on a city distinctive enough to
 # stand alone.
 DMV = re.compile(
-    r"\b(MD|Maryland|DC|Virginia)\b"
+    r"\b(MD|Maryland|DC|Virginia)\b"   # the default; jobs.home_region replaces it
     r"|\bVA\b(?!\s*\w)"
     r"|\bWashington,?\s*D\.?C\.?"
     r"|\b(College Park|Bethesda|Rockville|Silver Spring|Greenbelt|Towson|"

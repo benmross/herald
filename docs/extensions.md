@@ -5,8 +5,8 @@ Herald. A university's event scraper, a self-hosted service, a data source only
 you have, a skill for querying something only you run.
 
 They exist because the alternative is worse. Herald began as one person's agent
-and its collectors knew what a `terplink` id was, which meant the architecture
-had quietly decided its users were students at one university. Anything that
+and its collectors knew one university's event-feed ids, which meant the
+architecture had quietly decided its users were students there. Anything that
 specific now lives outside the program, in the same private directory as the
 ledger, and the program stays general.
 

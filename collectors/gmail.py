@@ -138,7 +138,7 @@ def collect(con) -> dict:
     svc = google.service("gmail", "v1")
 
     # Messages carry label *ids* ("Label_1735656434075..."); the names live
-    # here. One call, rebuilt each run, so a query can say "labelled Maryland"
+    # here. One call, rebuilt each run, so a query can say "labelled Work"
     # instead of memorising an id. The campus-events sync in the scout cycle
     # depends on it.
     db.clear(con, NAME, "label")

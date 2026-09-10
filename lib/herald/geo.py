@@ -1,23 +1,22 @@
 """Coordinates and addresses, converted into each other, cheaply and once.
 
-Built 7 September 2026 because two unrelated things both turned out to need
-the same capability in the same week: naming where a Dawarich GPS point is
-("38.9927, -76.9485" -> "the university campus"), and turning an address a contact
-texted the user into coordinates so it can be checked against where the user actually
-was. the user asked for this to be a real framework rather than one-off code,
-because it is going to get reused -- read this before writing another
-haversine loop or another `requests.get(nominatim...)` somewhere else.
+Built 7 September 2026 because two unrelated things needed the same capability
+in the same week: naming where a logged GPS point is ("38.9927, -76.9485" ->
+"the university campus"), and turning an address someone sent into coordinates
+so it can be checked against where the user actually was. It is a framework
+rather than one-off code because that capability keeps getting wanted -- read
+this before writing another haversine loop or another
+`requests.get(nominatim...)` somewhere else.
 
 THREE LAYERS, CHEAPEST FIRST. Every function below tries them in order and
 stops at the first one that answers.
 
-1. **The gazetteer** (`config/secrets.json` -> `"places"`). A short,
-   hand-maintained list of named places the user actually goes -- home, their dorm,
-   campus -- as `{name, lat, lon, radius_m, confidence, note}`. Free, instant,
-   no network, and exact for anywhere the user spends real time. This already
-   existed (`dawarich.py` used it directly); it now lives here so every
-   caller gets it, not just Dawarich. Nothing is looked up over the network
-   for a point inside one of these radii.
+1. **The gazetteer** (`secrets.json` -> `"places"`). A short, hand-maintained
+   list of named places the user actually goes -- home, work, wherever they
+   spend their week -- as `{name, lat, lon, radius_m, confidence, note}`. Free,
+   instant, no network, and exact for anywhere they spend real time. It began
+   inside one collector; it lives here so every caller gets it. Nothing is
+   looked up over the network for a point inside one of these radii.
 
 2. **The cache** (`ledger/raw/geocode-cache.db`, disposable, gitignored --
    same rule as every other cache under `raw/`). Every address string or
@@ -29,8 +28,8 @@ stops at the first one that answers.
 3. **The network** -- OpenStreetMap's public Nominatim API. Only reached for
    something neither of the above already answered.
 
-WHY NOMINATIM'S PUBLIC ENDPOINT AND NOT A SELF-HOSTED GEOCODER, given this box
-already runs Dawarich, Postgres and half a dozen other containers: volume.
+WHY NOMINATIM'S PUBLIC ENDPOINT AND NOT A SELF-HOSTED GEOCODER, even on a box
+that already runs other containers: volume.
 Nominatim's usage policy caps free use at 1 request/second and asks for a
 real User-Agent, which is exactly what a personal ledger doing occasional
 lookups needs -- self-hosting Nominatim or Photon means importing a
@@ -54,7 +53,7 @@ USAGE:
     # -> {"lat": 39.128..., "lon": -77.158..., "display_name": "...", "source": "cache"}
 
     geo.reverse(38.9882, -76.9453)
-    # -> {"place": "Denton Hall", "source": "gazetteer"}   (inside a known radius)
+    # -> {"place": "home", "source": "gazetteer"}   (inside a known radius)
     # -> {"place": "...", "lat":, "lon":, "source": "nominatim"}   (otherwise)
 
     geo.distance_m(lat1, lon1, lat2, lon2)   # haversine, metres
@@ -167,18 +166,22 @@ def nearest_known_place(lat: float, lon: float) -> tuple[str | None, float | Non
     return best, (round(best_d) if best_d is not None else None)
 
 
-# A soft geographic bias, not a filter: an address with no city/state -- "22011
-# Dickerson rd" is a real example that came out of a text -- is genuinely
-# ambiguous across the whole US, and Nominatim's default ranking has no idea
-# that almost everyone in this ledger lives within an hour of Washington, DC.
-# Found the hard way: an unqualified "Dickerson Rd" resolved to Wisner
-# Township, Michigan instead of Dickerson, Maryland, and got written to a real
-# contact before the mistake was caught. `viewbox` without `bounded=1` is a
+# A soft geographic bias, not a filter: an address with no city or region --
+# a real example that came out of a text message -- is genuinely ambiguous
+# across a whole country, and Nominatim's default ranking has no idea that
+# almost everyone in a personal ledger lives within an hour of the same place.
+# Found the hard way: one unqualified street name resolved to a township in the
+# wrong state entirely, and got written to a real contact before the mistake was
+# caught. `viewbox` without `bounded=1` is a
 # *preference*, not a restriction -- a genuinely distant address (a friend at
 # college out of state, say) still resolves, just without the free home-turf
 # advantage. Overridable per call for anyone who really is asking about
 # somewhere else entirely.
-LOCAL_BIAS_VIEWBOX = "-77.6,39.4,-76.6,38.7"   # lon/lat min,max around DC-MD-VA
+#: `geo.local_bias_viewbox` in the config: "lon_min,lat_max,lon_max,lat_min"
+#: around wherever this person's life happens. Unset means no bias, which is
+#: the right default for someone whose region Herald has no way to know.
+def local_bias_viewbox() -> str | None:
+    return config.get("geo.local_bias_viewbox") or None
 
 
 def geocode(address: str, *, bias_local: bool = True) -> dict | None:
@@ -202,9 +205,14 @@ def geocode(address: str, *, bias_local: bool = True) -> dict | None:
             parsed["source"] = "cache"
         return parsed
 
-    params = {"q": address, "format": "jsonv2", "limit": 1, "countrycodes": "us"}
-    if bias_local:
-        params["viewbox"] = LOCAL_BIAS_VIEWBOX
+    params = {"q": address, "format": "jsonv2", "limit": 1}
+    # `geo.country` narrows an ambiguous street name to one country. Unset means
+    # the whole world, which is slower to disambiguate and correct for someone
+    # whose country Herald has not been told.
+    if country := config.get("geo.country"):
+        params["countrycodes"] = country
+    if bias_local and (viewbox := local_bias_viewbox()):
+        params["viewbox"] = viewbox
     results = _get("/search", params)
     result = None
     if results:
@@ -226,7 +234,7 @@ def reverse(lat: float, lon: float) -> dict | None:
 
     A gazetteer hit returns just {"place": name, "source": "gazetteer",
     "metres_from_place": ...} -- that is genuinely all the user would want to be
-    told ("you're at Denton Hall"), and it costs nothing. Only a coordinate
+    told ("you're at the office"), and it costs nothing. Only a coordinate
     outside every known radius reaches the cache or the network, and gets the
     fuller {"place": display_name, "lat", "lon", "source"} shape.
     """

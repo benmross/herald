@@ -190,8 +190,7 @@ Within Herald itself, do not call `insert` directly — go through
 ```python
 cal.events().insert(calendarId=target, body={
     "summary": "Algorithms lecture",
-    "location": "Iribe Center for Computer Science, 8125 Paint Branch Dr, "
-                "College Park, MD 20742, Room 0324",
+    "location": "Science Building, 12 Example Road, Anytown AN1 2CD, Room 0324",
     "start": {"dateTime": "2026-09-08T10:00:00", "timeZone": "America/New_York"},
     "end":   {"dateTime": "2026-09-08T10:50:00", "timeZone": "America/New_York"},
     "recurrence": ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR;UNTIL=20261211T235959Z"],
