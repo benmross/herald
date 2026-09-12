@@ -59,9 +59,34 @@ CREATE TABLE IF NOT EXISTS runs (
     num_turns     INTEGER,
     exit_code     INTEGER,
     fell_back     INTEGER NOT NULL DEFAULT 0,
-    error         TEXT
+    error         TEXT,
+    -- Where the wall clock went, which is a different question from what the
+    -- run cost. Measured 12 Sep 2026 across 108 transcripts: model time was
+    -- 68% of all elapsed time, and a turn averaged 21 model round trips. So
+    -- latency is round trips multiplied by per-round-trip model time, and
+    -- nothing above can see either. These four can.
+    startup_ms    INTEGER,              -- launch until the CLI's init event
+    model_ms      INTEGER,              -- summed thinking and generating
+    tool_ms       INTEGER,              -- summed tool execution
+    round_trips   INTEGER               -- assistant events; the latency driver
 );
 CREATE INDEX IF NOT EXISTS idx_runs_ts ON runs (ts DESC);
+
+-- One row per phase of a run, so "which tool ate the turn" is a query rather
+-- than an afternoon with the transcripts. Written by think.py from the
+-- stream-json events it already parses, so it costs no tokens and no extra
+-- round trip.
+CREATE TABLE IF NOT EXISTS run_phases (
+    id      INTEGER PRIMARY KEY,
+    run_id  INTEGER NOT NULL,
+    seq     INTEGER NOT NULL,           -- order within the run
+    kind    TEXT NOT NULL,              -- 'startup' | 'model' | 'tool'
+    name    TEXT,                       -- tool name, for kind='tool'
+    ms      INTEGER NOT NULL,
+    detail  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_run_phases_run ON run_phases (run_id, seq);
+CREATE INDEX IF NOT EXISTS idx_run_phases_kind ON run_phases (kind, name);
 
 -- Open loops. The thing that makes Herald feel like it is paying attention.
 CREATE TABLE IF NOT EXISTS commitments (
@@ -232,6 +257,8 @@ def _add_column_if_missing(con: sqlite3.Connection, table: str, column: str,
 
 def _migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "runs", "context_tokens", "INTEGER")
+    for col in ("startup_ms", "model_ms", "tool_ms", "round_trips"):
+        _add_column_if_missing(con, "runs", col, "INTEGER")
     con.commit()
 
 
@@ -342,7 +369,8 @@ def record_run(con: sqlite3.Connection, **fields) -> int:
     # finished answer. The column stays for the rows that already have it.
     cols = ("label", "engine", "model", "session_id", "duration_ms", "cost_usd",
             "input_tokens", "output_tokens", "cache_read", "cache_write",
-            "context_tokens", "num_turns", "exit_code", "error")
+            "context_tokens", "num_turns", "exit_code", "error",
+            "startup_ms", "model_ms", "tool_ms", "round_trips")
     vals = [fields.get(c) for c in cols]
     cur = con.execute(
         f"INSERT INTO runs (ts, {', '.join(cols)}) VALUES (?{', ?' * len(cols)}) RETURNING id",
@@ -351,6 +379,25 @@ def record_run(con: sqlite3.Connection, **fields) -> int:
     row_id = _one(cur)
     con.commit()
     return row_id
+
+
+def record_phases(con: sqlite3.Connection, run_id: int,
+                  phases: list[dict]) -> None:
+    """Store a run's phase timeline.
+
+    Best-effort on purpose, like `record_run`: a lost timing row is better than
+    a lost answer, so a caller that fails here keeps going.
+    """
+    if not run_id or not phases:
+        return
+    con.executemany(
+        "INSERT INTO run_phases (run_id, seq, kind, name, ms, detail) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [(run_id, i, p["kind"], p.get("name"), int(p["ms"]),
+          (p.get("detail") or None))
+         for i, p in enumerate(phases)],
+    )
+    con.commit()
 
 
 def mark_collector(con: sqlite3.Connection, name: str, ok: bool,

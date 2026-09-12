@@ -134,6 +134,26 @@ window. A query returns twenty rows. The corpus is thirty thousand.
 
     herald db "select title, ts from facts where source='gmail' order by ts desc limit 20"
 
+**Start with `state/orientation.md`.** It is generated deterministically, in
+one file: what day it is, what is live, which ledger file answers which kind of
+question, and `facts.db`'s own schema with worked queries. Read it first and you
+will usually know exactly which one other file to open and which single query
+to write.
+
+That is a latency fix, not a token one. Measured on 12 September 2026 across 111
+sessions: **model time is 68% of all elapsed time, and a turn makes a median of
+nine model round trips.** A turn cannot be faster than its round trips times the
+time each one takes, so what makes a session feel slow is discovering the world
+one sequential read at a time — `about.md`, then `goals.md`, then
+`preferences.md`, then `state/now.md`, then a query that fails because nothing
+said what the columns were. The prompt cache already makes the tokens nearly
+free; nothing makes a round trip free.
+
+So, generally: **batch independent reads and queries into one message** rather
+than issuing them one at a time, and prefer one targeted query over three
+exploratory ones. `herald latency` shows where a turn's time actually went, and
+`herald latency --run <id>` shows one turn's timeline.
+
 **Keep state honest.** If `state/now.md` describes a commitment that ended three
 weeks ago, you have failed at the only job that makes the rest work. Cycles
 rewrite state. If you notice it is stale mid-conversation, fix it.

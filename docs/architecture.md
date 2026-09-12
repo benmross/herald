@@ -243,12 +243,73 @@ keeps a cycle affordable regardless of how much has accumulated.
 - `opportunities` — things to apply for, with a lifecycle: new → surfaced →
   interested → applied, or passed / expired.
 - `reported` — what the digest has already said.
-- `runs` — every agent invocation and what it cost.
+- `runs` — every agent invocation: what it cost, and where its wall clock went.
+- `run_phases` — one row per phase of a run (startup, each think, each tool
+  call), so "which tool ate the turn" is a query. See "Latency" below.
 - `collector_state` — cursors and failure streaks.
 - `notifications` — what was sent where.
 - `actions` — every write outside the ledger, with actor and tier, and whether a
   digest has reported it yet.
 - `approvals` — red-tier actions waiting on a human.
+
+## Latency is round trips, not tokens
+
+Measured 12 September 2026 across 111 sessions, because "it takes ninety
+seconds to answer" had no answer in the ledger:
+
+| | |
+|---|---|
+| model time | 68% of all elapsed time |
+| tool time | 32% |
+| model round trips per turn | median 9, mean 21 |
+| one round trip | median 2.9s, mean 6.4s |
+| whole turn | median 66s, mean 180s |
+
+A turn cannot be faster than its round trips multiplied by the time each one
+takes. **Tokens are not the constraint** — the prompt cache makes them nearly
+free, and a real conversation turn here bills tens of new input tokens against
+millions of cached ones. What makes a session feel slow is discovering the world
+one sequential read at a time.
+
+Three things follow, and they are the reason the pieces below exist.
+
+**`cycles/_snapshot.py:orientation()`** builds a ~1k-token card — the date, what
+is live, which ledger file answers which kind of question, and `facts.db`'s
+schema with worked queries. It is pure SQL, costs no tokens to build, and its
+whole job is to delete the five or six sequential reads a cold session used to
+make before it could answer anything. It is not a summary of everything known
+and must not grow into one; the ledger is still there to be read.
+
+It reaches sessions two ways, because the surfaces differ. herald-telegram
+injects it with `--append-system-prompt`, so a new session starts already
+oriented. Sessions spawned by Claude Code itself — claude.ai/code, a terminal —
+have no flag to inject anything, so the same text is written to
+`ledger/state/orientation.md` and the constitution points them at it: one read
+instead of five. `herald orient` rewrites that file; the bridge also refreshes it
+whenever it starts a session.
+
+**The card is generated once per session and then reused byte-for-byte.** The
+system prompt sits at the front of the cached prefix, so rebuilding it every turn
+would invalidate the prompt cache on every message and cost far more than the
+round trips it saves. A resumed session gets no new card at all — it already has
+the old one in its transcript. A stale card that keeps the cache warm beats a
+fresh one that burns it, and the card says so in its own text.
+
+**`think.py` times every phase** from the stream-json events it already parses,
+so the instrumentation is free: no extra process, no extra round trip, no
+tokens. Aggregates land on `runs` (`startup_ms`, `model_ms`, `tool_ms`,
+`round_trips`), the timeline lands in `run_phases`. Read it with:
+
+```bash
+herald latency                  # where turns go, by label, last 7 days
+herald latency --run 216        # one turn's timeline, phase by phase
+herald latency --transcripts    # reconstructed from Claude Code's own session
+                                # files, for turns older than the instrumentation
+```
+
+One caveat to know before trusting a number: tools issued in a single assistant
+message run concurrently, so `tool_ms` can exceed the wall clock for that span.
+It is "time spent in tools", not "time the run was blocked on tools".
 
 ## The rules a session reads
 

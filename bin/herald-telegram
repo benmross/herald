@@ -55,6 +55,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, tgtext, think  # noqa: E402
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from cycles import _snapshot  # noqa: E402
+
 NAME = "telegram"
 POLL_TIMEOUT = 50          # seconds of long-polling per request
 TYPING_REFRESH = 4         # Telegram clears the typing indicator after ~5s
@@ -468,6 +471,47 @@ def thread_state(state: dict, key: str) -> dict:
         key, {"session_id": None, "turns": 0, "last_ts": 0, "model": None})
 
 
+def orientation_for(ts: dict, fresh: bool) -> str | None:
+    """The card injected into a session's system prompt at its first turn.
+
+    Two rules, and the second one is the subtle one.
+
+    **Only built for a new session.** A resumed session already has the card in
+    its own transcript, and the model has already acted on it.
+
+    **Reused byte-for-byte for the rest of that session's life.** The system
+    prompt sits at the front of the cached prefix, so regenerating this every
+    turn would change the prefix every turn and invalidate the prompt cache on
+    every message -- which would cost far more than the five round trips this
+    is here to save. A stale card that keeps the cache warm beats a fresh one
+    that burns it, which is why the card says in its own text that it is a
+    starting point rather than the truth.
+
+    Best-effort: if building it fails, the turn goes ahead without it and the
+    session discovers things the slow way, exactly as it did before.
+    """
+    if not fresh:
+        return ts.get("orientation")
+    try:
+        with db.session() as con:
+            text = _snapshot.orientation(con)
+    except Exception as exc:  # noqa: BLE001 -- never worth failing a turn
+        print(f"orientation unavailable ({type(exc).__name__}: {exc})")
+        return None
+    ts["orientation"] = text
+    # Also on disk, because the Telegram bridge is not the only surface. A
+    # session from claude.ai/code or a terminal is spawned by Claude Code
+    # itself, where there is no flag to inject anything -- the constitution
+    # points those at this file instead, which turns five sequential reads into
+    # one. It is written here rather than on a timer because the bridge is
+    # already holding the text and the write is free.
+    try:
+        (config.LEDGER / "state" / "orientation.md").write_text(text)
+    except OSError as exc:
+        print(f"orientation not written to disk ({exc})")
+    return text
+
+
 def should_rotate(ts: dict, is_general: bool = False) -> str | None:
     """Why this message should start a new session, or None to continue."""
     if not ts.get("session_id"):
@@ -662,6 +706,7 @@ def handle(update: dict, state: dict) -> None:
                 permission_mode="auto",
                 allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                "WebSearch", "WebFetch", "Bash"],
+                append_system_prompt=orientation_for(ts, bool(reason)),
                 on_progress=working.on_progress, cancel_key=key,
             )
             took = working.elapsed
@@ -684,6 +729,8 @@ def handle(update: dict, state: dict) -> None:
                     permission_mode="auto",
                     allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                    "WebSearch", "WebFetch", "Bash"],
+                    # This retry *is* a fresh session, so it earns a fresh card.
+                    append_system_prompt=orientation_for(ts, True),
                     on_progress=working.on_progress, cancel_key=key)
             if result.ok:
                 send(chat_id, "*(lost this topic's earlier transcript, so I "

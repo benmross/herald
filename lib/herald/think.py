@@ -214,24 +214,88 @@ def _tool_summary(block: dict) -> str:
     return name
 
 
+def _mark(state: dict, kind: str, name: str | None, since: float,
+          detail: str | None = None) -> None:
+    """Close one phase of the run at the current instant.
+
+    `since` is when the phase began; everything is monotonic seconds, stored as
+    integer milliseconds. Phases are appended in the order they close, which is
+    also the order they happened, because a run is strictly sequential from the
+    outside: think, call a tool, wait, think again.
+    """
+    now = time.monotonic()
+    ms = int((now - since) * 1000)
+    if ms < 0:
+        ms = 0
+    state.setdefault("phases", []).append(
+        {"kind": kind, "name": name, "ms": ms, "detail": detail})
+    state["mark"] = now
+
+
 def _handle_stream_line(line: str, state: dict, on_progress,
                         active_key: str | None = None) -> None:
     """Parse one stream-json line, updating `state` in place, firing
     `on_progress` for a tool call, and (if `active_key` is registered)
     recording the same summary into `_active` so `current_progress()` can
     read it from a different thread -- shared by the live loop and (nothing
-    else, now, but kept separate so the parsing logic has one home)."""
+    else, now, but kept separate so the parsing logic has one home).
+
+    It also times the run, because this function already sees every boundary
+    that matters and adding a clock here costs nothing. The stream is strictly
+    ordered -- `system/init`, then alternating `assistant` (the model finished
+    thinking) and `user` carrying `tool_result` (a tool finished running) --
+    which is verified against the real CLI rather than assumed. That ordering
+    is the whole reason a timeline can be recovered from a single pass with no
+    extra process and no extra tokens.
+    """
     try:
         candidate = json.loads(line)
     except (json.JSONDecodeError, ValueError):
         return
     if not isinstance(candidate, dict):
         return
-    if candidate.get("type") == "result":
+    kind_top = candidate.get("type")
+    mark = state.get("mark") or state.get("t0")
+
+    if kind_top == "system" and candidate.get("subtype") == "init":
+        # Process launch through to the CLI being ready. The only phase that is
+        # pure overhead: no model, no tool, nothing the prompt can shorten.
+        if state.get("t0") is not None and not state.get("saw_init"):
+            state["saw_init"] = True
+            _mark(state, "startup", None, state["t0"])
+        return
+
+    if kind_top == "user":
+        # A tool result coming back. `--replay-user-messages` also echoes the
+        # prompt itself as a `user` event, which carries no tool_result and so
+        # closes nothing -- checked rather than assumed, because counting it
+        # would attribute the model's first think to a tool.
+        for block in (candidate.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            pend = state.setdefault("pending_tools", {}).pop(
+                block.get("tool_use_id"), None)
+            if pend:
+                _mark(state, "tool", pend[0], pend[1], pend[2])
+        return
+
+    if kind_top == "result":
         state["payload"] = candidate
-    elif candidate.get("type") == "assistant":
+        # Only if something actually elapsed. `result` normally lands in the
+        # same millisecond as the final `assistant` event, which already closed
+        # that think; the guard exists for a run that ends without one.
+        if mark is not None and time.monotonic() - mark > 0.05:
+            _mark(state, "model", None, mark)
+        return
+
+    if kind_top == "assistant":
         message = candidate.get("message") or {}
         state["last_assistant_usage"] = message.get("usage")
+        # The model just finished a round trip. Everything since the previous
+        # boundary was it thinking and generating.
+        if mark is not None:
+            _mark(state, "model", None, mark)
+        state["round_trips"] = state.get("round_trips", 0) + 1
         for block in message.get("content") or []:
             if not isinstance(block, dict):
                 continue
@@ -247,6 +311,9 @@ def _handle_stream_line(line: str, state: dict, on_progress,
             if on_progress:
                 on_progress(Progress("tool" if kind == "tool_use" else "text",
                                      summary))
+            if kind == "tool_use":
+                state.setdefault("pending_tools", {})[block.get("id")] = (
+                    block.get("name") or "tool", time.monotonic(), summary)
             if kind == "tool_use" and active_key:
                 # `current_progress` answers "what is it doing right now", so
                 # it tracks the tool call rather than the commentary around it.
@@ -263,6 +330,7 @@ def _run_claude(prompt: str, *, model: str, cwd: Path, timeout: int,
                 permission_mode: str, add_dirs: list[str] | None,
                 on_progress=None, cancel_key: str | None = None,
                 submitted: list[str] | None = None,
+                timing: dict | None = None,
                ) -> tuple[int, dict | None, int | None, str, str, bool]:
     staged, tmp = _stage_prompt(prompt, cwd)
 
@@ -317,7 +385,11 @@ def _run_claude(prompt: str, *, model: str, cwd: Path, timeout: int,
     # `select` gives a timeout on a blocking read without a second thread for
     # stdout; stderr still needs its own thread; a single Popen's two pipes
     # can deadlock if only one is drained while the other fills its OS buffer.
-    state: dict = {"payload": None, "last_assistant_usage": None}
+    state: dict = {"payload": None, "last_assistant_usage": None,
+                   # Phase timing. `t0` starts before Popen so `startup`
+                   # includes process spawn, not just the CLI's own init.
+                   "t0": time.monotonic(), "mark": None, "saw_init": False,
+                   "phases": [], "pending_tools": {}, "round_trips": 0}
     out_lines: list[str] = []
     err_lines: list[str] = []
     proc = None
@@ -440,6 +512,12 @@ def _run_claude(prompt: str, *, model: str, cwd: Path, timeout: int,
                     _active.pop(cancel_key, None)
         if tmp is not None:
             tmp.unlink(missing_ok=True)
+        # A timed-out or cancelled run is exactly when someone wants to know
+        # where the time went, so this belongs in `finally` rather than beside
+        # the success return.
+        if timing is not None:
+            timing["phases"] = state.get("phases") or []
+            timing["round_trips"] = state.get("round_trips") or 0
 
     out, err = "".join(out_lines), "".join(err_lines)
     last_assistant_usage = state["last_assistant_usage"]
@@ -552,9 +630,28 @@ def _record(**fields) -> None:
     Losing a `runs` row costs a line of spend attribution; losing the turn
     costs the user the answer the user is waiting on.
     """
+    timing = fields.pop("timing", None) or {}
+    phases = timing.get("phases") or []
+    if phases:
+        # Aggregates go on `runs` so the common question ("where does a turn
+        # go?") is one query with no join. The per-phase rows are for the
+        # follow-up question ("which tool?").
+        #
+        # Caveat worth knowing before trusting the sum: tools issued in one
+        # assistant message run concurrently, so `tool_ms` can exceed the
+        # wall clock for that span. It is "time spent in tools", not "time
+        # the run was blocked on tools".
+        fields["startup_ms"] = sum(p["ms"] for p in phases
+                                   if p["kind"] == "startup") or None
+        fields["model_ms"] = sum(p["ms"] for p in phases
+                                 if p["kind"] == "model") or None
+        fields["tool_ms"] = sum(p["ms"] for p in phases
+                                if p["kind"] == "tool") or None
+    fields["round_trips"] = timing.get("round_trips") or None
     try:
         with db.session() as con:
-            db.record_run(con, **fields)
+            run_id = db.record_run(con, **fields)
+            db.record_phases(con, run_id, phases)
     except Exception as exc:  # noqa: BLE001 -- bookkeeping is never worth a turn
         print(f"herald: run not recorded ({type(exc).__name__}: {exc})",
               file=sys.stderr, flush=True)
@@ -600,19 +697,20 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     permission_mode = permission_mode or config.get("engines.primary.permission_mode", "auto")
 
     started = time.monotonic()
+    timing: dict = {}
     code, payload, context_tokens, out, stderr, cancelled = _run_claude(
         prompt, model=model, cwd=cwd, timeout=timeout, idle_timeout=idle_timeout,
         allowed_tools=allowed_tools,
         append_system_prompt=append_system_prompt, json_schema=json_schema,
         resume=resume, permission_mode=permission_mode, add_dirs=add_dirs,
-        on_progress=on_progress, cancel_key=cancel_key)
+        on_progress=on_progress, cancel_key=cancel_key, timing=timing)
     elapsed = int((time.monotonic() - started) * 1000)
 
     if cancelled:
         # A deliberate interruption, not a failure, and worth telling apart
         # from "it broke" so a caller can say something calmer than
         # "That failed: exit -15".
-        _record(label=label, engine="claude", model=model,
+        _record(timing=timing, label=label, engine="claude", model=model,
                 duration_ms=elapsed, exit_code=code,
                 error="cancelled by user")
         return Result(ok=False, engine="claude", model=model, duration_ms=elapsed,
@@ -620,7 +718,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
 
     if payload and not payload.get("is_error") and code == 0 and not _is_anomalous(payload):
         result, usage = _ok_result(payload, model, payload.get("duration_ms", elapsed))
-        _record(label=label, engine="claude", model=model,
+        _record(timing=timing, label=label, engine="claude", model=model,
                 session_id=result.session_id, duration_ms=result.duration_ms,
                 cost_usd=result.cost_usd,
                 input_tokens=usage.get("input_tokens"),
@@ -639,7 +737,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
         # its last answer, the same way herald-telegram already retries once
         # on a stale --resume id rather than failing outright.
         _log_anomaly("first", label, model, resume, payload, out, stderr)
-        _record(label=label, engine="claude", model=model,
+        _record(timing=timing, label=label, engine="claude", model=model,
                 session_id=payload.get("session_id"), duration_ms=elapsed,
                 num_turns=payload.get("num_turns"), context_tokens=context_tokens,
                 exit_code=0,
@@ -665,11 +763,11 @@ def think(prompt: str, *, label: str, escalate: bool = False,
             allowed_tools=allowed_tools,
             append_system_prompt=append_system_prompt, json_schema=json_schema,
             resume=retry_session, permission_mode=permission_mode, add_dirs=add_dirs,
-            on_progress=on_progress, cancel_key=cancel_key)
+            on_progress=on_progress, cancel_key=cancel_key, timing=timing)
         r_elapsed = int((time.monotonic() - r_started) * 1000)
 
         if r_cancelled:
-            _record(label=label, engine="claude", model=model,
+            _record(timing=timing, label=label, engine="claude", model=model,
                     duration_ms=r_elapsed, exit_code=r_code,
                     error="cancelled by user (during empty-result retry)")
             return Result(ok=False, engine="claude", model=model,
@@ -679,7 +777,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
         if r_payload and not r_payload.get("is_error") and r_code == 0 \
                 and not _is_anomalous(r_payload):
             result, usage = _ok_result(r_payload, model, elapsed + r_elapsed)
-            _record(label=label, engine="claude", model=model,
+            _record(timing=timing, label=label, engine="claude", model=model,
                     session_id=result.session_id, duration_ms=r_elapsed,
                     cost_usd=result.cost_usd,
                     input_tokens=usage.get("input_tokens"),
@@ -697,7 +795,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
         # something is wrong, instead of reading as a turn that simply had
         # nothing to say.
         _log_anomaly("retry", label, model, retry_session, r_payload or {}, r_out, r_err)
-        _record(label=label, engine="claude", model=model,
+        _record(timing=timing, label=label, engine="claude", model=model,
                 duration_ms=r_elapsed, exit_code=r_code,
                 error="retry also came back empty/anomalous")
         return Result(
@@ -715,7 +813,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     if limited:
         claude_error = f"Claude is rate limited or out of quota: {claude_error}"
 
-    _record(label=label, engine="claude", model=model,
+    _record(timing=timing, label=label, engine="claude", model=model,
             duration_ms=elapsed, exit_code=code,
             error=claude_error[:2000])
     # Carry the session id even though this failed. A timeout kills the

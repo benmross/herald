@@ -467,8 +467,200 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
     return "\n".join(out), shown
 
 
+# --- orientation: the same idea, for a conversation rather than a cycle -------
+#
+# A cycle gets `build()` above: a full brief, because a cycle has to decide what
+# to say unprompted. A conversation does not need that -- it needs to stop
+# rediscovering the world before it can answer.
+#
+# Measured 12 Sep 2026 across 111 transcripts: model time is 68% of all elapsed
+# time, and a turn makes a median of 9 model round trips at a median 2.9s each.
+# A cold conversation spent its first five or six of those reading
+# `identity/about.md`, then `goals.md`, then `preferences.md`, then
+# `state/now.md`, then probing `facts` for its column names before it could
+# write a real query. Every one of those is sequential and none of them is
+# reasoning. That is the latency the user actually feels, and it is why this
+# exists: not to save tokens (the prompt cache already handles tokens) but to
+# delete round trips.
+#
+# So this is deliberately not a summary of everything known. It is the smallest
+# thing that makes the first query correct and the first read targeted: what day
+# it is, what is live, where to look for the rest, and the schema so nothing has
+# to guess at it.
+
+ORIENTATION_DUE_DAYS = 10
+ORIENTATION_LIMIT = 8
+
+
+def orientation(con) -> str:
+    """A compact card injected at session start via `--append-system-prompt`.
+
+    Pure SQL and file reads, no model, so it costs nothing to build and is
+    identical for every session started in the same minute.
+    """
+    now = dt.datetime.now(config.tz())
+    name = WHO["first"]
+    out: list[str] = [
+        f"# Orientation (generated {now:%A %-d %B %Y, %H:%M %Z})",
+        "",
+        "Deterministically built at session start so you do not have to "
+        "rediscover the world before answering. It is a starting point, not a "
+        "substitute for looking: it is a minute old at most, but it is also "
+        "shallow, and anything it does not cover is still in the ledger.",
+    ]
+
+    def head(text: str) -> None:
+        out.append(f"\n## {text}")
+
+    # --- where they are, if anything tracks it ---------------------------
+    loc = _rows(con, "SELECT * FROM facts WHERE kind='current' "
+                     "ORDER BY ts DESC LIMIT 1")
+    if loc:
+        age = _j(loc[0], "age_minutes")
+        suffix = f", last fix {age} min ago" if age is not None else ""
+        out.append(f"\n**Where {name} is:** {loc[0]['title']}{suffix}")
+
+    # --- today, and what is closing soon ---------------------------------
+    today = now.date().isoformat()
+    # Only the events that are actually theirs. A `feed` calendar is filled by a
+    # scraper and is deliberately over-inclusive, so listing it here would bury
+    # two real commitments under twenty public ones -- which is exactly what the
+    # first version of this did. The count still goes in, because "there are
+    # things on today" is worth knowing; the titles do not.
+    # Allow-list, not a deny-list. Excluding only `feed` still let through every
+    # event with no role at all, which is what a scraped campus source writes --
+    # so the noise came straight back under a different name. An event earns a
+    # line here by being positively identified as theirs, somebody's, or
+    # institutional.
+    OWNED = ("mine", "other-person", "reference")
+    sched = _rows(con, f"""
+        SELECT title, ts, data FROM facts
+        WHERE kind='event' AND date(ts)=?
+          AND json_extract(data,'$.role') IN ({','.join('?' * len(OWNED))})
+        ORDER BY ts LIMIT 12
+    """, (today, *OWNED))
+    feed_n = _rows(con, f"""
+        SELECT COUNT(*) n FROM facts
+        WHERE kind='event' AND date(ts)=?
+          AND COALESCE(json_extract(data,'$.role'),'')
+              NOT IN ({','.join('?' * len(OWNED))})
+    """, (today, *OWNED))
+    if sched or (feed_n and feed_n[0]["n"]):
+        head("Today")
+        for r in sched:
+            when = str(r["ts"])[11:16] or "all day"
+            out.append(f"- {when} {r['title']}  ({_j(r, 'role') or '?'})")
+        if feed_n and feed_n[0]["n"]:
+            out.append(
+                f"- Plus {feed_n[0]['n']} public campus listings, not shown. Those are "
+                f"scraped and over-inclusive, and say nothing about whether "
+                f"{name} is going; query them only if asked what is happening "
+                f"on campus.")
+
+    # `status='open'` is the convention the rest of this file uses; there is no
+    # done_at column, and the statuses in use are open/done/closed/dropped.
+    due = _rows(con, """
+        SELECT text, due FROM commitments
+        WHERE status='open' AND due IS NOT NULL
+          AND date(due) <= date('now', ?)
+        ORDER BY due LIMIT ?
+    """, (f"+{ORIENTATION_DUE_DAYS} days", ORIENTATION_LIMIT))
+    if due:
+        head(f"Due inside {ORIENTATION_DUE_DAYS} days")
+        for r in due:
+            out.append(f"- {_when_words(str(r['due'])[:10], now.date())}: {r['text']}")
+    open_n = _rows(con, "SELECT COUNT(*) n FROM commitments WHERE status='open'")
+    if open_n:
+        out.append(f"\n{open_n[0]['n']} open commitments in total "
+                   f"(`state/commitments.md`, and the `commitments` table).")
+
+    # --- where to look, so one read replaces four ------------------------
+    head("Where the answer lives")
+    out.append(
+        "Read the one file that covers the question rather than the whole of\n"
+        "`identity/`. In rough order of how often each is the right answer:\n"
+        "\n"
+        "| Question | File |\n"
+        "|---|---|\n"
+        "| today, this week, what is stale | `ledger/state/now.md` |\n"
+        "| a specific course's rules, dates, submission mechanics "
+        "| `ledger/state/areas/<NAME>.md` |\n"
+        "| what to rank an opportunity against | `ledger/identity/goals.md` |\n"
+        "| how to talk to them, autonomy, register | "
+        "`ledger/identity/preferences.md` |\n"
+        "| background, history, the record | `ledger/identity/about.md` |\n"
+        "| address, medical, family | `ledger/identity/private/` |\n"
+        "| open opportunities and their deadlines | "
+        "`ledger/state/opportunities.md` |\n"
+        "| what a past session did and concluded | `ledger/journal/<date>.md` |\n"
+        "| resumes, and what may not go on one | "
+        "`ledger/documents/career/resume-master.md` |")
+
+    areas = sorted(p.stem for p in (config.LEDGER / "state/areas").glob("*.md")) \
+        if (config.LEDGER / "state/areas").is_dir() else []
+    if areas:
+        out.append(f"\nAreas on file: {', '.join(areas)}.")
+
+    # --- the schema, so the first query is the right one -----------------
+    head("facts.db, so you do not have to probe it")
+    out.append(
+        "`herald db \"<sql>\"` is read-only and cheap. **The corpus is large "
+        "and the window is not** -- query it, never read it in.\n")
+    cols = [r[1] for r in con.execute("PRAGMA table_info(facts)")]
+    out.append(f"`facts` columns: {', '.join(cols)}. "
+               f"`data` is JSON -- reach into it with "
+               f"`json_extract(data,'$.key')`.\n")
+    pairs = _rows(con, """
+        SELECT source, kind, COUNT(*) n FROM facts
+        GROUP BY source, kind HAVING n > 0 ORDER BY n DESC LIMIT 22
+    """)
+    if pairs:
+        out.append("Populated `source`/`kind` pairs, largest first:\n")
+        out.append("| source | kind | rows |")
+        out.append("|---|---|---|")
+        for r in pairs:
+            out.append(f"| {r['source']} | {r['kind']} | {r['n']} |")
+    other = [t[0] for t in con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name NOT LIKE 'sqlite_%' AND name <> 'facts' ORDER BY name")]
+    if other:
+        out.append(f"\nOther tables: {', '.join(other)}. "
+                   f"`herald db --schema` for their columns.")
+    out.append(
+        "\nQueries that are usually what you meant:\n"
+        "```sql\n"
+        "-- recent mail\n"
+        "select ts, title from facts where source='gmail' and kind='message'\n"
+        "  order by ts desc limit 20;\n"
+        "-- what is scheduled, with the calendar role\n"
+        "select ts, title, json_extract(data,'$.role') role from facts\n"
+        "  where kind='event' and ts >= date('now') order by ts limit 30;\n"
+        "-- live opportunities by deadline\n"
+        "select title, json_extract(data,'$.deadline') d from facts\n"
+        "  where kind='candidate' order by d limit 20;\n"
+        "-- what Herald has done on their behalf (the amber audit trail)\n"
+        "select ts, kind, target, summary from actions order by id desc limit 20;\n"
+        "-- where the wall clock goes\n"
+        "select label, avg(round_trips), avg(model_ms), avg(tool_ms) from runs\n"
+        "  where round_trips is not null group by label;\n"
+        "```")
+
+    out.append(
+        "\n## One thing about your own speed\n"
+        "Latency here is model round trips, not tokens: 68% of elapsed time is\n"
+        "model time, and a median turn makes 9 round trips. Batch independent\n"
+        "reads and queries into one message instead of discovering serially,\n"
+        "and prefer one targeted query over three exploratory ones.")
+
+    return "\n".join(out)
+
+
 if __name__ == "__main__":
+    which = sys.argv[1] if len(sys.argv) > 1 else "dawn"
     with db.session() as c:
-        text, refs = build(c, sys.argv[1] if len(sys.argv) > 1 else "dawn")
-    print(text)
-    print(f"\n[{len(refs)} referenceable items]", file=sys.stderr)
+        if which == "orientation":
+            print(orientation(c))
+        else:
+            text, refs = build(c, which)
+            print(text)
+            print(f"\n[{len(refs)} referenceable items]", file=sys.stderr)

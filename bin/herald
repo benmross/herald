@@ -927,6 +927,225 @@ def cmd_cycle(args) -> int:
 
 # --------------------------------------------------------------------------- main
 
+def cmd_latency(args) -> int:
+    """Where does a turn's wall clock go?
+
+    Written because "it takes 90 seconds to answer" had no answer in the ledger.
+    Measured across 108 transcripts on 12 Sep 2026: model time was 68% of all
+    elapsed time, tool time 32%, and an average turn made 21 model round trips
+    at a median of 2.9s each. Latency is therefore round trips multiplied by
+    per-round-trip model time, and the fix for a slow turn is almost always
+    fewer round trips rather than faster tools.
+
+    `runs` and `run_phases` carry this from 12 Sep 2026 onward. `--transcripts`
+    reads Claude Code's own session files instead, which is the only way to see
+    anything older; it is slower and it will matter less every week.
+    """
+    if args.transcripts:
+        return _latency_from_transcripts(args)
+    if args.run:
+        rows = db.query(
+            "SELECT seq, kind, name, ms, detail FROM run_phases "
+            "WHERE run_id = ? ORDER BY seq", (args.run,))
+        if not rows:
+            print(f"no phases recorded for run {args.run}")
+            return 1
+        head = db.query("SELECT label, model, duration_ms, round_trips "
+                        "FROM runs WHERE id = ?", (args.run,))
+        if head:
+            h = head[0]
+            print(f"{_c('run ' + str(args.run), BOLD)}  {h['label']}  "
+                  f"{h['model'] or '?'}  {(h['duration_ms'] or 0)/1000:.1f}s  "
+                  f"{h['round_trips'] or 0} round trips")
+        _hdr("timeline")
+        for r in rows:
+            label = r["name"] or r["kind"]
+            bar = "#" * min(40, int((r["ms"] or 0) / 250))
+            print(f"  {r['ms']:7d}ms {r['kind']:<8} {label:<16} {bar}")
+            if r["detail"]:
+                print(f"  {_c('          ' + r['detail'][:70], DIM)}")
+        return 0
+
+    since = f"-{args.days} days"
+    _hdr(f"where the time goes  (last {args.days} days)")
+    rows = db.query("""
+        SELECT label,
+               COUNT(*)                                   AS runs,
+               ROUND(AVG(COALESCE(duration_ms,0))/1000,1)  AS avg_s,
+               ROUND(AVG(COALESCE(startup_ms,0))/1000,2)   AS startup_s,
+               ROUND(AVG(COALESCE(model_ms,0))/1000,1)     AS model_s,
+               ROUND(AVG(COALESCE(tool_ms,0))/1000,1)      AS tool_s,
+               ROUND(AVG(COALESCE(round_trips,0)),1)       AS trips
+        FROM runs
+        WHERE ts >= datetime('now', ?) AND round_trips IS NOT NULL
+        GROUP BY label ORDER BY runs DESC LIMIT 15
+    """, (since,))
+    if not rows:
+        print(f"  {_c('nothing instrumented yet in that window.', DIM)}")
+        print(f"  {_c('Phase timing starts at the first run after 12 Sep 2026;', DIM)}")
+        print(f"  {_c('use --transcripts for anything older.', DIM)}")
+        return 0
+    print(f"  {'label':<24}{'runs':>5}{'turn':>8}{'startup':>9}"
+          f"{'model':>8}{'tools':>8}{'trips':>7}")
+    for r in rows:
+        print(f"  {r['label']:<24}{r['runs']:>5}{r['avg_s']:>7.1f}s"
+              f"{r['startup_s']:>8.2f}s{r['model_s']:>7.1f}s"
+              f"{r['tool_s']:>7.1f}s{r['trips']:>7.1f}")
+    print(f"  {_c('trips = model round trips. A turn cannot be faster than', DIM)}")
+    print(f"  {_c('trips x per-trip model time, whatever the tools do.', DIM)}")
+
+    _hdr("slowest tools")
+    rows = db.query("""
+        SELECT name,
+               COUNT(*)                       AS calls,
+               ROUND(SUM(ms)/1000.0,1)        AS total_s,
+               ROUND(AVG(ms)/1000.0,2)        AS mean_s,
+               ROUND(MAX(ms)/1000.0,1)        AS max_s
+        FROM run_phases
+        WHERE kind = 'tool' AND run_id IN (
+            SELECT id FROM runs WHERE ts >= datetime('now', ?))
+        GROUP BY name ORDER BY total_s DESC LIMIT 12
+    """, (since,))
+    if not rows:
+        print(f"  {_c('no tool phases in that window', DIM)}")
+    else:
+        print(f"  {'tool':<28}{'calls':>7}{'total':>9}{'mean':>8}{'max':>8}")
+        for r in rows:
+            print(f"  {r['name'] or '?':<28}{r['calls']:>7}"
+                  f"{r['total_s']:>8.1f}s{r['mean_s']:>7.2f}s{r['max_s']:>7.1f}s")
+
+    _hdr("slowest individual runs")
+    rows = db.query("""
+        SELECT id, label, ROUND(duration_ms/1000.0,1) s, round_trips
+        FROM runs
+        WHERE ts >= datetime('now', ?) AND round_trips IS NOT NULL
+        ORDER BY duration_ms DESC LIMIT 8
+    """, (since,))
+    for r in rows:
+        print(f"  run {r['id']:<7}{r['label']:<24}{r['s']:>7.1f}s"
+              f"{r['round_trips'] or 0:>5} trips   "
+              f"{_c('herald latency --run ' + str(r['id']), DIM)}")
+    return 0
+
+
+def _latency_from_transcripts(args) -> int:
+    """The same breakdown, recovered from Claude Code's session files.
+
+    Only way to see turns from before `run_phases` existed. Reads
+    ~/.claude/projects/<slug>/*.jsonl, where the slug is the cwd with
+    separators replaced by dashes, and reconstructs the timeline from event
+    timestamps: a tool span is a `tool_use` block to its matching
+    `tool_result`, and everything else is the model.
+    """
+    import json
+    import statistics
+    from datetime import datetime
+
+    slug = str(config.ROOT).replace("/", "-")
+    root = pathlib.Path.home() / ".claude" / "projects" / slug
+    if not root.is_dir():
+        print(f"no transcripts at {root}")
+        return 1
+
+    def when(raw):
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+
+    tool_total: dict[str, float] = {}
+    tool_calls: dict[str, int] = {}
+    model_gaps: list[float] = []
+    turns: list[float] = []
+    trips: list[int] = []
+    files = 0
+
+    for path in sorted(root.glob("*.jsonl")):
+        files += 1
+        pending: dict = {}
+        last = start = None
+        n_trips = 0
+        for line in path.open(errors="replace"):
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not d.get("timestamp"):
+                continue
+            t, kind = when(d["timestamp"]), d.get("type")
+            content = (d.get("message") or {}).get("content")
+            blocks = content if isinstance(content, list) else []
+            if kind == "assistant":
+                n_trips += 1
+                if last is not None and t > last:
+                    model_gaps.append(t - last)
+                for b in blocks:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        pending[b.get("id")] = (b.get("name") or "?", t)
+                last = t
+            elif kind == "user":
+                results = [b for b in blocks if isinstance(b, dict)
+                           and b.get("type") == "tool_result"]
+                if results:
+                    for b in results:
+                        got = pending.pop(b.get("tool_use_id"), None)
+                        if got:
+                            tool_total[got[0]] = tool_total.get(got[0], 0) + t - got[1]
+                            tool_calls[got[0]] = tool_calls.get(got[0], 0) + 1
+                    last = t
+                else:
+                    if start is not None and last is not None:
+                        turns.append(last - start)
+                        trips.append(n_trips)
+                    start = last = t
+                    n_trips = 0
+        if start is not None and last is not None:
+            turns.append(last - start)
+            trips.append(n_trips)
+
+    if not model_gaps:
+        print(f"read {files} transcripts, found no timed turns")
+        return 1
+
+    mg, mt = sum(model_gaps), sum(tool_total.values())
+    _hdr(f"reconstructed from {files} transcripts")
+    print(f"  model time  {mg/3600:8.1f}h   {mg/(mg+mt)*100:.0f}% of measured")
+    print(f"  tool time   {mt/3600:8.1f}h   {mt/(mg+mt)*100:.0f}%")
+    print(f"  round trips per turn: median "
+          f"{statistics.median(trips):.0f}, mean {sum(trips)/len(trips):.1f}")
+    print(f"  model gap:  median {statistics.median(model_gaps):.1f}s, "
+          f"mean {mg/len(model_gaps):.1f}s")
+    print(f"  whole turn: median {statistics.median(turns):.0f}s, "
+          f"mean {sum(turns)/len(turns):.0f}s")
+
+    _hdr("tool time by tool")
+    print(f"  {'tool':<28}{'calls':>7}{'total':>9}{'mean':>8}{'share':>7}")
+    for name, secs in sorted(tool_total.items(), key=lambda kv: -kv[1])[:12]:
+        n = tool_calls[name]
+        print(f"  {name:<28}{n:>7}{secs:>8.0f}s{secs/n:>7.2f}s"
+              f"{secs/mt*100:>6.1f}%")
+    return 0
+
+
+def cmd_orient(args) -> int:
+    """Write `state/orientation.md`.
+
+    The Telegram bridge refreshes this whenever it starts a session, so it is
+    usually current without anyone asking. This exists for the surfaces that
+    are spawned by Claude Code itself -- claude.ai/code, a terminal -- where
+    there is no flag to inject anything and the file is the only way in.
+    """
+    sys.path.insert(0, str(config.ROOT))
+    from cycles import _snapshot
+    with db.session() as con:
+        text = _snapshot.orientation(con)
+    dest = config.LEDGER / "state" / "orientation.md"
+    dest.write_text(text)
+    if args.show:
+        print(text)
+    else:
+        print(f"wrote {dest}  ({len(text)} bytes, ~{len(text)//4} tokens)")
+    return 0
+
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -935,6 +1154,19 @@ def main() -> int:
 
     sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)
+
+    ori = sub.add_parser("orient",
+                         help="rebuild state/orientation.md, the session card")
+    ori.add_argument("--show", action="store_true", help="print it too")
+    ori.set_defaults(fn=cmd_orient)
+
+    lat = sub.add_parser("latency", help="where a turn's wall clock actually goes")
+    lat.add_argument("--days", type=int, default=7, help="window (default 7)")
+    lat.add_argument("--run", type=int, help="show one run's phase timeline")
+    lat.add_argument("--transcripts", action="store_true",
+                     help="reconstruct from Claude Code session files, for "
+                          "turns older than the instrumentation")
+    lat.set_defaults(fn=cmd_latency)
     sub.add_parser("check", help="do the architecture's invariants still hold").set_defaults(fn=cmd_check)
 
     rs = sub.add_parser("restart", help="check, then restart services")
