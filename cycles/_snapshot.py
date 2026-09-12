@@ -664,3 +664,139 @@ if __name__ == "__main__":
             text, refs = build(c, which)
             print(text)
             print(f"\n[{len(refs)} referenceable items]", file=sys.stderr)
+
+
+# --- what changed since the last message ------------------------------------
+#
+# The orientation card above is built once per session and then deliberately
+# frozen, because it lives in the system prompt and the system prompt is the
+# front of the cached prefix: rebuilding it every turn would invalidate the
+# whole conversation's cache on every message.
+#
+# That leaves a real gap, pointed out by the user on 12 Sep 2026. A conversation can
+# run for hours. Collectors fire at :02 and :32, cycles write to the calendar,
+# mail arrives, a deadline passes. Mid-conversation the session knew none of it
+# unless it thought to go and look, which it had no reason to do.
+#
+# So the delta goes in the *user message* instead, which is new tokens either
+# way and sits after everything cached. It costs nothing in cache terms and a
+# few dozen tokens in real ones.
+#
+# Two rules it lives by. **It reports rows, not text.** A textual diff of the
+# card would fire on every single turn, because the card carries a generation
+# timestamp and a "last fix N minutes ago" -- both of which always change and
+# neither of which is news. So this compares identifiers and returns what is
+# genuinely new. **And it returns nothing when nothing happened**, which is the
+# same test the rest of the architecture is held to: a turn where the world did
+# not move should cost nothing to tell you so.
+
+DELTA_ITEM_LIMIT = 6
+
+
+def _clip(text, n: int) -> str:
+    """One line, no longer than `n`. This block rides along on every message,
+    so a single mailing-list subject must not be allowed to spend a paragraph
+    of it."""
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= n else t[: n - 1] + "\u2026"
+
+
+def _max_id(con, sql: str, params=()) -> int:
+    row = _rows(con, sql, params)
+    return (row[0][0] or 0) if row else 0
+
+
+def pulse(con) -> dict:
+    """A fingerprint of the mutable world: cheap to take, cheap to compare."""
+    today = dt.datetime.now(config.tz()).date().isoformat()
+    loc = _rows(con, "SELECT title FROM facts WHERE kind='current' "
+                     "ORDER BY ts DESC LIMIT 1")
+    return {
+        "day": today,
+        # The place, deliberately not the age. Age changes every minute and is
+        # never the thing worth interrupting a conversation about.
+        "place": loc[0]["title"] if loc else None,
+        "fact_id": _max_id(con, "SELECT MAX(id) FROM facts"),
+        "mail_id": _max_id(con, "SELECT MAX(id) FROM facts "
+                                "WHERE source='gmail' AND kind='message'"),
+        "action_id": _max_id(con, "SELECT MAX(id) FROM actions"),
+        "commit_id": _max_id(con, "SELECT MAX(id) FROM commitments"),
+        "open_n": _max_id(con, "SELECT COUNT(*) FROM commitments "
+                               "WHERE status='open'"),
+    }
+
+
+def delta(con, prev: dict | None) -> tuple[str | None, dict]:
+    """What has happened since `prev` was taken, and a fresh fingerprint.
+
+    Returns `(None, fingerprint)` when the world has not moved, so a caller can
+    append nothing at all rather than a paragraph saying nothing happened.
+    """
+    now = pulse(con)
+    if not prev:
+        return None, now
+
+    lines: list[str] = []
+
+    if prev.get("day") and now["day"] != prev["day"]:
+        lines.append(f"- The date rolled over. It is now {now['day']}.")
+
+    if now["place"] and now["place"] != prev.get("place"):
+        lines.append(f"- Location changed: now {now['place']} "
+                     f"(was {prev.get('place') or 'unknown'}).")
+
+    mail = _rows(con, """
+        SELECT title, json_extract(data,'$.from') sender FROM facts
+        WHERE source='gmail' AND kind='message' AND id > ?
+        ORDER BY id DESC LIMIT ?
+    """, (prev.get("mail_id", 0), DELTA_ITEM_LIMIT))
+    if mail:
+        lines.append(f"- {len(mail)} new email(s) since your last message:")
+        for m in mail:
+            who = _clip((m["sender"] or "?").split("<")[0].strip().strip('"'), 32)
+            lines.append(f"  - {who} - {_clip(m['title'], 68)}")
+
+    # Amber writes Herald made while this conversation was happening. The
+    # "never silent" rule says these reach the user; a session that is mid
+    # conversation with them is the earliest chance to say so.
+    acts = _rows(con, """
+        SELECT kind, target, summary FROM actions
+        WHERE id > ? ORDER BY id DESC LIMIT ?
+    """, (prev.get("action_id", 0), DELTA_ITEM_LIMIT))
+    if acts:
+        lines.append(f"- Herald made {len(acts)} write(s) on their behalf "
+                     f"since your last message:")
+        for a in acts:
+            lines.append(f"  - {a['kind']} on {_clip(a['target'], 28)}: "
+                         f"{_clip(a['summary'], 80)}")
+
+    commits = _rows(con, """
+        SELECT text, due FROM commitments WHERE id > ? ORDER BY id LIMIT ?
+    """, (prev.get("commit_id", 0), DELTA_ITEM_LIMIT))
+    if commits:
+        lines.append(f"- {len(commits)} new commitment(s) opened:")
+        for c in commits:
+            when = f" (due {str(c['due'])[:10]})" if c["due"] else ""
+            lines.append(f"  - {_clip(c['text'], 80)}{when}")
+
+    closed = (prev.get("open_n", 0) - now["open_n"]) + len(commits)
+    if closed > 0:
+        lines.append(f"- {closed} commitment(s) closed or dropped. "
+                     f"{now['open_n']} still open.")
+
+    # A catch-all so a collector that landed something this function does not
+    # name specifically is still visible, rather than silently absent.
+    other = (now["fact_id"] - prev.get("fact_id", 0)) - len(mail)
+    if other > 0 and not mail:
+        lines.append(f"- {other} new fact(s) ingested (not mail). "
+                     f"Query `facts` with `id > {prev.get('fact_id', 0)}` "
+                     f"to see what.")
+    elif other > 0:
+        lines.append(f"- Plus {other} other new fact(s) ingested.")
+
+    if not lines:
+        return None, now
+    return ("## Since your last message\n"
+            "Generated deterministically, not by anyone. Nothing here is a\n"
+            "request: it is what moved in the ledger while you were talking.\n\n"
+            + "\n".join(lines)), now

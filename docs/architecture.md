@@ -295,6 +295,24 @@ round trips it saves. A resumed session gets no new card at all — it already h
 the old one in its transcript. A stale card that keeps the cache warm beats a
 fresh one that burns it, and the card says so in its own text.
 
+**`cycles/_snapshot.py:delta()`** closes the gap the frozen card leaves. A
+conversation can run for hours: collectors fire at :02 and :32, cycles write to
+calendars, mail arrives, a deadline passes. The card cannot be refreshed for the
+reason above, so the *change* goes in the user message instead, which is new
+tokens either way and sits after everything cached. It reports new mail, amber
+writes Herald made while the conversation was happening, commitments opened and
+closed, and a catch-all count for anything else ingested.
+
+Two properties it must keep. **It compares row identifiers, not text** — a
+textual diff of the card would fire on every single turn, because the card
+carries a generation timestamp and a "last fix N minutes ago" and neither is
+news. **And it returns nothing when nothing moved**, so a quiet turn carries
+nothing at all, which is the same test everything else here is held to.
+
+This also makes the amber tier's "never silent" rule land sooner: a write made
+mid-conversation used to wait for the next digest, and now reaches them on their
+next message.
+
 **`think.py` times every phase** from the stream-json events it already parses,
 so the instrumentation is free: no extra process, no extra round trip, no
 tokens. Aggregates land on `runs` (`startup_ms`, `model_ms`, `tool_ms`,

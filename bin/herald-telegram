@@ -471,6 +471,27 @@ def thread_state(state: dict, key: str) -> dict:
         key, {"session_id": None, "turns": 0, "last_ts": 0, "model": None})
 
 
+def delta_for(ts: dict) -> str:
+    """What moved in the ledger since this topic's last message.
+
+    Goes in the *user message*, never the system prompt. That is the whole
+    reason this can run every turn while the orientation card cannot: a user
+    message is new tokens either way and sits after everything already cached,
+    so appending to it costs nothing in cache terms. Changing the system prompt
+    would re-tokenise the entire conversation on every message.
+
+    Returns "" when the world has not moved, so a quiet turn carries nothing.
+    """
+    try:
+        with db.session() as con:
+            text, fingerprint = _snapshot.delta(con, ts.get("pulse"))
+        ts["pulse"] = fingerprint
+    except Exception as exc:  # noqa: BLE001 -- never worth failing a turn
+        print(f"delta unavailable ({type(exc).__name__}: {exc})")
+        return ""
+    return f"\n\n{text}" if text else ""
+
+
 def orientation_for(ts: dict, fresh: bool) -> str | None:
     """The card injected into a session's system prompt at its first turn.
 
@@ -682,14 +703,19 @@ def handle(update: dict, state: dict) -> None:
 
     sent_at = sent_at_line(msg)
 
+    # Built before the prompt so a quiet turn adds nothing at all. On the first
+    # turn of a session this is always empty: the orientation card already
+    # carries the whole picture, and there is no previous message to be "since".
+    moved = delta_for(ts)
+
     if attachment:
-        prompt = (f"{DOCUMENT_PREAMBLE}\n---\n\n{sent_at}File: `{attachment}`\n\n"
+        prompt = (f"{DOCUMENT_PREAMBLE}{moved}\n---\n\n{sent_at}File: `{attachment}`\n\n"
                   + (f"What the user said with it: {text}" if text
                      else "The user sent it without a caption."))
         label = "telegram:document"
         print(f"→ file {attachment.name} [{key}]")
     else:
-        prompt = f"{PREAMBLE}\n---\n\n{sent_at}{text}"
+        prompt = f"{PREAMBLE}{moved}\n---\n\n{sent_at}{text}"
         label = "telegram"
         print(f"→ {text[:60]!r} [{key}] "
               f"({'new session' if reason else 'continuing'})")
