@@ -8,9 +8,9 @@ in service of a standing instruction, never silent" -- because the dawn
 snapshot reads that table and the digest reports what accumulated.
 
 Two things are deliberately absent. There is no function that sends mail or
-any other message: sending is red, it needs the user to have asked in the
-conversation, and a conversation already has the google-workspace skill for
-it. And there is no delete for anything a person could miss: a calendar event
+any other message, and none that shares a file or changes a permission: those
+are red, and red actions live in red.py, which acts only on the user's tap.
+tools/check.py and the tools/guard.py hook both enforce that split. And there is no delete for anything a person could miss: a calendar event
 Herald manages is cancelled (retitled and greyed) rather than removed, because
 Calendar has no trash and CLAUDE.md says trash, never delete.
 
@@ -222,7 +222,8 @@ def _log(con, actor: str, tier: str, kind: str, target: str, summary: str,
 
 def calendar_insert(con, *, actor: str, cal_id: str, cal_name: str, body: dict,
                     tier: str = "amber") -> dict:
-    ev = calendar_service().events().insert(calendarId=cal_id, body=body).execute()
+    ev = calendar_service().events().insert(calendarId=cal_id, body=body,
+                                               sendUpdates="none").execute()
     start = body["start"].get("dateTime") or body["start"].get("date")
     _log(con, actor, tier, "calendar.create", cal_name,
          f"added '{body.get('summary', '')}' on {start[:16]}", f"gcal:{cal_id}:{ev['id']}")
@@ -232,7 +233,7 @@ def calendar_insert(con, *, actor: str, cal_id: str, cal_name: str, body: dict,
 def calendar_update(con, *, actor: str, cal_id: str, cal_name: str,
                     event_id: str, body: dict, tier: str = "amber") -> dict:
     ev = calendar_service().events().update(calendarId=cal_id, eventId=event_id,
-                                            body=body).execute()
+                                            body=body, sendUpdates="none").execute()
     _log(con, actor, tier, "calendar.update", cal_name,
          f"updated '{body.get('summary', '')}'", f"gcal:{cal_id}:{event_id}")
     return ev
@@ -244,7 +245,7 @@ def calendar_patch(con, *, actor: str, cal_id: str, cal_name: str,
     """A partial update. `quiet` skips the audit row for identity-only
     patches (stamping a syncKey onto an event) that change nothing the user sees."""
     ev = calendar_service().events().patch(calendarId=cal_id, eventId=event_id,
-                                           body=patch).execute()
+                                           body=patch, sendUpdates="none").execute()
     if not quiet:
         _log(con, actor, tier, "calendar.update", cal_name, what,
              f"gcal:{cal_id}:{event_id}")
@@ -268,7 +269,7 @@ def calendar_cancel(con, *, actor: str, cal_id: str, cal_name: str,
              "syncHash": field_hash(_projected(existing, patch))}
     patch["extendedProperties"] = {"private": props}
     ev = calendar_service().events().patch(calendarId=cal_id, eventId=existing["id"],
-                                           body=patch).execute()
+                                           body=patch, sendUpdates="none").execute()
     _log(con, actor, tier, "calendar.cancel", cal_name,
          f"marked '{existing['summary']}' cancelled", f"gcal:{cal_id}:{existing['id']}")
     return ev
@@ -286,7 +287,7 @@ def calendar_restore(con, *, actor: str, cal_id: str, cal_name: str,
              "syncHash": field_hash(_projected(existing, patch))}
     patch["extendedProperties"] = {"private": props}
     ev = calendar_service().events().patch(calendarId=cal_id, eventId=existing["id"],
-                                           body=patch).execute()
+                                           body=patch, sendUpdates="none").execute()
     _log(con, actor, tier, "calendar.restore", cal_name,
          f"restored '{patch['summary']}' (was marked cancelled)",
          f"gcal:{cal_id}:{existing['id']}")
@@ -309,7 +310,7 @@ def calendar_delete_own(con, *, actor: str, cal_id: str, cal_name: str,
                       (ref,)).fetchone()
     if not own:
         return False
-    calendar_service().events().delete(calendarId=cal_id, eventId=event_id).execute()
+    calendar_service().events().delete(calendarId=cal_id, eventId=event_id, sendUpdates="none").execute()
     _log(con, actor, tier, "calendar.delete", cal_name,
          f"deleted Herald's own duplicate '{summary}'", ref)
     return True
@@ -342,7 +343,7 @@ def calendar_delete_synced(con, *, actor: str, cal_id: str, cal_name: str,
     if not (event.get("syncKey") or "").startswith(key_prefixes):
         return False
     ref = f"gcal:{cal_id}:{event['id']}"
-    calendar_service().events().delete(calendarId=cal_id, eventId=event["id"]).execute()
+    calendar_service().events().delete(calendarId=cal_id, eventId=event["id"], sendUpdates="none").execute()
     _log(con, actor, tier, "calendar.delete", cal_name,
          f"removed '{event['summary']}' ({reason})", ref)
     return True
@@ -447,6 +448,171 @@ def gmail_draft(con, *, actor: str, to: str, subject: str, body: str,
          f"drafted '{subject[:60]}' to {to}", f"gmail-draft:{draft['id']}")
     return draft
 
+
+# --------------------------------------------------------------------------
+# Gmail trash, Drive and Docs: logged versions of what conversations do.
+#
+# Sized from real use, not guessed: across every past session, conversations
+# made 12 documents().batchUpdate, 7 files().create, 3 files().update and 3
+# documents().create calls through runtime scripts, none of them logged. The
+# tools/guard.py hook now blocks those raw calls, so these exist to make the
+# logged path the easy one rather than leave a session with nowhere to go.
+#
+# None of them can share. There is no permissions call anywhere in this file,
+# and drive_update accepts a name and content only, because a files().update
+# body can also flip sharing-related flags.
+# --------------------------------------------------------------------------
+
+def gmail_trash(con, *, actor: str, message_id: str, subject: str = "",
+                tier: str = "amber") -> dict:
+    """Move one message to Trash. Recoverable, which is why it is amber."""
+    msg = gmail_service().users().messages().trash(userId="me", id=message_id).execute()
+    _log(con, actor, tier, "gmail.trash", "Trash",
+         f"trashed '{subject[:60]}'" if subject else "trashed a message",
+         f"gmail:{message_id}")
+    return msg
+
+
+def drive_service():
+    return google.service("drive", "v3")
+
+
+def _media(path: str | None, content: str | bytes | None, mime_type: str | None):
+    from googleapiclient.http import MediaFileUpload, MediaInMemoryUpload  # noqa: PLC0415
+    if path is not None:
+        return MediaFileUpload(path, mimetype=mime_type, resumable=False)
+    if content is not None:
+        data = content.encode() if isinstance(content, str) else content
+        return MediaInMemoryUpload(data, mimetype=mime_type or "text/plain",
+                                   resumable=False)
+    return None
+
+
+def drive_folder(con, *, actor: str, name: str, create: bool = True) -> str | None:
+    """Id of a top-level folder by name, created (and logged) if missing."""
+    svc = drive_service()
+    q = ("mimeType='application/vnd.google-apps.folder' and trashed=false "
+         f"and name='{name.replace(chr(39), chr(92) + chr(39))}'")
+    found = svc.files().list(q=q, fields="files(id)", pageSize=1).execute().get("files", [])
+    if found:
+        return found[0]["id"]
+    if not create:
+        return None
+    folder = svc.files().create(
+        body={"name": name, "mimeType": "application/vnd.google-apps.folder"},
+        fields="id").execute()
+    _log(con, actor, "amber", "drive.folder", name, f"created folder '{name}'",
+         f"drive:{folder['id']}")
+    return folder["id"]
+
+
+def drive_create(con, *, actor: str, name: str, path: str | None = None,
+                 content: str | bytes | None = None, mime_type: str | None = None,
+                 folder: str | None = None, tier: str = "amber") -> dict:
+    """Upload a file into the user's Drive, private to them.
+
+    `folder` is a top-level folder name, created if missing. Replaces a file of
+    the same name in that folder rather than stacking duplicates.
+    """
+    svc = drive_service()
+    parent = drive_folder(con, actor=actor, name=folder) if folder else None
+    media = _media(path, content, mime_type)
+    if parent:
+        q = (f"'{parent}' in parents and trashed=false and "
+             f"name='{name.replace(chr(39), chr(92) + chr(39))}'")
+        existing = svc.files().list(q=q, fields="files(id)", pageSize=1).execute().get("files", [])
+        if existing:
+            f = svc.files().update(fileId=existing[0]["id"], media_body=media,
+                                   fields="id,name,webViewLink").execute()
+            _log(con, actor, tier, "drive.update", folder,
+                 f"replaced '{name}'", f"drive:{f['id']}")
+            return f
+    body = {"name": name}
+    if parent:
+        body["parents"] = [parent]
+    f = svc.files().create(body=body, media_body=media,
+                           fields="id,name,webViewLink").execute()
+    _log(con, actor, tier, "drive.create", folder or "My Drive",
+         f"uploaded '{name}'", f"drive:{f['id']}")
+    return f
+
+
+def drive_update(con, *, actor: str, file_id: str, name: str | None = None,
+                 path: str | None = None, content: str | bytes | None = None,
+                 mime_type: str | None = None, tier: str = "amber") -> dict:
+    """Replace a file's content and/or rename it. Nothing else, deliberately."""
+    body = {"name": name} if name else {}
+    media = _media(path, content, mime_type)
+    if not body and media is None:
+        raise ValueError("drive_update needs a new name or new content")
+    f = drive_service().files().update(fileId=file_id, body=body or None,
+                                       media_body=media,
+                                       fields="id,name,webViewLink").execute()
+    what = " and ".join(x for x in (("renamed" if name else ""),
+                                    ("new content" if media is not None else "")) if x)
+    _log(con, actor, tier, "drive.update", f.get("name", file_id),
+         f"{what}: '{f.get('name', '')}'", f"drive:{file_id}")
+    return f
+
+
+def drive_trash(con, *, actor: str, file_id: str, name: str = "",
+                tier: str = "amber") -> dict:
+    """Move a file to Drive's trash. Never files().delete, which is permanent."""
+    f = drive_service().files().update(fileId=file_id, body={"trashed": True},
+                                       fields="id,name").execute()
+    _log(con, actor, tier, "drive.trash", "Trash",
+         f"trashed '{name or f.get('name', file_id)}'", f"drive:{file_id}")
+    return f
+
+
+def docs_service():
+    return google.service("docs", "v1")
+
+
+def doc_create(con, *, actor: str, title: str, tier: str = "amber") -> dict:
+    doc = docs_service().documents().create(body={"title": title}).execute()
+    _log(con, actor, tier, "docs.create", title, f"created doc '{title}'",
+         f"gdoc:{doc['documentId']}")
+    return doc
+
+
+def doc_batch_update(con, *, actor: str, doc_id: str, requests: list,
+                     summary: str, title: str = "", tier: str = "amber") -> dict:
+    """Apply Docs API requests. `summary` is the one line the digest will show."""
+    out = docs_service().documents().batchUpdate(
+        documentId=doc_id, body={"requests": requests}).execute()
+    _log(con, actor, tier, "docs.update", title or doc_id, summary[:200],
+         f"gdoc:{doc_id}")
+    return out
+
+
+# --------------------------------------------------------------------------
+# Contacts
+#
+# Found by the audit's own scanner rather than by anyone looking: a personal
+# tool that fills in addresses people have texted the user wrote straight to
+# Google Contacts with people().updateContact(), and had since the day it was
+# written. The old check.py regex did not know the People API existed, so it
+# was invisible. Amber, because only the user sees their own contacts.
+# --------------------------------------------------------------------------
+
+def contact_set_address(con, *, actor: str, resource_name: str, etag: str,
+                        formatted: str, display: str = "",
+                        tier: str = "amber") -> dict:
+    """Put a home address on one existing contact. Never creates a contact.
+
+    `etag` is the one read alongside the contact, so an entry the user edited
+    in between is rejected by the API rather than silently overwritten.
+    """
+    person = google.service("people", "v1").people().updateContact(
+        resourceName=resource_name, updatePersonFields="addresses",
+        body={"etag": etag,
+              "addresses": [{"formattedValue": formatted, "type": "home"}]},
+    ).execute()
+    who = display or resource_name
+    _log(con, actor, tier, "contacts.update", who,
+         f"added a home address to '{who}'", f"contact:{resource_name}")
+    return person
 
 # --------------------------------------------------------------------------
 # Small shared helpers for syncs

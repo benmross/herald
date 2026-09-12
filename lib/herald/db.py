@@ -181,7 +181,12 @@ CREATE TABLE IF NOT EXISTS actions (
     target      TEXT,                   -- the thing acted on: calendar name, list, message id
     summary     TEXT NOT NULL,          -- one line a human can read
     ref         TEXT,                   -- id of what was written, for undo
-    reported_at TEXT
+    reported_at TEXT,
+    -- The tap that authorised a red action. NULL for green and amber, and
+    -- gwrite/red.py refuse to write a red row without one, so a red action in
+    -- this table either points at an approval the user granted or does not
+    -- exist.
+    approval_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_actions_unreported ON actions (reported_at, ts);
 
@@ -259,6 +264,7 @@ def _migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "runs", "context_tokens", "INTEGER")
     for col in ("startup_ms", "model_ms", "tool_ms", "round_trips"):
         _add_column_if_missing(con, "runs", col, "INTEGER")
+    _add_column_if_missing(con, "actions", "approval_id", "INTEGER")
     con.commit()
 
 
@@ -301,14 +307,34 @@ def put_fact(con: sqlite3.Connection, source: str, kind: str, *,
 
 def record_action(con: sqlite3.Connection, *, actor: str, tier: str, kind: str,
                   summary: str, target: str | None = None,
-                  ref: str | None = None) -> int:
-    """Log one write that happened outside the ledger. See the actions table."""
+                  ref: str | None = None,
+                  approval_id: int | None = None) -> int:
+    """Log one write that happened outside the ledger. See the actions table.
+
+    Refuses rather than records a bad row. The tier used to be a free-text label
+    nobody checked, so a caller could file a red action as green and the digest
+    would report it as routine. A red row must now name the approval that
+    allowed it, and that approval must actually have been granted.
+    """
+    from . import policy  # local: policy imports nothing from here, keep it so
+
+    policy.validate_tier(tier)
+    if tier == policy.RED:
+        if approval_id is None:
+            raise PermissionError(
+                f"refusing to record red action {kind!r} without an approval id")
+        row = con.execute("SELECT state, kind FROM approvals WHERE id = ?",
+                          (approval_id,)).fetchone()
+        if row is None or row[0] not in ("approved", "done"):
+            raise PermissionError(
+                f"approval {approval_id} is not granted "
+                f"({row[0] if row else 'missing'}); red action {kind!r} not recorded")
     cur = con.execute(
         """
-        INSERT INTO actions (ts, actor, tier, kind, target, summary, ref)
-        VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id
+        INSERT INTO actions (ts, actor, tier, kind, target, summary, ref, approval_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id
         """,
-        (now(), actor, tier, kind, target, summary, ref),
+        (now(), actor, tier, kind, target, summary, ref, approval_id),
     )
     return _one(cur)
 

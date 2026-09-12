@@ -70,6 +70,34 @@ the user's request doesn't already clearly authorize a specific write, confirm t
 scope and the targets first. "Clean up my inbox" is not authorization to delete —
 find out what they mean.
 
+**In a Herald session, writes go through Herald's doors, and a hook enforces it.**
+There, `tools/guard.py` runs before every Bash call. A script that calls a Google
+write method directly, or a connector tool that writes, is blocked, because the
+write would never reach Herald's `actions` table and the user's digest could not
+report it. Reads are unaffected; `grun` is still right for those. For writes, run
+from the Herald checkout with Herald's own venv and use the logged equivalent:
+
+```bash
+./venv/bin/python - <<'PY'
+import sys; sys.path.insert(0, "lib")
+from herald import db, gwrite
+with db.session() as con:
+    f = gwrite.drive_create(con, actor="session", name="Report.pdf",
+                            path="/path/to/Report.pdf", folder="Reports")
+    print(f["webViewLink"])
+PY
+```
+
+gwrite covers calendar events, tasks, Gmail labels, trash and drafts, Drive
+create, update and trash, and Docs create and batchUpdate. `herald act
+drive-upload <path> --folder <name>` does the common upload in one line.
+
+Sending mail, sharing anything, and permanent deletion are red and go through
+`herald act`, e.g. `herald act mail-send --to ... --subject ... --body-file ...`.
+It puts the exact message on the user's phone and sends only on their tap. Their
+having asked in the conversation is still required; the tap is still required
+too.
+
 **Read-only inspection is not a license for unrelated writes.** Being asked to look
 something up does not extend to fixing, tidying, or reorganizing what you find along
 the way.

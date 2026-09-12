@@ -1146,6 +1146,58 @@ def cmd_orient(args) -> int:
 
 
 
+def cmd_act(args) -> int:
+    """Carry out an outward action through the right door.
+
+    The guard hook blocks a session's own script from writing to Google
+    directly, because such a write never reaches the actions table. This is
+    where the blocked session is pointed instead, for the two cases that are
+    awkward to do from a script: red actions, which have to wait on a tap, and
+    the everyday "put this file in my Drive".
+
+    Red kinds block until the user answers on their phone or the request
+    expires. That is intended: the answer to "did it send" should be the real
+    answer, not "I asked".
+    """
+    from herald import gwrite, red  # noqa: PLC0415
+
+    if args.kind == "drive-upload":
+        import mimetypes  # noqa: PLC0415
+        path = pathlib.Path(args.path).expanduser()
+        if not path.is_file():
+            print(f"no such file: {path}", file=sys.stderr)
+            return 1
+        with db.session() as con:
+            f = gwrite.drive_create(
+                con, actor=args.actor, name=args.name or path.name, path=str(path),
+                mime_type=mimetypes.guess_type(path.name)[0], folder=args.folder)
+        print(json.dumps({"name": f.get("name"), "id": f.get("id"),
+                          "link": f.get("webViewLink")}))
+        return 0
+
+    if args.kind == "mail-send":
+        body = (pathlib.Path(args.body_file).expanduser().read_text()
+                if args.body_file else args.body)
+        if not body:
+            print("mail-send needs --body or --body-file", file=sys.stderr)
+            return 1
+        payload = {"to": args.to, "subject": args.subject, "body": body}
+        for key in ("cc", "thread_id", "in_reply_to"):
+            if getattr(args, key):
+                payload[key] = getattr(args, key)
+        result = red.run("mail.send", payload, actor=args.actor,
+                         timeout=args.timeout, thread_id=args.telegram_thread)
+    elif args.kind == "drill":
+        result = red.run("drill", {}, actor=args.actor, timeout=args.timeout,
+                         thread_id=args.telegram_thread)
+    else:
+        print(f"unknown kind {args.kind}", file=sys.stderr)
+        return 1
+    print(json.dumps(result))
+    return 0 if result.get("state") == "done" else 3
+
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1154,6 +1206,33 @@ def main() -> int:
 
     sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)
+
+    act = sub.add_parser("act", help="an outward action, through the right door")
+    act_sub = act.add_subparsers(dest="kind", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--actor", default="session",
+                        help="who is acting, for the audit row (default session)")
+    common.add_argument("--timeout", type=int, default=600,
+                        help="seconds to wait for a tap (red kinds)")
+    common.add_argument("--telegram-thread", type=int, default=None,
+                        help="forum topic to ask in (default: the updates topic)")
+    up = act_sub.add_parser("drive-upload", parents=[common],
+                            help="amber: put a file in Drive, private, logged")
+    up.add_argument("path")
+    up.add_argument("--name")
+    up.add_argument("--folder", help="top-level folder name, created if missing")
+    ms = act_sub.add_parser("mail-send", parents=[common],
+                            help="red: send an email, only after the user taps yes")
+    ms.add_argument("--to", required=True)
+    ms.add_argument("--subject", required=True)
+    ms.add_argument("--body")
+    ms.add_argument("--body-file")
+    ms.add_argument("--cc")
+    ms.add_argument("--thread-id", help="Gmail thread to reply within")
+    ms.add_argument("--in-reply-to", help="Message-ID header being replied to")
+    act_sub.add_parser("drill", parents=[common],
+                       help="red, no effect: exercise the approval path end to end")
+    act.set_defaults(fn=cmd_act)
 
     ori = sub.add_parser("orient",
                          help="rebuild state/orientation.md, the session card")

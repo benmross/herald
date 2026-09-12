@@ -329,6 +329,58 @@ One caveat to know before trusting a number: tools issued in a single assistant
 message run concurrently, so `tool_ms` can exceed the wall clock for that span.
 It is "time spent in tools", not "time the run was blocked on tools".
 
+## The tiers are structure, not sentences
+
+An audit on 12 September 2026, asked for by the user, found that green, amber
+and red were three colours over three mechanisms of very different strength.
+Structural absence (gwrite had no send function) and audit (every gwrite call
+logs before returning) were real. Everything else was prose: the `tier` gwrite
+recorded was a default argument nothing validated, `approvals.py` had never
+fired, check.py's regex knew Calendar and Gmail but not Drive, and a
+conversation's runtime script was invisible to all of it. The one amber action a
+conversation had ever taken, a Drive upload, bypassed gwrite and was logged only
+because the session remembered to.
+
+So the rewrite moved each rule from a sentence into a place it cannot be skipped:
+
+| | enforced by |
+|---|---|
+| what counts as green, amber, red | `lib/herald/policy.py`, one classifier, data not prose |
+| program files write only through the doors | `tools/check.py`, using that classifier |
+| a session's own scripts and connectors do too | `tools/guard.py`, a PreToolUse hook |
+| amber is never silent | gwrite logs before returning; `record_action` validates the tier |
+| red needs the user, every time | `lib/herald/red.py`: a tap rendered from the payload, consumed once |
+| a calendar write never emails anyone | gwrite forces `sendUpdates="none"` |
+
+Four decisions in there are easy to undo by accident, so they are written down.
+
+**The classifier parses code, it does not grep text.** The regex it replaced
+flagged its own documentation of the danger as a real call. Herald's sessions
+write about these methods constantly; a guard that fires on prose gets switched
+off. AST first, and a string-stripping fallback for fragments.
+
+**The guard inspects only what is about to run.** A heredoc into `cat` is data;
+one into `python` is code. Write and Edit are not hooked at all, because the
+guard, gwrite and the tests all have to name the methods they police. And the
+matcher is `Bash|mcp__.*` rather than everything, because it runs before every
+matching call and latency here is round trips.
+
+**The guard fails open.** A crash must not brick every Bash call in every
+session. Errors and every block go to `ledger/raw/guard.log`, so a false positive
+can be found and fixed rather than routed around.
+
+**Red goes through the tap even when the user asked in so many words.** Being
+asked is what makes a red action appropriate. The tap is what makes it safe
+against a session misled by something it read, because the Telegram bridge
+records taps only from the owner's account and never acts on them, and red.py
+builds the approval text from the exact payload rather than trusting the caller
+to describe its own request. One tap is one action: `execute` claims the
+approval atomically, and a failed action still consumes it so an old tap cannot
+be replayed.
+
+The honest limit: the guard is a tripwire, not a sandbox. The tap is the only
+part a determined or fooled session cannot produce.
+
 ## The rules a session reads
 
 `CLAUDE.md` at the checkout root is **generated**, by `herald constitution`, from

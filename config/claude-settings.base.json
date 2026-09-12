@@ -1,3 +1,18 @@
 {
-  "_comment": "Project-level Claude Code settings for sessions Herald runs. `herald ext sync` writes .claude/settings.json from this file plus every enabled extension's hooks/hooks.json, so edit this rather than the generated file."
+  "_comment": "Project-level Claude Code settings for sessions Herald runs. `herald ext sync` writes .claude/settings.json from this file plus every enabled extension's hooks/hooks.json, so edit this rather than the generated file.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/guard.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "_hooks_comment": "PreToolUse runs tools/guard.py before every Bash and connector call: it blocks a runtime script or connector that would write to Google outside gwrite.py or red.py. Matched narrowly on purpose, because this runs before every matching call and latency is round trips; Read, Write and Edit cannot execute anything."
 }

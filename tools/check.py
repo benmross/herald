@@ -19,6 +19,7 @@ import ast
 import json
 import pathlib
 import re
+import os
 import subprocess
 import sys
 import token
@@ -129,20 +130,85 @@ def main() -> int:
              if re.search(r'os\.environ\[["\']ANTHROPIC_API_KEY', p.read_text())]
     c.check("nothing sets ANTHROPIC_API_KEY", not keyed, ", ".join(keyed))
 
-    # Every write to Google goes through gwrite.py, which logs it to the
-    # actions table. A collector or cycle that calls events().insert() itself
-    # would work perfectly and leave the digest unable to report it.
-    mutators = re.compile(
-        r"\.(events|tasks|tasklists|labels|messages|drafts|threads)\(\)\s*"
-        r"\.(insert|update|patch|delete|create|modify|send|import_|trash|untrash)\(")
-    rogue = []
+    # The tiers, held to the program's own files. Amber Google writes go through
+    # gwrite.py, which logs them; red ones go through red.py, which acts only on
+    # the user's tap. The classification lives in lib/herald/policy.py so this,
+    # the runtime guard hook and gwrite all agree on it.
+    #
+    # This used to be a regex that knew Calendar and Gmail and nothing else, so
+    # Drive, Docs and Sheets writes were invisible to it -- the gap an unlogged
+    # Drive upload walked through on 12 Sep 2026. It also matched prose: the
+    # policy scanner parses code, so a docstring or test string that *names* a
+    # dangerous method no longer counts as calling it.
+    from herald import policy  # noqa: PLC0415 -- lib is on the path by now
+    red_door = (ROOT / "lib" / "herald" / "red.py").resolve()
+    amber_door = (ROOT / "lib" / "herald" / "gwrite.py").resolve()
+    rogue_red, rogue_amber = [], []
     for p in files:
-        if p.name == "gwrite.py":
-            continue
-        for m in mutators.finditer(p.read_text()):
-            rogue.append(f"{p.relative_to(ROOT)}: {m.group(0)}")
-    c.check("only lib/herald/gwrite.py writes to Google", not rogue,
-            "; ".join(rogue[:3]) + ". Route it through gwrite so it is logged.")
+        where = p.resolve()
+        for call in policy.writes(p.read_text()):
+            line = f"{p.relative_to(ROOT) if ROOT in p.parents else p}: {call}"
+            if call.tier == policy.RED and where != red_door:
+                rogue_red.append(line)
+            elif call.tier == policy.AMBER and where not in (amber_door, red_door):
+                rogue_amber.append(line)
+    c.check("only lib/herald/red.py sends, shares or permanently deletes",
+            not rogue_red,
+            "; ".join(rogue_red[:3]) + ". Red actions go through red.py, which "
+            "acts only on the user's tap.")
+    c.check("only lib/herald/gwrite.py makes other Google writes", not rogue_amber,
+            "; ".join(rogue_amber[:3]) + ". Route it through gwrite so it is logged.")
+
+    # The runtime half. check.py can only see tracked files; a script a session
+    # writes and runs is caught by tools/guard.py as a PreToolUse hook, and a
+    # guard that is not installed guards nothing.
+    #
+    # `.claude/settings.json` is generated per install and gitignored, so a clone
+    # nobody has set up -- which is what CI runs -- has no settings at all. That
+    # is "not set up yet", not "broken", and confusing the two is how three
+    # earlier checks broke the bare-checkout test. So: no settings file is a
+    # warning; a settings file that exists without the guard is a failure,
+    # because that is a real install running unguarded.
+    settings = ROOT / ".claude" / "settings.json"
+    if not settings.exists():
+        c.warn("the tier guard hook is installed for sessions",
+               "no .claude/settings.json yet, so sessions here are unguarded "
+               "until `herald ext sync` runs.")
+    else:
+        try:
+            hooks = json.loads(settings.read_text()).get("hooks", {}).get("PreToolUse", [])
+        except (OSError, ValueError):
+            hooks = []
+        guarded = any("tools/guard.py" in (h.get("command") or "")
+                      for block in hooks for h in block.get("hooks", []))
+        c.check("the tier guard hook is installed for sessions", guarded,
+                "tools/guard.py is not in .claude/settings.json PreToolUse, so "
+                "sessions on this install are unguarded. Run `herald ext sync`.")
+
+    # Installed is not the same as working. A guard that crashes on import exits
+    # 1 rather than 2, and Claude Code treats that as a non-blocking hook error:
+    # the call proceeds and nothing anywhere says the guard is dead. That exact
+    # failure turned up in testing on 12 Sep 2026, before the hook was live. So
+    # run it for real against a red call and require it to block.
+    probe = {"tool_name": "Bash", "cwd": str(ROOT), "tool_input": {
+        "command": "python3 -c 's.users().messages().send(userId=1, body=2).execute()'"}}
+    # Aliased locally: main() imports some of these again further down, which
+    # makes the bare names local to the whole function and unbound up here.
+    # That crashed check.py outright on the first run of this probe.
+    import json as _json  # noqa: PLC0415
+    import os as _os  # noqa: PLC0415
+    import subprocess as _subprocess  # noqa: PLC0415
+    import sys as _sys  # noqa: PLC0415
+    try:
+        rc = _subprocess.run(
+            [_sys.executable, str(ROOT / "tools" / "guard.py")],
+            input=_json.dumps(probe), capture_output=True, text=True, timeout=20,
+            env={**_os.environ, "HERALD_GUARD_PROBE": "1"}).returncode
+    except (OSError, _subprocess.SubprocessError):
+        rc = None
+    c.check("the tier guard actually blocks a red call", rc == 2,
+            f"tools/guard.py exited {rc} on a synthetic red call instead of 2, "
+            f"so sessions are unguarded. Run it by hand to see why.")
 
     # Herald reaches exactly one engine. The Codex fallback came out on
     # 9 September 2026, so a reference to it anywhere is leftover logic
