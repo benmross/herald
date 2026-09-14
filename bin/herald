@@ -445,6 +445,61 @@ def cmd_fact(args) -> int:
     return 0
 
 
+def _quiz_topic(explicit: str | None) -> tuple[int, int | None] | None:
+    """Where a quiz goes: `--topic chat:thread`, else the Telegram topic whose
+    turn is running right now -- the one that asked for it."""
+    key = explicit
+    if not key:
+        live = [t["key"] for t in activity.active() if t.get("service") == "telegram"]
+        if len(live) != 1:
+            return None
+        key = live[0]
+    chat, _, thread = key.partition(":")
+    return int(chat), (int(thread) if thread and thread != "main" else None)
+
+
+def cmd_quiz(args) -> int:
+    """A quiz set, delivered on Telegram and checked without a model. See
+    lib/herald/study.py and skills/herald-study."""
+    from herald import notify, study  # noqa: PLC0415
+    if args.action == "status":
+        rows = db.query("SELECT id, created, title, state, pos, summary FROM study_sets "
+                        "ORDER BY id DESC LIMIT 10")
+        for r in rows:
+            print(f"#{r['id']}  {r['created'][:16]}  {r['state']:<9} {r['title']}"
+                  f"  {r['summary'] or 'at Q' + str(r['pos'] + 1)}")
+        return 0
+    topic = _quiz_topic(args.topic)
+    if topic is None:
+        print("which topic? pass --topic <chat_id>:<thread_id|main> (no single "
+              "Telegram turn is running to infer it from)", file=sys.stderr)
+        return 1
+    chat, thread = topic
+    with db.session() as con:
+        if args.action == "stop":
+            row = study.active_for(con, chat, thread)
+            if not row:
+                print("no live quiz in that topic")
+                return 0
+            con.execute("UPDATE study_sets SET state = 'abandoned', finished = ? "
+                        "WHERE id = ?", (db.now(), row["id"]))
+            print(f"stopped #{row['id']}")
+            return 0
+        if not args.file:
+            print("start needs a set file", file=sys.stderr)
+            return 1
+        try:
+            spec = json.loads(pathlib.Path(args.file).read_text())
+            sid = study.create(con, spec, chat, thread)
+        except (OSError, json.JSONDecodeError, study.SetError) as e:
+            print(f"not started: {e}", file=sys.stderr)
+            return 1
+        study.start(notify._telegram_api, con, sid)
+    print(f"quiz #{sid} started in {chat}:{thread or 'main'}, "
+          f"{len(spec['items'])} items")
+    return 0
+
+
 def cmd_session(args) -> int:
     """Context and latency for one conversation; see lib/herald/sessioninfo.py.
     The same report the Telegram bridge sends for /debug."""
@@ -1323,6 +1378,12 @@ def main() -> int:
     fact_p.add_argument("ref", nargs="+", help="fact ids, or <source> <external_id>")
     fact_p.add_argument("--budget", type=int, default=factview.BUDGET)
     fact_p.set_defaults(fn=cmd_fact)
+
+    qz = sub.add_parser("quiz", help="a quiz on Telegram, checked without a model")
+    qz.add_argument("action", choices=["start", "status", "stop"])
+    qz.add_argument("file", nargs="?", help="the set, as JSON (start)")
+    qz.add_argument("--topic", help="<chat_id>:<thread_id|main>; default: the topic mid-turn")
+    qz.set_defaults(fn=cmd_quiz)
 
     sess_p = sub.add_parser("session", help="one conversation's context and latency")
     sess_p.add_argument("session_id", nargs="?",

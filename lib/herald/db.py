@@ -198,6 +198,31 @@ CREATE INDEX IF NOT EXISTS idx_actions_unreported ON actions (reported_at, ts);
 -- reach on its own, and only then does the actor carry it out. The waiting
 -- process is the one that acts; the surface that collects the answer only
 -- records it, so nothing can approve itself.
+CREATE TABLE IF NOT EXISTS study_sets (
+    id        INTEGER PRIMARY KEY,
+    created   TEXT NOT NULL,
+    chat_id   INTEGER NOT NULL,
+    thread_id INTEGER,
+    title     TEXT,
+    area      TEXT,
+    spec      TEXT NOT NULL,          -- the whole set as a session wrote it
+    state     TEXT NOT NULL,          -- active | done | abandoned
+    pos       INTEGER NOT NULL DEFAULT 0,
+    awaiting  TEXT,                   -- answer | rating | NULL
+    finished  TEXT,
+    summary   TEXT
+);
+
+CREATE TABLE IF NOT EXISTS study_answers (
+    set_id  INTEGER NOT NULL,
+    idx     INTEGER NOT NULL,
+    ts      TEXT NOT NULL,
+    answer  TEXT,
+    correct INTEGER,                  -- deterministic check; NULL for open items
+    rating  TEXT,                     -- their own: got it | partial | missed | skipped
+    PRIMARY KEY (set_id, idx)
+);
+
 CREATE TABLE IF NOT EXISTS approvals (
     id          INTEGER PRIMARY KEY,
     ts          TEXT NOT NULL,

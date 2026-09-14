@@ -53,7 +53,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, sessioninfo, tgtext, think  # noqa: E402
+from herald import activity, approvals, config, db, sessioninfo, study, tgtext, think  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -660,24 +660,34 @@ def handle(update: dict, state: dict) -> None:
     # "supergroup" topic with thread_id still None.
     is_general = thread_id is None and chat.get("type") != "private"
 
-    text = (msg.get("text") or msg.get("caption") or "").strip()
-    attachment = None
+    # Several files sent as one message arrive from Telegram as one update per
+    # file, sharing a media_group_id; `_collect_album` merges them into one
+    # update carrying every part in `_album`. The caption rides on one part only.
+    parts = update.get("_album") or [msg]
+    text = next(((m.get("text") or m.get("caption") or "").strip() for m in parts
+                 if (m.get("text") or m.get("caption") or "").strip()), "")
+    attachments: list[pathlib.Path] = []
 
     if msg.get("voice") or msg.get("audio") or msg.get("video_note"):
         send(chat_id, VOICE_REPLY, thread_id)
         return
 
-    if doc := msg.get("document"):
-        attachment = download(doc["file_id"],
-                              doc.get("file_name") or f"{doc['file_id']}.bin")
-    elif photos := msg.get("photo"):
-        largest = max(photos, key=lambda p: p.get("file_size") or 0)
-        attachment = download(largest["file_id"], f"{largest['file_id']}.jpg")
-
-    if (msg.get("document") or msg.get("photo")) and attachment is None:
-        send(chat_id, "That file wouldn't download - too big, or Telegram "
-                      "refused it. Try again or send it another way.", thread_id)
-        return
+    for m in parts:
+        got = None
+        if doc := m.get("document"):
+            got = download(doc["file_id"],
+                           doc.get("file_name") or f"{doc['file_id']}.bin")
+        elif photos := m.get("photo"):
+            largest = max(photos, key=lambda p: p.get("file_size") or 0)
+            got = download(largest["file_id"], f"{largest['file_id']}.jpg")
+        else:
+            continue
+        if got is None:
+            send(chat_id, "That file wouldn't download - too big, or Telegram "
+                          "refused it. Try again or send it another way.", thread_id)
+            return
+        attachments.append(got)
+    attachment = attachments[0] if attachments else None
 
     if not text and not attachment:
         return
@@ -713,11 +723,17 @@ def handle(update: dict, state: dict) -> None:
     moved = delta_for(ts)
 
     if attachment:
-        prompt = (f"{DOCUMENT_PREAMBLE}{moved}\n---\n\n{sent_at}File: `{attachment}`\n\n"
+        if len(attachments) == 1:
+            files = f"File: `{attachment}`"
+        else:
+            files = (f"{len(attachments)} files, sent together as one message -- "
+                     "read all of them and treat them as one request:\n"
+                     + "\n".join(f"- `{a}`" for a in attachments))
+        prompt = (f"{DOCUMENT_PREAMBLE}{moved}\n---\n\n{sent_at}{files}\n\n"
                   + (f"What the user said with it: {text}" if text
                      else "The user sent it without a caption."))
         label = "telegram:document"
-        print(f"→ file {attachment.name} [{key}]")
+        print(f"→ {len(attachments)} file(s) {attachment.name} [{key}]")
     else:
         prompt = f"{PREAMBLE}{moved}\n---\n\n{sent_at}{text}"
         label = "telegram"
@@ -1014,17 +1030,136 @@ def _try_steer(update: dict, key: str) -> bool:
     return True
 
 
+ALBUM_WAIT = 2.0   # seconds to let the rest of a multi-file message arrive
+_albums_lock = threading.Lock()
+_albums: dict[str, list[dict]] = {}
+
+
+def _collect_album(update: dict, state: dict) -> bool:
+    """Hold one part of a multi-file message until the rest has arrived.
+
+    Telegram delivers four files sent in one message as four updates that
+    share a `media_group_id`, a few milliseconds apart. Until 14 Sep 2026
+    each was dispatched on its own, so the user sent two slide decks, a
+    practice exam and a style guide with one caption forty minutes before an
+    exam and got four sessions: three that each guessed at one uncaptioned
+    file, and a fourth, queued behind them, that finally saw the request.
+
+    The first part starts a short timer; every part that lands before it
+    fires joins the same update, and the merged update is handled once. Its
+    update ids stay in flight until then so a checkpoint cannot skip them.
+    """
+    msg = update.get("message") or {}
+    gid = msg.get("media_group_id")
+    if not gid:
+        return False
+    with _albums_lock:
+        first = gid not in _albums
+        _albums.setdefault(gid, []).append(update)
+    if first:
+        threading.Thread(target=_flush_album, args=(gid, state), daemon=True).start()
+    return True
+
+
+def _flush_album(gid: str, state: dict) -> None:
+    time.sleep(ALBUM_WAIT)
+    with _albums_lock:
+        updates = sorted(_albums.pop(gid, []), key=lambda u: u["update_id"])
+    if not updates:
+        return
+    merged = dict(updates[0])
+    merged["_album"] = [u["message"] for u in updates]
+    key = _topic_key(merged) or f"album:{gid}"
+    try:
+        with _lock_for(key):
+            handle(merged, state)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"album handler error: {e}", file=sys.stderr)
+    finally:
+        with _inflight_lock:
+            for u in updates:
+                _inflight.discard(u["update_id"])
+    _checkpoint(state)
+    _maybe_restart()
+
+
+def _study_session(review: dict | None, state: dict) -> None:
+    """Hand a finished quiz (or one answer to check) to the topic's session,
+    as a turn of that conversation. See lib/herald/study.py."""
+    if not review:
+        return
+    chat_id, thread_id = review["chat_id"], review["thread_id"]
+    msg = {"chat": {"id": chat_id, "type": "private" if chat_id > 0 else "supergroup"},
+           "from": {"id": config.secret("telegram.user_id")},
+           "text": review["prompt"], "date": int(time.time())}
+    if thread_id:
+        msg["message_thread_id"] = thread_id
+    fake = {"update_id": -1, "message": msg}
+
+    def run():
+        try:
+            with _lock_for(_topic_key(fake)):
+                handle(fake, state)
+        except Exception as e:                                # noqa: BLE001
+            print(f"study review error: {e}", file=sys.stderr)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _handle_study_callback(update: dict, state: dict) -> None:
+    cq = update["callback_query"]
+    if (cq.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Not your Herald.")
+        return
+    data = cq.get("data") or ""
+    with db.session() as con:
+        toast, review = study.on_callback(api, con, data)
+    api("answerCallbackQuery", callback_query_id=cq["id"], text=toast or None)
+    message = cq.get("message") or {}
+    # The buttons come off once used, so an old question cannot be answered
+    # again -- except "check my answer now", which leaves the rating to do.
+    if message.get("message_id") and not data.endswith(":k"):
+        api("editMessageReplyMarkup", chat_id=(message.get("chat") or {}).get("id"),
+            message_id=message["message_id"], reply_markup={"inline_keyboard": []})
+    _study_session(review, state)
+
+
+def _study_text(update: dict, state: dict) -> bool:
+    """A typed reply in a topic with a quiz waiting for one never starts a
+    session: study.py checks it and answers from what the set already holds."""
+    msg = update.get("message") or {}
+    if update.get("edited_message") or not msg.get("text"):
+        return False
+    if (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        return False
+    chat_id = (msg.get("chat") or {}).get("id")
+    with db.session() as con:
+        if not study.active_for(con, chat_id, msg.get("message_thread_id")):
+            return False
+        handled, review = study.on_text(api, con, chat_id,
+                                        msg.get("message_thread_id"), msg["text"])
+    _study_session(review, state)
+    return handled
+
+
 def _dispatch(update: dict, state: dict) -> None:
     """Runs in its own thread per update so one slow topic (a `claude -p` call
     can take minutes) never delays a reply in a different one."""
     key = _topic_key(update) or f"unkeyed:{update.get('update_id')}"
+    handed_off = False
     try:
         if update.get("callback_query"):
-            _handle_callback(update)
+            if (update["callback_query"].get("data") or "").startswith("study:"):
+                _handle_study_callback(update, state)
+            else:
+                _handle_callback(update)
         elif _is_stop_command(update):
             _handle_stop(update, key)
         elif _is_debug_command(update):
             _handle_debug(update, key, state)
+        elif _study_text(update, state):
+            pass  # a quiz answer, checked without a session
+        elif _collect_album(update, state):
+            handed_off = True  # _flush_album handles it and releases the id
         elif _try_steer(update, key):
             pass  # folded into the turn already running; no new handle() call
         else:
@@ -1034,8 +1169,9 @@ def _dispatch(update: dict, state: dict) -> None:
                 except Exception as e:                        # noqa: BLE001
                     print(f"handler error: {e}", file=sys.stderr)
     finally:
-        with _inflight_lock:
-            _inflight.discard(update["update_id"])
+        if not handed_off:
+            with _inflight_lock:
+                _inflight.discard(update["update_id"])
     _checkpoint(state)
     _maybe_restart()
 
