@@ -2,6 +2,15 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.1.9 — 14 September 2026
+
+- A quiz no longer eats the message that was not an answer
+- Quizzes that answer without a model, and one turn per multi-file message
+- Sessions answered from shortened copies, and paid for it in round trips
+- The autonomy tiers were three colours over prose; make them structure
+- A conversation could not see the world move underneath it
+- Latency was never measured, so it was optimised by guesswork
+
 ## v0.1.8 — 10 September 2026
 
 - Setup reads like it was written for the person doing it, and does not lag
