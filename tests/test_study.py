@@ -88,6 +88,27 @@ class Flow(unittest.TestCase):
         row = self.con.execute("SELECT pos FROM study_sets WHERE id = ?", (self.sid,)).fetchone()
         self.assertEqual(row["pos"], 2)
 
+    def test_review_carries_the_summary(self):
+        _, review = study.on_callback(self.api, self.con, f"study:{self.sid}:x")
+        self.assertIsNone(review)  # nothing answered, nothing to review
+        sid = study.create(self.con, SET, -100, 7)
+        study.on_text(self.api, self.con, -100, 7, "2")
+        _, review = study.on_callback(self.api, self.con, f"study:{sid}:x")
+        self.assertNotIn("None", review["prompt"].splitlines()[0])
+        self.assertIn("1/1 checked", review["prompt"].splitlines()[0])
+
+    def test_not_an_answer_goes_back_to_the_session(self):
+        study.on_text(self.api, self.con, -100, 7, "2")
+        study.on_callback(self.api, self.con, f"study:{self.sid}:1:c:1")
+        study.on_text(self.api, self.con, -100, 7, "done with my exam, end this")
+        toast, relay = study.on_callback(self.api, self.con, f"study:{self.sid}:2:n")
+        self.assertEqual(relay["kind"], "relay")
+        self.assertIn("done with my exam", relay["prompt"])
+        row = study.active_for(self.con, -100, 7)
+        self.assertEqual((row["pos"], row["awaiting"]), (2, "answer"))
+        self.assertIsNone(self.con.execute(
+            "SELECT 1 FROM study_answers WHERE set_id = ? AND idx = 2", (self.sid,)).fetchone())
+
     def test_other_topic_is_untouched(self):
         self.assertEqual(study.on_text(self.api, self.con, -100, 8, "2"), (False, None))
 

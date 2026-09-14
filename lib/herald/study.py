@@ -284,6 +284,30 @@ def on_callback(api: Api, con: sqlite3.Connection, data: str) -> tuple[str, dict
         _record(con, set_id, idx, rating=RATINGS.get(parts[4], parts[4]))
         return RATINGS.get(parts[4], ""), _advance(api, con, set_id, idx)
 
+    if action == "n":
+        # "That wasn't an answer." A typed message is the answer by default,
+        # so a conversational one gets eaten -- on 14 Sep 2026 "finished my
+        # exam, end this quiz and quiz me on something else" was recorded as
+        # the attempt at a simplification. One tap gives it back to the
+        # session as the message it was, and an open item waits for a real
+        # attempt again.
+        ans = con.execute("SELECT answer FROM study_answers WHERE set_id = ? AND idx = ?",
+                          (set_id, idx)).fetchone()
+        if not ans or ans["answer"] is None:
+            return "", None
+        con.execute("DELETE FROM study_answers WHERE set_id = ? AND idx = ?", (set_id, idx))
+        if item["kind"] == "open":
+            con.execute("UPDATE study_sets SET awaiting = 'answer' WHERE id = ? AND pos = ? "
+                        "AND awaiting = 'rating'", (set_id, idx))
+        con.commit()
+        return "Passing it to Herald", {
+            "kind": "relay", "set_id": set_id, "chat_id": row["chat_id"],
+            "thread_id": row["thread_id"],
+            "prompt": ("(Sent while a quiz was running in this topic. The quiz took it "
+                       "as an answer and they tapped \"that wasn't an answer\"; "
+                       "`herald quiz stop` ends the quiz if they want that.)\n\n"
+                       + ans["answer"])}
+
     if action == "k" and item["kind"] == "open":
         # Check this one now: the caller runs a session on it. The quiz does
         # not wait -- the rating buttons stay live.
@@ -301,6 +325,7 @@ def _reveal(api: Api, row, idx: int, item: dict, attempted: bool = False) -> Non
              ("Missed", f"study:{sid}:{idx}:r:m")]]
     if attempted:
         rows.append([("Check my answer now", f"study:{sid}:{idx}:k")])
+        rows.append([("That wasn't an answer", f"study:{sid}:{idx}:n")])
     text = f"**Solution**\n{item['solution']}\n\n_How did you do?_"
     _send(api, row, tgtext.to_html(text), _kb(*rows))
 
@@ -309,7 +334,8 @@ def on_text(api: Api, con: sqlite3.Connection, chat_id: int, thread_id: int | No
             text: str) -> tuple[bool, dict | None]:
     """A typed message in a topic with a live set. Returns (handled, review).
 
-    Only an answer the set is waiting for is swallowed. A message while the
+    Only an answer the set is waiting for is swallowed, and anything taken
+    as an answer that was not one comes back with one tap (action `n`). A message while the
     set waits on a rating button is conversation, and goes to the session as
     usual -- as does anything starting with `/` except `/skip` and `/endquiz`.
     """
@@ -344,7 +370,8 @@ def on_text(api: Api, con: sqlite3.Connection, chat_id: int, thread_id: int | No
         shown = "" if right else f" Expected: {item.get('display') or item['accept'][0]}"
         _send(api, row, tgtext.to_html(
             f"{'✅ Right.' if right else '❌ Not quite.'}{shown}"
-            + (f"\n{fb}" if fb else "") + _solution_block(item)))
+            + (f"\n{fb}" if fb else "") + _solution_block(item)),
+            None if right else _kb([("That wasn't an answer", f"study:{row['id']}:{idx}:n")]))
         return True, _advance(api, con, row["id"], idx)
 
     if not _claim(con, row["id"], idx, "answer", "rating"):
@@ -385,6 +412,7 @@ def finish(api: Api, con: sqlite3.Connection, set_id: int,
     summary = ("Ended early. " if ended_early else "Done. ") + ("; ".join(line) or "nothing answered") + "."
     con.execute("UPDATE study_sets SET summary = ? WHERE id = ?", (summary, set_id))
     con.commit()
+    row = con.execute("SELECT * FROM study_sets WHERE id = ?", (set_id,)).fetchone()
     _send(api, row, tgtext.to_html(
         summary + ("\n\n_Herald is reading your written answers now._" if answers else "")))
     if not answers:
