@@ -1,9 +1,16 @@
 #!/usr/bin/env python
 """Gmail — recent mail, and which threads are actually waiting on the user.
 
-Metadata and snippets only. Full bodies are large, mostly boilerplate, and one
-API call away when the agent wants one — storing them would trade real disk and
-context for very little the snippet does not already carry.
+Whole bodies, as the text a person would read, plus what is attached.
+
+This began as metadata and snippets, on the theory that a full message was one
+API call away. On 14 Sep 2026 that theory cost a turn five extra round trips:
+the answer to "do I have class tomorrow" was one sentence in the middle of a
+professor's announcement, the snippet ended before it, and the session first had
+to discover that the snippet was all the ledger had. A body is a few kilobytes
+of disk; a round trip is seconds of the user waiting. What keeps whole bodies
+from flooding a session's window is `lib/herald/factview.py`, not truncation
+here.
 
 Other addresses that forward into this mailbox arrive here too, so one inbox
 usually sees everything.
@@ -27,7 +34,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import collector, config, db, google  # noqa: E402
+from herald import collector, config, db, google, mailtext  # noqa: E402
 
 NAME = "gmail"
 REQUIRES = ('google',)
@@ -54,6 +61,9 @@ WINDOW = "newer_than:21d"
 # the API says so and we fall back to reading the window again.
 HISTORY_TYPES = ("messageAdded", "labelAdded", "labelRemoved")
 BATCH = 50
+# Messages stored before bodies were get filled in this many at a time, newest
+# first, so the first run after the change is not a whole-mailbox fetch.
+BACKFILL_PER_RUN = 150
 PAUSE = 0.3   # seconds between batches; Gmail 429s a tight loop
 HEADERS = ["From", "To", "Cc", "Subject", "Date", "List-Id", "List-Unsubscribe",
            "Precedence", "Reply-To", "Auto-Submitted"]
@@ -168,21 +178,32 @@ def collect(con) -> dict:
             if not page:
                 break
 
+    # Converges on its own and costs one indexed query once nothing is missing.
+    known = set(ids)
+    backfill = [r[0] for r in con.execute("""
+        SELECT external_id FROM facts
+        WHERE source = ? AND kind = 'message'
+          AND json_extract(data, '$.body_format') IS NULL
+        ORDER BY ts DESC LIMIT ?
+    """, (NAME, BACKFILL_PER_RUN)) if r[0] not in known]
+    ids = list(ids) + backfill
+
     fetched: dict[str, dict] = {}
     failed: list[str] = []
+    errors: dict[str, str] = {}
     last_error = ""
 
     def _capture(request_id, response, exception):
         nonlocal last_error
         if exception is not None:
             failed.append(request_id)
-            last_error = str(exception)[:200]
+            last_error = errors[request_id] = str(exception)[:200]
         elif response:
             fetched[response["id"]] = response
 
     def _get(mid):
-        return svc.users().messages().get(
-            userId="me", id=mid, format="metadata", metadataHeaders=HEADERS)
+        # `full` costs the same quota as `metadata` and carries every header.
+        return svc.users().messages().get(userId="me", id=mid, format="full")
 
     for i in range(0, len(ids), BATCH):
         batch = svc.new_batch_http_request(callback=_capture)
@@ -203,8 +224,18 @@ def collect(con) -> dict:
                 fetched[mid] = _get(mid).execute()
             except Exception as e:                       # noqa: BLE001
                 failed.append(mid)
-                last_error = str(e)[:200]
+                last_error = errors[mid] = str(e)[:200]
             time.sleep(PAUSE)
+
+    # A stored message Gmail no longer has (deleted for good) would otherwise be
+    # re-requested by the backfill on every run, forever.
+    gone = [mid for mid in failed if mid in set(backfill) and "404" in errors.get(mid, "")]
+    for mid in gone:
+        con.execute("""
+            UPDATE facts SET data = json_set(data, '$.body_format', 'unavailable')
+            WHERE source = ? AND kind = 'message' AND external_id = ?
+        """, (NAME, mid))
+    failed = [mid for mid in failed if mid not in gone]
 
     bulk_count = 0
 
@@ -215,10 +246,17 @@ def collect(con) -> dict:
         bulk = _is_bulk(msg, labels)
         bulk_count += int(bulk)
 
+        payload = msg.get("payload") or {}
+        text, body_format = mailtext.body(payload)
         db.put_fact(
             con, NAME, "message", external_id=mid, ts=_ts(ts_ms),
-            title=_header(msg, "Subject"), body=msg.get("snippet"),
+            title=_header(msg, "Subject"),
+            body=text[:mailtext.MAX_CHARS] or msg.get("snippet"),
             data={
+                "snippet": msg.get("snippet"),
+                "body_format": body_format,
+                "body_truncated": len(text) > mailtext.MAX_CHARS,
+                "attachments": mailtext.attachments(payload),
                 "thread_id": msg.get("threadId"),
                 "from": sender,
                 "to": _header(msg, "To"),
@@ -286,7 +324,8 @@ def collect(con) -> dict:
         print(f"  {len(failed)} of {len(ids)} message fetches failed after retry;"
               f" last: {last_error}", file=sys.stderr)
 
-    return {"mode": mode, "fetched": len(fetched), "threads": len(threads),
+    return {"mode": mode, "fetched": len(fetched), "backfilled": len(backfill),
+            "threads": len(threads),
             "bulk": bulk_count, "awaiting reply": awaiting,
             "fetch failures": len(failed),
             "_cursor": head_history}

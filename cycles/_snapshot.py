@@ -445,8 +445,10 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         mark = "bulk" if _j(m, "bulk") else "direct"
         out.append(f"- [{mark}] {(m['ts'] or '')[:16].replace('T', ' ')}  "
                    f"{_j(m, 'from')}  —  {m['title']}")
-        if snippet := (m["body"] or "").strip():
-            out.append(f"      {snippet[:180]}")
+        # The snippet, not the body: bodies are whole since 14 Sep 2026, and a
+        # newsletter's opening 180 characters are its header, not its point.
+        if snippet := (_j(m, "snippet") or m["body"] or "").strip():
+            out.append(f"      {_clip(snippet, 180)}")
 
     gh = _rows(con, """
         SELECT * FROM facts WHERE source='github' AND kind='event'
@@ -605,7 +607,13 @@ def orientation(con) -> str:
     head("facts.db, so you do not have to probe it")
     out.append(
         "`herald db \"<sql>\"` is read-only and cheap. **The corpus is large "
-        "and the window is not** -- query it, never read it in.\n")
+        "and the window is not** -- query it, never read it in. Values come "
+        "back whole, never silently cut; output that would not fit one tool "
+        "result stops at a row boundary and says how to get the rest.\n\n"
+        "`herald fact <id> [<id> ...]` prints facts whole in one call: a "
+        "mail's full text and attachments, an event's whole description, a "
+        "message as sent. Answer from those, not from a title or a snippet. "
+        "`herald session` shows this conversation's context and latency.\n")
     cols = [r[1] for r in con.execute("PRAGMA table_info(facts)")]
     out.append(f"`facts` columns: {', '.join(cols)}. "
                f"`data` is JSON -- reach into it with "
@@ -746,15 +754,16 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
                      f"(was {prev.get('place') or 'unknown'}).")
 
     mail = _rows(con, """
-        SELECT title, json_extract(data,'$.from') sender FROM facts
+        SELECT id, title, json_extract(data,'$.from') sender FROM facts
         WHERE source='gmail' AND kind='message' AND id > ?
         ORDER BY id DESC LIMIT ?
     """, (prev.get("mail_id", 0), DELTA_ITEM_LIMIT))
     if mail:
-        lines.append(f"- {len(mail)} new email(s) since your last message:")
+        lines.append(f"- {len(mail)} new email(s) since your last message "
+                     f"(`herald fact <id>` for the whole of one):")
         for m in mail:
             who = _clip((m["sender"] or "?").split("<")[0].strip().strip('"'), 32)
-            lines.append(f"  - {who} - {_clip(m['title'], 68)}")
+            lines.append(f"  - #{m['id']} {who} - {_clip(m['title'], 68)}")
 
     # Amber writes Herald made while this conversation was happening. The
     # "never silent" rule says these reach the user; a session that is mid

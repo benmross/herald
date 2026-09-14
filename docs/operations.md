@@ -8,6 +8,8 @@ herald doctor          # the things that break silently
 herald brain status    # the session server
 herald attach          # its terminal (ctrl-b d to detach)
 herald db --schema     # what is in the ledger and how to query it
+herald fact <id> ...   # facts whole, every column, in one call
+herald session         # a conversation's context size and where its time went
 ```
 
 ## Services

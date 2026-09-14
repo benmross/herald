@@ -53,7 +53,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, tgtext, think  # noqa: E402
+from herald import activity, approvals, config, db, sessioninfo, tgtext, think  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -108,6 +108,10 @@ MAX_DOWNLOAD = 45 * 1024 * 1024      # Telegram's own bot download cap is 20 MB
 # from under it.
 DEFAULT_MODEL = "opus"
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
+# Answered by this process from `runs`, never by a model: asking how big the
+# context is should not itself grow the context, or wait behind the turn it is
+# asking about.
+DEBUG_COMMANDS = ("/debug", "/session", "/context")
 
 PREAMBLE = """\
 This message arrived from the user over Telegram. The user is probably on their phone, and
@@ -937,6 +941,42 @@ def _handle_stop(update: dict, key: str) -> None:
         send(chat_id, "*Nothing running here.*", thread_id)
 
 
+def _is_debug_command(update: dict) -> bool:
+    msg = update.get("message") or update.get("edited_message") or {}
+    word = (msg.get("text") or "").strip().lower().split("@")[0]
+    return word in DEBUG_COMMANDS
+
+
+def _handle_debug(update: dict, key: str, state: dict) -> None:
+    """This topic's session: context size, spend, and where the time went.
+
+    Runs on the dispatch thread without the topic lock, like /stop, so it
+    answers while a long turn is still going -- which is usually when someone
+    wants to know. Only reads, so racing the turn is harmless; the turn in
+    flight is reported as running, since its `runs` row lands when it ends.
+    """
+    msg = update.get("message") or update.get("edited_message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not chat_id:
+        return
+    sender = (msg.get("from") or {}).get("id")
+    if sender != config.secret("telegram.user_id"):
+        print(f"ignoring {msg.get('text')!r} from user {sender}", file=sys.stderr)
+        return
+    ts = (state.get("threads") or {}).get(key) or {}
+    live = next((a for a in activity.active()
+                 if a.get("service") == "telegram" and a.get("key") == key), None)
+    running = ({"seconds": time.time() - live["started"],
+                "step": think.current_progress(key)} if live else None)
+    try:
+        with db.session() as con:
+            text = sessioninfo.report(con, ts.get("session_id"), running=running,
+                                      model=ts.get("model") or DEFAULT_MODEL)
+    except Exception as exc:  # noqa: BLE001 -- a report, never worth a crash
+        text = f"report failed: {type(exc).__name__}: {exc}"
+    send(chat_id, tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
+
+
 def _try_steer(update: dict, key: str) -> bool:
     """If `key` already has a live turn still accepting input, fold this
     message into it instead of waiting for `_lock_for(key)` -- which a turn
@@ -959,8 +999,8 @@ def _try_steer(update: dict, key: str) -> bool:
     if msg.get("document") or msg.get("photo") or msg.get("voice") or msg.get("audio"):
         return False  # attachments always take the normal path, never steer
     text = (msg.get("text") or msg.get("caption") or "").strip()
-    if not text or text.lower() in ("/new", "/clear", "/reset", "/stop",
-                                     *MODEL_COMMANDS):
+    if not text or text.lower().split("@")[0] in ("/new", "/clear", "/reset", "/stop",
+                                                   *MODEL_COMMANDS, *DEBUG_COMMANDS):
         return False  # commands always take the normal path, never steer
 
     if not think.steer(key, f"{sent_at_line(msg)}{text}"):
@@ -983,6 +1023,8 @@ def _dispatch(update: dict, state: dict) -> None:
             _handle_callback(update)
         elif _is_stop_command(update):
             _handle_stop(update, key)
+        elif _is_debug_command(update):
+            _handle_debug(update, key, state)
         elif _try_steer(update, key):
             pass  # folded into the turn already running; no new handle() call
         else:

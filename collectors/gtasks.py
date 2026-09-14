@@ -50,7 +50,7 @@ def collect(con) -> dict:
                 db.put_fact(
                     con, NAME, "task", external_id=f"{tl['id']}::{t['id']}",
                     ts=t.get("due"), title=t.get("title") or "(untitled)",
-                    body=(t.get("notes") or "")[:1000] or None,
+                    body=t.get("notes") or None,
                     data={
                         "list": tl.get("title"),
                         "list_id": tl["id"],

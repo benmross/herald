@@ -321,6 +321,7 @@ tokens. Aggregates land on `runs` (`startup_ms`, `model_ms`, `tool_ms`,
 ```bash
 herald latency                  # where turns go, by label, last 7 days
 herald latency --run 216        # one turn's timeline, phase by phase
+herald session [id]             # one conversation's context and latency (/debug in Telegram)
 herald latency --transcripts    # reconstructed from Claude Code's own session
                                 # files, for turns older than the instrumentation
 ```

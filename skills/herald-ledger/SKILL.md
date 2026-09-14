@@ -57,7 +57,7 @@ midnight.
 
 | source/kind | notes |
 |---|---|
-| `gmail/message` | recent mail, metadata + snippet | `data.from`, `data.bulk`, `data.unread`, `data.labels` |
+| `gmail/message` | recent mail, full text + `data.snippet`, `data.attachments` | `data.from`, `data.bulk`, `data.unread`, `data.labels` |
 | `gmail/thread` | derived — `data.awaiting_reply` is the one that matters |
 | `gmail/label` | label id → name; join on `data.labels` in messages |
 | `gcal/event` | a window around today, recurrence expanded. **`data.role` first**, then `data.calendar`, `data.location`, `data.attendees` |
@@ -95,8 +95,27 @@ loops), `runs` (every agent invocation and what it cost), `notifications`,
 `target`, `summary`, `ref`, `reported_at`. "What did you change on my calendar?"
 is `select * from actions order by ts desc`.
 
-Bodies are snippets, not full mail. When you need a whole message, fetch it with
-the `google-workspace` skill — do not expect it here.
+**Bodies are whole.** A mail's `body` is its full text (HTML converted, links
+kept), with `data.snippet`, `data.body_format` and `data.attachments` (name,
+type, size, and the Gmail attachment id that fetches it). Event descriptions,
+task notes and texts are stored as written. To read records completely, in one
+call:
+
+```bash
+herald fact 2497611 2497640          # every column whole, data pretty-printed
+herald fact gmail <message id>       # by the source's own id
+```
+
+**`herald db` never shortens a value without saying so.** Narrow results print
+as a table; anything wider prints as records, whole. Output stops near 24,000
+characters at a row boundary, with a note saying how to page; a single value too
+big for that is written under `ledger/raw/view/` and its path printed, so Read
+can page the original. One value prints bare, so `id=$(herald db "select
+max(id) from runs")` works.
+
+Mail ingested before 14 Sep 2026 held only Gmail's snippet. The collector fills
+those in a slice per run; `json_extract(data,'$.body_format') is null` finds any
+still waiting, and for one of those the `google-workspace` skill fetches it live.
 
 ## Recipes
 

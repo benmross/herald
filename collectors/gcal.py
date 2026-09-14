@@ -169,7 +169,7 @@ def collect(con) -> dict:
                     external_id=f"{cal_id}::{ev['id']}",
                     ts=start,
                     title=ev.get("summary") or "(no title)",
-                    body=(ev.get("description") or "")[:2000] or None,
+                    body=ev.get("description") or None,
                     data={
                         "calendar_id": cal_id,
                         "calendar": cal.get("summary"),

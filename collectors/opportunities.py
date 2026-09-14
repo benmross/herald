@@ -123,7 +123,11 @@ def collect(con) -> dict:
         if data.get("from_me"):
             continue
         subject = r["title"] or ""
-        body = r["body"] or ""
+        # Scored on the snippet, as it always was. Whole bodies arrived on
+        # 14 Sep 2026, and the boilerplate footer of every university newsletter
+        # ("apply", "career", "opportunity") would inflate every score. The
+        # candidate names its source fact for anyone who wants the whole message.
+        body = (data.get("snippet") or "") if "snippet" in data else (r["body"] or "")
         sender = data.get("from") or ""
 
         score, reasons = _score(subject, body, sender)

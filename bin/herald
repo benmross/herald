@@ -55,6 +55,7 @@ from herald import (activity, capabilities, config,  # noqa: E402
                     constitution as constitution_mod, db, extensions,
                     migrations as migrations_mod, notify,
                     think as think_mod, upstream)
+from herald import factview, sessioninfo  # noqa: E402
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
 OK, WARN, BAD = "\033[32m", "\033[33m", "\033[31m"
@@ -405,16 +406,55 @@ def cmd_db(args) -> int:
     if args.json:
         print(json.dumps([dict(r) for r in rows], indent=2, default=str))
         return 0
+    # No colour and no silent cut. The reader is almost always a session, and a
+    # value shortened without a pointer to the rest costs it a round trip to
+    # go and find the rest. lib/herald/factview.py has the whole story.
+    print(factview.render(rows, budget=args.budget, spill_dir=_spill_dir()))
+    return 0
+
+
+def _spill_dir() -> pathlib.Path:
+    """Where a value too big for one tool result is written whole. Under `raw/`,
+    which is gitignored and disposable: it is a view of facts.db, not memory."""
+    return config.LEDGER / "raw" / "view"
+
+
+def cmd_fact(args) -> int:
+    """One or more facts, every column whole.
+
+    The reference half of working from originals: the delta, a digest or a
+    query names a fact by id, and this is the one call that shows all of it.
+    Several ids go in one call, because every separate call is another model
+    round trip.
+    """
+    refs = args.ref
+    if len(refs) == 2 and not refs[0].isdigit():
+        rows = db.query("SELECT * FROM facts WHERE source = ? AND external_id = ? "
+                        "ORDER BY id", refs)
+    elif all(r.isdigit() for r in refs):
+        rows = db.query(f"SELECT * FROM facts WHERE id IN ({','.join('?' * len(refs))}) "
+                        "ORDER BY id", [int(r) for r in refs])
+    else:
+        print("usage: herald fact <id> [<id> ...]   or   herald fact <source> <external_id>",
+              file=sys.stderr)
+        return 2
     if not rows:
-        print(_c("(no rows)", DIM))
-        return 0
-    cols = rows[0].keys()
-    widths = {c: max(len(c), *(len(str(r[c])) for r in rows)) for c in cols}
-    widths = {c: min(w, 60) for c, w in widths.items()}
-    print(_c("  ".join(c.ljust(widths[c]) for c in cols), BOLD))
-    for r in rows:
-        print("  ".join(str(r[c])[:widths[c]].ljust(widths[c]) for c in cols))
-    print(_c(f"({len(rows)} rows)", DIM))
+        print("(no such fact)")
+        return 1
+    print(factview.render(rows, budget=args.budget, spill_dir=_spill_dir()))
+    return 0
+
+
+def cmd_session(args) -> int:
+    """Context and latency for one conversation; see lib/herald/sessioninfo.py.
+    The same report the Telegram bridge sends for /debug."""
+    with db.session() as con:
+        sid = args.session_id or sessioninfo.latest_session(con)
+        if sid and len(sid) < 36:
+            row = con.execute("SELECT session_id FROM runs WHERE session_id LIKE ? "
+                              "ORDER BY id DESC LIMIT 1", (sid + "%",)).fetchone()
+            sid = row[0] if row else sid
+        print(sessioninfo.report(con, sid))
     return 0
 
 
@@ -1274,7 +1314,20 @@ def main() -> int:
     d.add_argument("--json", action="store_true")
     d.add_argument("--schema", action="store_true",
                    help="what is in the ledger and how to query it")
+    d.add_argument("--budget", type=int, default=factview.BUDGET,
+                   help="stop near this many characters, at a row boundary and "
+                        "saying so (0: no limit)")
     d.set_defaults(fn=cmd_db)
+
+    fact_p = sub.add_parser("fact", help="one or more facts, every column whole")
+    fact_p.add_argument("ref", nargs="+", help="fact ids, or <source> <external_id>")
+    fact_p.add_argument("--budget", type=int, default=factview.BUDGET)
+    fact_p.set_defaults(fn=cmd_fact)
+
+    sess_p = sub.add_parser("session", help="one conversation's context and latency")
+    sess_p.add_argument("session_id", nargs="?",
+                        help="id or prefix (default: the most recent)")
+    sess_p.set_defaults(fn=cmd_session)
 
     n = sub.add_parser("notify", help="push to the user's phone")
     n.add_argument("title")
