@@ -436,7 +436,10 @@ def _run_claude(prompt: str, *, model: str, cwd: Path, timeout: int,
         # normally fires is the *idle* one, reset on every line of stream.
         # `timeout` stays as an absolute backstop, since a run that keeps
         # emitting forever is a runaway loop and still needs an end.
-        hard_deadline = time.monotonic() + timeout
+        # A ceiling of 0 (or none) means no absolute limit: the idle deadline
+        # alone decides, for a user who would rather a long run finish than be
+        # cut off at an arbitrary hour.
+        hard_deadline = time.monotonic() + timeout if timeout else float("inf")
         idle_deadline = time.monotonic() + idle_timeout
         while True:
             now = time.monotonic()
@@ -449,7 +452,7 @@ def _run_claude(prompt: str, *, model: str, cwd: Path, timeout: int,
                 # is why this is generous rather than tight.
                 timeout_reason = f"went silent for {idle_timeout}s"
                 raise subprocess.TimeoutExpired(cmd, idle_timeout)
-            remaining = hard_deadline - now
+            remaining = hard_deadline - now if timeout else 0.5
 
             # Forward anything steer() queued, every iteration -- this is what
             # makes it *mid-turn*: it doesn't wait for a result event, it
@@ -689,7 +692,10 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     # `timeout` is an absolute ceiling on the run; `idle_timeout` is how long
     # it may produce nothing at all before being treated as hung. The second
     # is the one that normally fires -- see the comment in _run_claude.
-    timeout = timeout or config.get("engines.think_timeout_seconds", 7200)
+    # 0 in the config means no ceiling at all, so only a missing argument
+    # falls through to it.
+    if timeout is None:
+        timeout = config.get("engines.think_timeout_seconds", 7200)
     idle_timeout = idle_timeout or config.get("engines.think_idle_timeout_seconds", 900)
     if model is None:
         key = "engines.primary.escalate_model" if escalate else "engines.primary.model"

@@ -13,7 +13,7 @@
       "escalate_model": "opus",
       "permission_mode": "auto"
     },
-    "_timeout_comment": "think_timeout_seconds is an absolute ceiling for a runaway loop, not a budget for how long real work may take. The deadline that normally fires is think_idle_timeout_seconds: how long the engine may emit nothing at all before it counts as hung. Generous because one long tool call is silent while it runs.",
+    "_timeout_comment": "think_timeout_seconds is an absolute ceiling for a runaway loop, not a budget for how long real work may take. Set it to 0 for no absolute ceiling. The deadline that normally fires is think_idle_timeout_seconds: how long the engine may emit nothing at all before it counts as hung. Generous because one long tool call is silent while it runs.",
     "think_timeout_seconds": 7200,
     "think_idle_timeout_seconds": 900
   },
