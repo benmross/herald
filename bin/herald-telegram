@@ -1083,6 +1083,123 @@ def _flush_album(gid: str, state: dict) -> None:
     _maybe_restart()
 
 
+SPLIT_MIN = 3800   # a text this long was very likely cut off, not finished
+SPLIT_WAIT = 2.5   # seconds to let the rest of a cut-up message arrive
+_splits_lock = threading.Lock()
+_splits: dict[str, dict] = {}
+
+
+def _split_part(update: dict) -> str | None:
+    """The text of a message that could be one piece of an over-long paste,
+    or None if this update is not that kind of thing at all."""
+    if update.get("callback_query") or update.get("edited_message"):
+        return None
+    msg = update.get("message") or {}
+    if (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        return None
+    if (msg.get("document") or msg.get("photo") or msg.get("voice")
+            or msg.get("audio") or msg.get("video_note")
+            or msg.get("media_group_id")):
+        return None
+    text = msg.get("text") or ""
+    if not text.strip():
+        return None
+    if text.strip().lower().split("@")[0] in ("/new", "/clear", "/reset", "/stop",
+                                              *MODEL_COMMANDS, *DEBUG_COMMANDS):
+        return None
+    return text
+
+
+def _collect_split(update: dict, state: dict) -> bool:
+    """Hold a message Telegram's client probably cut in half, so that one
+    paste is one turn.
+
+    Telegram caps a text message at 4096 characters and the clients split
+    anything longer across separate messages, sent back to back, with
+    nothing in the update saying they belong together -- no media_group_id,
+    no reply link, nothing. Until 21 Sep 2026 each part was therefore its
+    own update: the user pasted one set of mail headers, the first half
+    started a turn, and the second half sat behind that turn's lock until
+    it finished. He got an answer built on half the evidence, and then a
+    second answer on the other half, which is worse than either.
+
+    Length is the only signal available, and it is a good one: a message at
+    the cap was almost certainly continued, so it waits SPLIT_WAIT for a
+    sibling, while anything shorter dispatches at once -- which is nearly
+    every message the user sends. Once parts are being held, whatever lands
+    next in that topic joins them, and a sibling that is itself at the cap
+    pushes the deadline out again, so a paste split five ways still arrives
+    as one turn.
+
+    The cost is that a genuinely standalone 4000-character message waits two
+    and a half seconds. That is the right trade against answering half of
+    what someone said.
+    """
+    text = _split_part(update)
+    if text is None:
+        return False
+    key = _topic_key(update)
+    if not key:
+        return False
+    now = time.monotonic()
+    with _splits_lock:
+        pending = _splits.get(key)
+        if pending is None:
+            if len(text) < SPLIT_MIN:
+                return False
+            _splits[key] = {"updates": [update], "deadline": now + SPLIT_WAIT}
+            threading.Thread(target=_flush_split, args=(key, state),
+                             daemon=True).start()
+            return True
+        pending["updates"].append(update)
+        if len(text) >= SPLIT_MIN:
+            pending["deadline"] = max(pending["deadline"], now + SPLIT_WAIT)
+        return True
+
+
+def _flush_split(key: str, state: dict) -> None:
+    """Wait out the window, join the parts back together, handle them once.
+
+    Parts are rejoined with a newline because the clients break on a line or
+    word boundary and drop the separator, so mail headers and logs -- the
+    things long enough to be split in the first place -- come back readable.
+
+    Steering is retried here rather than in `_dispatch`, so that a paste
+    arriving while a turn is still running folds into that turn exactly as a
+    short message would, instead of queueing behind its lock.
+    """
+    while True:
+        with _splits_lock:
+            pending = _splits.get(key)
+            if not pending:
+                return
+            remaining = pending["deadline"] - time.monotonic()
+            if remaining <= 0:
+                updates = sorted(_splits.pop(key)["updates"],
+                                 key=lambda u: u["update_id"])
+                break
+        time.sleep(min(remaining, SPLIT_WAIT))
+
+    merged = dict(updates[0])
+    merged["message"] = dict(updates[0]["message"])
+    merged["message"]["text"] = "\n".join(u["message"].get("text") or ""
+                                          for u in updates)
+    if len(updates) > 1:
+        print(f"[{key}] rejoined {len(updates)} parts of a split message")
+    try:
+        if not _try_steer(merged, key):
+            with _lock_for(key):
+                handle(merged, state)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"split handler error: {e}", file=sys.stderr)
+    finally:
+        with _inflight_lock:
+            for u in updates:
+                _inflight.discard(u["update_id"])
+    _checkpoint(state)
+    _maybe_restart()
+
+
 def _study_session(review: dict | None, state: dict) -> None:
     """Hand a finished quiz (or one answer to check) to the topic's session,
     as a turn of that conversation. See lib/herald/study.py."""
@@ -1160,6 +1277,8 @@ def _dispatch(update: dict, state: dict) -> None:
             pass  # a quiz answer, checked without a session
         elif _collect_album(update, state):
             handed_off = True  # _flush_album handles it and releases the id
+        elif _collect_split(update, state):
+            handed_off = True  # _flush_split handles it and releases the ids
         elif _try_steer(update, key):
             pass  # folded into the turn already running; no new handle() call
         else:

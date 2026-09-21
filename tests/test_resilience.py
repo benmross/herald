@@ -14,6 +14,7 @@ import io
 import pathlib
 import sqlite3
 import sys
+import time
 import unittest
 from contextlib import redirect_stderr
 from unittest import mock
@@ -190,3 +191,91 @@ class RunRecording(unittest.TestCase):
                                     model="sonnet", exit_code=1,
                                     error="rate limited")
         self.assertTrue(row_id)
+
+
+class SplitMessageTests(unittest.TestCase):
+    """Telegram cuts a paste longer than 4096 characters into separate
+    messages with nothing marking them as one thing. The bridge has to put
+    them back together, or it answers half of what was said and then answers
+    the other half separately."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tg = _load("tg_split_under_test", ROOT / "bin" / "herald-telegram")
+
+    def setUp(self):
+        self.tg._splits.clear()
+        self.handled = []
+        self.patches = [
+            mock.patch.object(self.tg.config, "secret",
+                              side_effect=lambda k, *a: 42 if k == "telegram.user_id" else None),
+            mock.patch.object(self.tg, "handle",
+                              side_effect=lambda u, s: self.handled.append(u)),
+            mock.patch.object(self.tg, "_try_steer", return_value=False),
+            mock.patch.object(self.tg, "_checkpoint"),
+            mock.patch.object(self.tg, "_maybe_restart"),
+            mock.patch.object(self.tg, "SPLIT_WAIT", 0.15),
+        ]
+        for p in self.patches:
+            p.start()
+        self.addCleanup(lambda: [p.stop() for p in self.patches])
+
+    def _update(self, uid, text):
+        return {"update_id": uid,
+                "message": {"chat": {"id": 7, "type": "private"},
+                            "from": {"id": 42}, "text": text}}
+
+    def _settle(self):
+        deadline = time.time() + 5
+        while time.time() < deadline and not self.handled:
+            time.sleep(0.02)
+
+    def test_an_ordinary_message_is_not_held(self):
+        self.assertFalse(self.tg._collect_split(self._update(1, "hi"), {}))
+
+    def test_a_command_is_never_held(self):
+        long_cmd = "/stop"
+        self.assertFalse(self.tg._collect_split(self._update(1, long_cmd), {}))
+
+    def test_an_attachment_is_never_held(self):
+        u = self._update(1, "x" * 4000)
+        u["message"]["document"] = {"file_id": "f"}
+        self.assertFalse(self.tg._collect_split(u, {}))
+
+    def test_a_message_from_a_stranger_is_never_held(self):
+        u = self._update(1, "x" * 4000)
+        u["message"]["from"] = {"id": 999}
+        self.assertFalse(self.tg._collect_split(u, {}))
+
+    def test_two_parts_become_one_turn(self):
+        head, tail = "H" * 4000, "the rest"
+        self.assertTrue(self.tg._collect_split(self._update(1, head), {}))
+        self.assertTrue(self.tg._collect_split(self._update(2, tail), {}))
+        self._settle()
+        self.assertEqual(len(self.handled), 1)
+        self.assertEqual(self.handled[0]["message"]["text"], f"{head}\n{tail}")
+
+    def test_a_paste_split_three_ways_still_arrives_whole(self):
+        a, b, c = "A" * 4000, "B" * 4000, "C"
+        for i, part in enumerate((a, b, c), start=1):
+            self.assertTrue(self.tg._collect_split(self._update(i, part), {}))
+        self._settle()
+        self.assertEqual(len(self.handled), 1)
+        self.assertEqual(self.handled[0]["message"]["text"], f"{a}\n{b}\n{c}")
+
+    def test_a_lone_long_message_is_handled_by_itself(self):
+        solo = "S" * 4000
+        self.assertTrue(self.tg._collect_split(self._update(1, solo), {}))
+        self._settle()
+        self.assertEqual(len(self.handled), 1)
+        self.assertEqual(self.handled[0]["message"]["text"], solo)
+
+    def test_every_part_is_released_from_flight(self):
+        with self.tg._inflight_lock:
+            self.tg._inflight.update({1, 2})
+        self.tg._collect_split(self._update(1, "L" * 4000), {})
+        self.tg._collect_split(self._update(2, "tail"), {})
+        self._settle()
+        with self.tg._inflight_lock:
+            self.assertNotIn(1, self.tg._inflight)
+            self.assertNotIn(2, self.tg._inflight)
