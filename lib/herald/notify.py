@@ -327,6 +327,49 @@ def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = 
     return ok
 
 
+def telegram_document(path, *, caption: str | None = None,
+                      thread_id: int | None = None, record: bool = True) -> bool:
+    """Send a file to the user as a document. Returns whether it landed.
+
+    The user reads Herald from a phone, and the ledger lives on a machine
+    they cannot open from there without an SSH session. A plan or a report
+    that only exists as a file on the server is, from their side, a file
+    that does not exist. This is the other half of telegram_photo: the same
+    upload path, but always sendDocument, so a PDF or a Markdown file arrives
+    as something they can tap, with a caption saying what it is.
+
+    Goes to the topic that is asking when one is live, otherwise to Updates,
+    for the same reason images do.
+    """
+    chat_id = _telegram_chat_id()
+    if not chat_id:
+        return False
+    if thread_id is None:
+        thread_id = _live_topic_thread()
+        if thread_id is None:
+            thread_id = _updates_thread_id()
+    path = pathlib.Path(path)
+    blob = path.read_bytes()
+    common = {"chat_id": chat_id}
+    if thread_id:
+        common["message_thread_id"] = thread_id
+    if caption:
+        common["caption"] = caption[:1024]
+    resp = _telegram_upload("sendDocument", "document", path.name, blob, **common)
+    ok = bool(resp and resp.get("ok"))
+    if record:
+        try:
+            with db.session() as con:
+                con.execute(
+                    "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
+                    " VALUES (?, 'telegram', 'default', ?, ?, ?)",
+                    (db.now(), f"document: {path.name}", caption or "", int(ok)))
+                con.commit()
+        except Exception:
+            pass
+    return ok
+
+
 def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
         no: str = "No", thread_id: int | None = None) -> bool:
     """Put a red-tier action in front of the user as two buttons.

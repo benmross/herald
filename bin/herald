@@ -537,6 +537,18 @@ def cmd_session(args) -> int:
 # --------------------------------------------------------------------------- notify
 
 def cmd_notify(args) -> int:
+    if args.file:
+        # A file is a Telegram-only thing: the push channel carries text. The
+        # title and body become the caption, so the file arrives labelled.
+        path = pathlib.Path(args.file).expanduser()
+        if not path.is_file():
+            print(f"no such file: {path}", file=sys.stderr)
+            return 1
+        caption = args.title if not args.body else f"{args.title}\n{args.body}"
+        ok = notify.telegram_document(path, caption=caption)
+        if not ok:
+            print("document send failed", file=sys.stderr)
+        return 0 if ok else 1
     ok = notify.push(args.title, args.body, priority=args.priority, tags=args.tags,
                      click=args.click)
     if not ok:
@@ -1417,7 +1429,9 @@ def main() -> int:
 
     n = sub.add_parser("notify", help="push to the user's phone")
     n.add_argument("title")
-    n.add_argument("body")
+    n.add_argument("body", nargs="?", default="")
+    n.add_argument("--file", help="send this file to Telegram as a document; "
+                   "title and body become its caption")
     n.add_argument("--priority", default="default")
     n.add_argument("--tags")
     n.add_argument("--click")
