@@ -508,11 +508,17 @@ def drive_folder(con, *, actor: str, name: str, create: bool = True) -> str | No
 
 def drive_create(con, *, actor: str, name: str, path: str | None = None,
                  content: str | bytes | None = None, mime_type: str | None = None,
-                 folder: str | None = None, tier: str = "amber") -> dict:
+                 folder: str | None = None, convert_to: str | None = None,
+                 tier: str = "amber") -> dict:
     """Upload a file into the user's Drive, private to them.
 
     `folder` is a top-level folder name, created if missing. Replaces a file of
     the same name in that folder rather than stacking duplicates.
+
+    `convert_to` is a Google mime type, and makes Drive convert the upload into
+    a native editable file rather than an attachment the user has to open in
+    something else: `application/vnd.google-apps.presentation`, `.document` or
+    `.spreadsheet`. Still amber: the file is private to them either way.
     """
     svc = drive_service()
     parent = drive_folder(con, actor=actor, name=folder) if folder else None
@@ -528,6 +534,8 @@ def drive_create(con, *, actor: str, name: str, path: str | None = None,
                  f"replaced '{name}'", f"drive:{f['id']}")
             return f
     body = {"name": name}
+    if convert_to:
+        body["mimeType"] = convert_to
     if parent:
         body["parents"] = [parent]
     f = svc.files().create(body=body, media_body=media,
