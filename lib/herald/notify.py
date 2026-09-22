@@ -214,6 +214,24 @@ def telegram(text: str, *, record: bool = True,
     return ok
 
 
+def _live_topic_thread() -> int | None:
+    """The Telegram topic whose turn is running right now, if exactly one is.
+
+    Same source `herald quiz` uses to work out where a quiz should land.
+    Ambiguous when two topics are mid-turn, so it says nothing rather than
+    guessing.
+    """
+    try:
+        from . import activity  # noqa: PLC0415
+        live = [t["key"] for t in activity.active() if t.get("service") == "telegram"]
+    except Exception:                                            # noqa: BLE001
+        return None
+    if len(live) != 1:
+        return None
+    _, _, thread = live[0].partition(":")
+    return int(thread) if thread and thread != "main" else None
+
+
 def _telegram_upload(method: str, field: str, filename: str, blob: bytes,
                      **params) -> dict | None:
     """POST a file to the Bot API as multipart/form-data.
@@ -268,7 +286,13 @@ def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = 
     if not chat_id:
         return False
     if thread_id is None:
-        thread_id = _updates_thread_id()
+        # An image is nearly always an answer to something somebody just
+        # asked, so it belongs in the topic that asked. Only when no turn is
+        # running (a cycle, a scheduled job) does it fall back to Updates,
+        # where unprompted pushes go.
+        thread_id = _live_topic_thread()
+        if thread_id is None:
+            thread_id = _updates_thread_id()
     path = pathlib.Path(path)
     blob = path.read_bytes()
 
