@@ -99,7 +99,8 @@ $HERALD_HOME        you. Private, yours, ~/.herald by default:
 Nothing personal is ever committed to the program's repository, and `herald
 check` fails if anything is. Your ledger is yours to version, back up, read, or
 delete; nothing is sent anywhere except to the services you connected and to
-Claude Code, which is what you are already using.
+Claude Code (or the Codex CLI, if you choose it), which is what you are already
+using.
 
 ## Staying current
 
@@ -129,9 +130,12 @@ ledger, not your settings, not your extensions.
 
 ## The rule that shapes everything
 
-Herald runs the official `claude` CLI as a subprocess. It never calls a model
-HTTP API. That is what keeps it billed to a subscription rather than API credit,
-and `lib/herald/think.py` is the only module allowed to launch an engine.
+Herald runs the official `claude` CLI as a subprocess, or the official `codex`
+CLI when asked to. It never calls a model HTTP API. That is what keeps it billed
+to a subscription rather than API credit, and `lib/herald/think.py` is the only
+module allowed to launch an engine. The engine is chosen before a run (`/codex`
+and `/claude` in a chat, `--engine` on the CLI, `engines.default_engine` in the
+config); a run never falls back from one to the other.
 
 ## Layout
 

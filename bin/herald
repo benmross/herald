@@ -212,14 +212,23 @@ def cmd_doctor(args) -> int:
 
     _hdr("credentials")
     env = config.agent_env()
-    check("no ANTHROPIC_API_KEY leaking into agent env",
-          "ANTHROPIC_API_KEY" not in env,
+    check("no engine API key leaking into agent env",
+          not any(k in env for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY")),
           "an API key would silently move Herald onto metered billing")
     sys.path.insert(0, str(config.ROOT))
     from setup.preflight import claude_auth  # noqa: PLC0415
     auth = claude_auth()
     check("claude logged in", bool(auth.get("loggedIn")),
           "" if auth.get("loggedIn") else "run `claude` and /login")
+    if shutil.which("codex", path=env["PATH"]):
+        try:
+            r = subprocess.run(["codex", "login", "status"], capture_output=True,
+                               text=True, timeout=15, env=env)
+            codex_in = r.returncode == 0 and "logged in" in (r.stdout + r.stderr).lower()
+        except (OSError, subprocess.SubprocessError):
+            codex_in = False
+        check("codex logged in (optional second engine)", codex_in,
+              "" if codex_in else "run `codex login`, or ignore if you never use /codex")
     creds = pathlib.Path.home() / ".claude" / ".credentials.json"
     if auth.get("loggedIn") and not creds.exists():
         print(f"        {_c('subscription: ' + str(auth.get('subscriptionType')), DIM)}")

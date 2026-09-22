@@ -171,6 +171,34 @@ def checks() -> list[dict]:
                    "there.",
         })
 
+    # The second engine is optional: nothing runs on it unless asked to, so
+    # its absence is a note, not a failure. When it is installed, being
+    # signed out is the thing worth catching, because `/codex` would then
+    # fail on the first message rather than here.
+    codex = shutil.which("codex")
+    if codex:
+        try:
+            r = subprocess.run(["codex", "login", "status"], capture_output=True,
+                               text=True, timeout=15)
+            signed_in = r.returncode == 0 and "logged in" in (r.stdout + r.stderr).lower()
+            how = (r.stdout + r.stderr).strip().splitlines()[0] if (r.stdout + r.stderr).strip() else ""
+        except (OSError, subprocess.SubprocessError):
+            signed_in, how = False, ""
+        out.append({
+            "name": "Codex CLI (optional second engine) signed in", "ok": signed_in,
+            "required": False,
+            "detail": how if signed_in else "installed but not signed in",
+            "fix": "run `codex login` and sign in with your ChatGPT account, or "
+                   "ignore this: Herald only uses Codex when a topic says /codex "
+                   "or engines.default_engine is set to codex.",
+        })
+    else:
+        out.append({
+            "name": "Codex CLI (optional second engine)", "ok": True, "required": False,
+            "detail": "not installed; Herald runs on Claude Code alone",
+            "fix": "",
+        })
+
     tmux = shutil.which("tmux")
     out.append({
         "name": "tmux (keeps a conversation open in the background)",

@@ -25,6 +25,12 @@ laptop that sleeps overnight has no 06:30 digest until it wakes.
 Herald works by running Claude Code for you. There is no separate bill, no API
 key, and no per-token cost beyond your existing subscription.
 
+Optionally, **a ChatGPT subscription with the Codex CLI signed in**
+(`codex login`). Herald can run any conversation or cycle on Codex instead of
+Claude when you tell it to (`/codex` in a chat, `engines.default_engine` in
+your config). Nothing uses it unless you ask, so skip this if you do not have
+one.
+
 **A Google account.** Mail and calendar are the spine of everything else.
 
 ## Step 1: open a terminal
