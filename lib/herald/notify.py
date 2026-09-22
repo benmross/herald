@@ -7,8 +7,10 @@ is and what device is awake) will grow here rather than in callers.
 from __future__ import annotations
 
 import json
+import pathlib
 import urllib.error
 import urllib.request
+import uuid
 
 from . import config, db, tgtext
 
@@ -206,6 +208,88 @@ def telegram(text: str, *, record: bool = True,
                     "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
                     " VALUES (?, 'telegram', 'default', ?, ?, ?)",
                     (db.now(), text.splitlines()[0][:120] if text else "", text, int(ok)))
+                con.commit()
+        except Exception:
+            pass
+    return ok
+
+
+def _telegram_upload(method: str, field: str, filename: str, blob: bytes,
+                     **params) -> dict | None:
+    """POST a file to the Bot API as multipart/form-data.
+
+    `_telegram_api` sends JSON, which cannot carry a file. Rather than pull in
+    a dependency for one content type, this builds the body by hand: the Bot
+    API wants each parameter as its own part, and the file part needs a
+    filename for Telegram to accept it as an upload.
+    """
+    token = config.secret("telegram.bot_token")
+    if not token:
+        return None
+    boundary = f"----herald{uuid.uuid4().hex}"
+    parts: list[bytes] = []
+    for key, value in params.items():
+        if value is None:
+            continue
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n"
+            f"{value}\r\n".encode())
+    parts.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\";"
+        f" filename=\"{filename}\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        .encode())
+    parts.append(blob)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/{method}", data=body, method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.load(r)
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return None
+
+
+def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = None,
+                   record: bool = True) -> bool:
+    """Send an image to the user. Returns whether it landed.
+
+    Herald could only ever send words, which is a poor fit for the things it
+    increasingly makes: a screenshot, a slide, a chart. A picture the user has
+    to open a link for is a picture they look at later, if at all.
+
+    Falls back to sending the file as a document when Telegram refuses it as a
+    photo, which it does for anything over 10 MB or with an extreme aspect
+    ratio. Better a file they can tap than nothing.
+    """
+    chat_id = _telegram_chat_id()
+    if not chat_id:
+        return False
+    if thread_id is None:
+        thread_id = _updates_thread_id()
+    path = pathlib.Path(path)
+    blob = path.read_bytes()
+
+    common = {"chat_id": chat_id}
+    if thread_id:
+        common["message_thread_id"] = thread_id
+    if caption:
+        common["caption"] = caption[:1024]
+
+    resp = _telegram_upload("sendPhoto", "photo", path.name, blob, **common)
+    if not (resp and resp.get("ok")):
+        resp = _telegram_upload("sendDocument", "document", path.name, blob, **common)
+    ok = bool(resp and resp.get("ok"))
+
+    if record:
+        try:
+            with db.session() as con:
+                con.execute(
+                    "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
+                    " VALUES (?, 'telegram', 'default', ?, ?, ?)",
+                    (db.now(), f"image: {path.name}", caption or "", int(ok)))
                 con.commit()
         except Exception:
             pass
