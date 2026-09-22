@@ -272,7 +272,10 @@ def _telegram_upload(method: str, field: str, filename: str, blob: bytes,
 
 def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = None,
                    record: bool = True) -> bool:
-    """Send an image to the user. Returns whether it landed.
+    """Send an image or a video to the user. Returns whether it landed.
+
+    Video goes as sendVideo so it plays in the chat rather than arriving as a
+    file to download; the kind is taken from the suffix.
 
     Herald could only ever send words, which is a poor fit for the things it
     increasingly makes: a screenshot, a slide, a chart. A picture the user has
@@ -302,7 +305,11 @@ def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = 
     if caption:
         common["caption"] = caption[:1024]
 
-    resp = _telegram_upload("sendPhoto", "photo", path.name, blob, **common)
+    video = path.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv")
+    if video:
+        common.setdefault("supports_streaming", "true")
+    method, field = ("sendVideo", "video") if video else ("sendPhoto", "photo")
+    resp = _telegram_upload(method, field, path.name, blob, **common)
     if not (resp and resp.get("ok")):
         resp = _telegram_upload("sendDocument", "document", path.name, blob, **common)
     ok = bool(resp and resp.get("ok"))
