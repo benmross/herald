@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Claude Code PreToolUse hook: stop a session writing to Google outside the door.
+"""PreToolUse hook, for Claude Code and Codex alike: stop a session writing to
+Google outside the door.
 
 `tools/check.py` holds the program's tracked files to the tier rules. It cannot
 see a script a session writes to /tmp and runs a minute later, and that is
 exactly how the one unlogged amber action in Herald's history happened: a Drive
 upload through a runtime script that never touched gwrite.
 
-This hook sees the tool call before it runs. For Bash it finds whatever is about
+This hook sees the tool call before it runs. Both CLIs hand it the same JSON
+on stdin (`tool_name`, `tool_input.command`) and both read exit 2 as a block,
+which is why one file serves both. For Bash it finds whatever is about
 to be *executed as Python* -- a file handed to an interpreter or `grun`, a `-c`
 string, a heredoc piped into python -- parses it with `policy.find_calls`, and:
 

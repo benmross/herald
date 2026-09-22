@@ -18,7 +18,7 @@ So they moved out, into the same private directory as the ledger:
       bin/                     long-running surfaces of its own
       systemd/                 units, installed with the built-in ones
       skills/                  symlinked where sessions will load them
-      hooks/hooks.json         Claude Code hooks, merged into .claude/settings.json
+      hooks/hooks.json         hooks, merged into .claude/settings.json and .codex/hooks.json
       tests/                   run with the rest of the suite
 
 The manifest is **read, never imported**. Asking an extension what it provides
@@ -53,8 +53,12 @@ BUNDLED_ROOT = config.ROOT / "extensions"
 
 #: Where an enabled extension's skills are linked so sessions find them.
 SKILLS_DIR = config.ROOT / ".claude" / "skills"
+#: The same links again, where the Codex CLI looks for a repository's skills.
+CODEX_SKILLS_DIR = config.ROOT / ".agents" / "skills"
 #: Claude Code project settings, generated: base + every enabled extension's hooks.
 SETTINGS_PATH = config.ROOT / ".claude" / "settings.json"
+#: The Codex copy of the same hooks, generated from the same sources.
+CODEX_HOOKS_PATH = config.ROOT / ".codex" / "hooks.json"
 SETTINGS_BASE = config.ROOT / "config" / "claude-settings.base.json"
 
 
@@ -236,8 +240,45 @@ def _merge_hooks(base: dict, extra: dict) -> dict:
     return out
 
 
+def _link_skills(link_dir: pathlib.Path, wanted: dict[str, pathlib.Path],
+                 report: dict) -> None:
+    """Make `link_dir` hold exactly one symlink per wanted skill.
+
+    Only links Herald made are touched: anything pointing outside the
+    extensions directory and the program's own skills/ was put there by hand
+    and is not ours to remove.
+    """
+    link_dir.mkdir(parents=True, exist_ok=True)
+    for link in link_dir.iterdir():
+        if not link.is_symlink():
+            continue
+        target = pathlib.Path.readlink(link)
+        managed = (str(config.EXTENSIONS) in str(target)
+                   or str(config.ROOT / "skills") in str(target)
+                   or str(target).startswith("../../skills"))
+        if not managed:
+            continue
+        if link.name not in wanted or pathlib.Path(target) != wanted[link.name]:
+            link.unlink()
+            report["skills_removed"].append(link.name)
+
+    for name, path in wanted.items():
+        link = link_dir / name
+        if link.exists() or link.is_symlink():
+            continue
+        link.symlink_to(path)
+        report["skills_linked"].append(name)
+
+
 def sync() -> dict:
     """Link skills, write settings, and report what changed.
+
+    Everything is done twice, once per engine, from one source of truth: the
+    skills are linked into `.claude/skills/` for Claude Code and
+    `.agents/skills/` for Codex, and the hooks are written to
+    `.claude/settings.json` and `.codex/hooks.json`. Codex's copy has the
+    project directory spelled out because Codex does not set
+    `$CLAUDE_PROJECT_DIR` -- which is also why that file is gitignored.
 
     Systemd units are deliberately not installed here: that needs
     `tools/install-units.sh`, which is the one place that knows about
@@ -246,7 +287,6 @@ def sync() -> dict:
     report = {"skills_linked": [], "skills_removed": [], "hook_events": [],
               "skills_skipped": []}
 
-    SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     wanted: dict[str, pathlib.Path] = {}
     # Herald's own skills first, then the extensions'. A skill the user already
     # has at their own scope wins: they may be using it in other projects, and
@@ -264,28 +304,9 @@ def sync() -> dict:
         for skill in ext.skills():
             wanted[skill.name] = skill
 
-    for link in SKILLS_DIR.iterdir():
-        if not link.is_symlink():
-            continue
-        target = pathlib.Path.readlink(link)
-        # Manage links into the extensions directory and into the program's own
-        # skills/ -- anything else in here was put there by hand and is not
-        # ours to remove.
-        managed = (str(config.EXTENSIONS) in str(target)
-                   or str(config.ROOT / "skills") in str(target)
-                   or str(target).startswith("../../skills"))
-        if not managed:
-            continue
-        if link.name not in wanted or pathlib.Path(target) != wanted[link.name]:
-            link.unlink()
-            report["skills_removed"].append(link.name)
-
-    for name, path in wanted.items():
-        link = SKILLS_DIR / name
-        if link.exists() or link.is_symlink():
-            continue
-        link.symlink_to(path)
-        report["skills_linked"].append(name)
+    _link_skills(SKILLS_DIR, wanted, report)
+    codex_report = {"skills_linked": [], "skills_removed": []}
+    _link_skills(CODEX_SKILLS_DIR, wanted, codex_report)
 
     settings = json.loads(SETTINGS_BASE.read_text()) if SETTINGS_BASE.exists() else {}
     settings["_generated"] = ("written by `herald ext sync` from "
@@ -296,6 +317,18 @@ def sync() -> dict:
     report["hook_events"] = sorted((settings.get("hooks") or {}).keys())
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
+
+    # Codex parses this file strictly -- `description` and `hooks` are the
+    # only keys it accepts, and an unknown one makes it drop the whole file
+    # with a warning the model never sees. Found the hard way on 22 Sep 2026:
+    # a `_generated` note here meant the guard silently did not run.
+    codex_hooks = {"description": settings["_generated"] + "; the Codex copy of "
+                                  ".claude/settings.json's hooks",
+                   "hooks": settings.get("hooks") or {}}
+    codex_text = json.dumps(codex_hooks, indent=2).replace(
+        "$CLAUDE_PROJECT_DIR", str(config.ROOT))
+    CODEX_HOOKS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CODEX_HOOKS_PATH.write_text(codex_text + "\n")
     return report
 
 

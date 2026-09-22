@@ -108,10 +108,34 @@ MAX_DOWNLOAD = 45 * 1024 * 1024      # Telegram's own bot download cap is 20 MB
 # from under it.
 DEFAULT_MODEL = "opus"
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
+# Per-topic engine, the same way. The three model commands above are Claude
+# models, so each of them also puts the topic on claude; /codex [model] and
+# /claude [model] name the engine outright. Switching engines starts a fresh
+# session, because neither engine can resume the other's transcript.
+DEFAULT_ENGINE = "claude"
+ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex"}
+# Per-topic thinking level, for either engine: `/effort high`, or the level
+# as its own command. None means the engine's configured default.
+EFFORT_COMMANDS = {f"/{level}": level for level in think.EFFORTS}
+EFFORT_COMMANDS["/effort"] = None
 # Answered by this process from `runs`, never by a model: asking how big the
 # context is should not itself grow the context, or wait behind the turn it is
 # asking about.
 DEBUG_COMMANDS = ("/debug", "/session", "/context")
+# Every command the bridge answers itself. Anything else that starts with a
+# slash is text for the model.
+SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop")
+COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
+            *EFFORT_COMMANDS, *DEBUG_COMMANDS)
+
+
+def command_word(text: str) -> str:
+    """The command a message is, or "" if it is not one: the first word,
+    lower-cased, without a `@botname` suffix, and only if the bridge knows
+    it. `/effort high` and `/codex gpt-6-astra` carry an argument, which is
+    why this looks at the first word rather than the whole text."""
+    word = (text or "").strip().split(None, 1)[0].lower().split("@")[0] if (text or "").strip() else ""
+    return word if word in COMMANDS else ""
 
 PREAMBLE = """\
 This message arrived from the user over Telegram. The user is probably on their phone, and
@@ -692,7 +716,7 @@ def handle(update: dict, state: dict) -> None:
     if not text and not attachment:
         return
 
-    if text.strip().lower() in ("/new", "/clear", "/reset"):
+    if command_word(text) in ("/new", "/clear", "/reset"):
         ts["session_id"] = None
         ts["turns"] = 0
         ts["last_ts"] = time.time()
@@ -702,14 +726,51 @@ def handle(update: dict, state: dict) -> None:
         print(f"[{key}] cleared on request")
         return
 
-    cmd = text.strip().lower()
-    if cmd in MODEL_COMMANDS:
-        model = MODEL_COMMANDS[cmd]
+    cmd = command_word(text)
+    arg = text.strip().split(None, 1)[1].strip() if len(text.strip().split(None, 1)) > 1 else ""
+    if cmd in MODEL_COMMANDS or cmd in ENGINE_COMMANDS:
+        if cmd in MODEL_COMMANDS:
+            engine, model = "claude", MODEL_COMMANDS[cmd]
+        else:
+            engine, model = ENGINE_COMMANDS[cmd], (arg or None)
+        switched = engine != (ts.get("engine") or DEFAULT_ENGINE)
+        ts["engine"] = engine
         ts["model"] = model
-        send(chat_id, f"This topic runs on {model} from here on, until "
-                      f"you switch it again. Same conversation, nothing else "
-                      f"changed.", thread_id)
-        print(f"[{key}] model set to {model}")
+        if switched:
+            # The other engine cannot read this one's transcript, so the
+            # next message starts over from the ledger. Said out loud,
+            # because "same conversation" would be a lie here.
+            ts["session_id"] = None
+            ts["turns"] = 0
+            ts["last_ts"] = time.time()
+        shown = f"{engine}/{model}" if model else engine
+        send(chat_id, f"This topic runs on {shown} from here on, until you "
+                      f"switch it again. "
+                      + ("Fresh session: the other engine's transcript does not "
+                         "carry over, but the ledger does."
+                         if switched else "Same conversation, nothing else changed."),
+             thread_id)
+        print(f"[{key}] engine set to {engine}, model {model}")
+        return
+
+    if cmd in EFFORT_COMMANDS:
+        level = EFFORT_COMMANDS[cmd] or arg
+        if not level:
+            current = ts.get("effort") or "the engine's default"
+            send(chat_id, f"Effort here is {current}. Say /effort followed by "
+                          f"one of {', '.join(think.EFFORTS)}, or the level as "
+                          f"its own command.", thread_id)
+            return
+        try:
+            level = think.normalize_effort(level)
+        except ValueError:
+            send(chat_id, f"Not a level I know. One of: {', '.join(think.EFFORTS)}.",
+                 thread_id)
+            return
+        ts["effort"] = level
+        send(chat_id, f"Thinking at {level} in this topic from here on. Same "
+                      f"conversation, nothing else changed.", thread_id)
+        print(f"[{key}] effort set to {level}")
         return
 
     reason = should_rotate(ts, is_general)
@@ -743,12 +804,17 @@ def handle(update: dict, state: dict) -> None:
     # Marks this topic active for exactly as long as a `claude restart --defer`
     # issued from *inside* this turn needs to stay pending -- see
     # lib/herald/activity.py and cmd_restart in bin/herald.
-    # per-topic override from /fable, /opus, /sonnet, else the chat default.
-    model = ts.get("model") or DEFAULT_MODEL
+    # per-topic overrides from /claude, /codex, /fable, /opus, /sonnet and
+    # /effort, else the chat defaults. A Codex topic with no model named runs
+    # on whatever Codex's own config says, so None is the right default there.
+    engine = ts.get("engine") or DEFAULT_ENGINE
+    model = ts.get("model") or (DEFAULT_MODEL if engine == "claude" else None)
+    effort = ts.get("effort")
     with activity.Turn("telegram", key):
         with Working(chat_id, thread_id) as working:
             result = think.think(
                 prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
+                engine=engine, effort=effort,
                 permission_mode="auto",
                 allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                "WebSearch", "WebFetch", "Bash"],
@@ -772,6 +838,7 @@ def handle(update: dict, state: dict) -> None:
             with Working(chat_id, thread_id) as working:
                 result = think.think(
                     prompt, label=label, model=model, cwd=config.ROOT, resume=None,
+                    engine=engine, effort=effort,
                     permission_mode="auto",
                     allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                    "WebSearch", "WebFetch", "Bash"],
@@ -986,8 +1053,11 @@ def _handle_debug(update: dict, key: str, state: dict) -> None:
                 "step": think.current_progress(key)} if live else None)
     try:
         with db.session() as con:
-            text = sessioninfo.report(con, ts.get("session_id"), running=running,
-                                      model=ts.get("model") or DEFAULT_MODEL)
+            engine = ts.get("engine") or DEFAULT_ENGINE
+            text = sessioninfo.report(
+                con, ts.get("session_id"), running=running, engine=engine,
+                model=ts.get("model") or (DEFAULT_MODEL if engine == "claude" else None),
+                effort=ts.get("effort"))
     except Exception as exc:  # noqa: BLE001 -- a report, never worth a crash
         text = f"report failed: {type(exc).__name__}: {exc}"
     send(chat_id, tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
@@ -1015,8 +1085,7 @@ def _try_steer(update: dict, key: str) -> bool:
     if msg.get("document") or msg.get("photo") or msg.get("voice") or msg.get("audio"):
         return False  # attachments always take the normal path, never steer
     text = (msg.get("text") or msg.get("caption") or "").strip()
-    if not text or text.lower().split("@")[0] in ("/new", "/clear", "/reset", "/stop",
-                                                   *MODEL_COMMANDS, *DEBUG_COMMANDS):
+    if not text or command_word(text):
         return False  # commands always take the normal path, never steer
 
     if not think.steer(key, f"{sent_at_line(msg)}{text}"):
@@ -1104,8 +1173,7 @@ def _split_part(update: dict) -> str | None:
     text = msg.get("text") or ""
     if not text.strip():
         return None
-    if text.strip().lower().split("@")[0] in ("/new", "/clear", "/reset", "/stop",
-                                              *MODEL_COMMANDS, *DEBUG_COMMANDS):
+    if command_word(text):
         return None
     return text
 

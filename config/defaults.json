@@ -7,11 +7,24 @@
   },
   "timezone": "UTC",
   "engines": {
+    "_comment": "Two engines, both first-party CLIs on the user's own subscription: `primary` is Claude Code (its name predates the second engine and is kept so existing config.json files still apply) and `codex` is the Codex CLI. default_engine is what cycles and `herald think` use when nothing names one; a Telegram topic picks its own with /claude and /codex. `effort` is how hard the model thinks (low, medium, high, xhigh, max; null leaves the CLI's default) and applies to both engines.",
+    "default_engine": "claude",
     "primary": {
       "cmd": "claude",
       "model": "sonnet",
       "escalate_model": "opus",
+      "effort": null,
       "permission_mode": "auto"
+    },
+    "codex": {
+      "_comment": "model null means whatever ~/.codex/config.toml says. With no escalate_model, an escalated run keeps the model and reasons at escalate_effort instead. sandbox and approval_policy are Codex's own values: the defaults give a Codex session the same standing a Claude session has under permission_mode auto, with tools/guard.py as the tripwire in both.",
+      "cmd": "codex",
+      "model": null,
+      "escalate_model": null,
+      "effort": null,
+      "escalate_effort": "xhigh",
+      "sandbox": "danger-full-access",
+      "approval_policy": "never"
     },
     "_timeout_comment": "think_timeout_seconds is an absolute ceiling for a runaway loop, not a budget for how long real work may take. Set it to 0 for no absolute ceiling. The deadline that normally fires is think_idle_timeout_seconds: how long the engine may emit nothing at all before it counts as hung. Generous because one long tool call is silent while it runs.",
     "think_timeout_seconds": 7200,

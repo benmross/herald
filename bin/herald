@@ -76,18 +76,25 @@ def cmd_status(args) -> int:
     print(f"{_c('herald', BOLD)} {_c('· ' + cfg['name'], DIM)}  "
           f"{os.uname().nodename}  {config.ROOT}")
 
-    _hdr("engine")
-    cmd = config.get("engines.primary.cmd", "claude")
-    path = shutil.which(cmd, path=config.agent_env()["PATH"])
-    if path:
-        try:
-            ver = subprocess.run([path, "--version"], capture_output=True,
-                                 text=True, timeout=15).stdout.strip().splitlines()[0]
-        except Exception:
-            ver = "?"
-        print(f"  {'engine':9} {_c('ok', OK)}   {cmd:7} {ver}")
-    else:
-        print(f"  {'engine':9} {_c('MISSING', BAD)}  {cmd}")
+    _hdr("engines")
+    default_engine = config.get("engines.default_engine", "claude")
+    for engine, block in (("claude", "engines.primary"), ("codex", "engines.codex")):
+        cmd = config.get(f"{block}.cmd", engine)
+        path = shutil.which(cmd, path=config.agent_env()["PATH"])
+        tag = " (default)" if engine == default_engine else ""
+        if path:
+            try:
+                ver = subprocess.run([path, "--version"], capture_output=True,
+                                     text=True, timeout=15).stdout.strip().splitlines()[0]
+            except Exception:
+                ver = "?"
+            print(f"  {engine:9} {_c('ok', OK)}   {cmd:7} {ver}{tag}")
+        elif engine == default_engine:
+            print(f"  {engine:9} {_c('MISSING', BAD)}  {cmd}{tag}")
+        else:
+            # The second engine is optional: nothing runs on it unless asked.
+            print(f"  {engine:9} {_c('absent', DIM)}  {cmd}  not installed; "
+                  f"/{engine} and --engine {engine} will fail until it is")
 
     _hdr("spend  (client-side estimate, not your bill)")
     rows = db.query("""
@@ -351,14 +358,19 @@ def cmd_think(args) -> int:
     if not prompt.strip():
         print("nothing to think about", file=sys.stderr)
         return 2
-    r = think_mod.think(prompt, label=args.label, escalate=args.escalate,
-                        model=args.model, cwd=args.cwd)
+    try:
+        r = think_mod.think(prompt, label=args.label, escalate=args.escalate,
+                            model=args.model, cwd=args.cwd,
+                            engine=args.engine, effort=args.effort)
+    except ValueError as exc:  # an engine or effort level that does not exist
+        print(str(exc), file=sys.stderr)
+        return 2
     if not r.ok:
         print(r.error or "failed", file=sys.stderr)
         return 1
     print(r.text)
     if args.verbose:
-        note = f"{r.engine}/{r.model} {r.duration_ms}ms"
+        note = f"{r.engine}/{r.model or 'default'} {r.duration_ms}ms"
         if r.cost_usd is not None:
             note += f" ${r.cost_usd:.4f}"
         print(_c(note, DIM), file=sys.stderr)
@@ -1359,6 +1371,10 @@ def main() -> int:
     t.add_argument("prompt", nargs="?")
     t.add_argument("--label", default="ask")
     t.add_argument("--model")
+    t.add_argument("--engine", choices=list(think_mod.ENGINES),
+                   help="claude or codex; default is engines.default_engine")
+    t.add_argument("--effort", choices=list(think_mod.EFFORTS),
+                   help="how hard to think; default is the engine's own")
     t.add_argument("--escalate", action="store_true", help="use the escalate model")
     t.add_argument("--cwd")
     t.add_argument("-v", "--verbose", action="store_true")

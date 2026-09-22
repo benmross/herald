@@ -129,7 +129,7 @@ A cycle is the only place a model is invoked on a schedule. The shape:
 ```
 collect (already done, its own timer)
   → snapshot     deterministic Python, free
-  → ONE session  claude -p via think.think()
+  → ONE session  claude -p or codex exec via think.think()
   → apply        deterministic Python
   → notify
 ```

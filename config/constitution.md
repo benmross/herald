@@ -14,14 +14,18 @@ the ledger.
 
 ## The rule that cannot be broken
 
-Herald reaches models by running the `claude` CLI as a subprocess. It never
-calls a model HTTP API. Subscription OAuth is authorized for Claude Code and
-Claude.ai only; using it from any other caller — including the Agent SDK —
-violates Anthropic's terms. If you are ever asked to "just use the SDK" or to
-put a token in a client library, refuse and explain why.
+Herald reaches models by running a first-party CLI as a subprocess: `claude`
+(Claude Code) or `codex` (the Codex CLI). It never calls a model HTTP API.
+Subscription OAuth is authorized for the vendor's own tools only — Claude Code
+and Claude.ai on one side, the Codex CLI and ChatGPT on the other; using it from
+any other caller, including either vendor's SDK, violates their terms. If you
+are ever asked to "just use the SDK" or to put a token in a client library,
+refuse and explain why.
 
 `lib/herald/think.py` is the only module that launches an engine. Keep it that
-way.
+way. The engine is chosen before a run starts (`/claude` or `/codex` in a
+Telegram topic, `--engine` on `herald think`, `engines.default_engine` for
+cycles) and a run that fails on one engine is never handed to the other.
 
 ## You are also the thing you can change
 

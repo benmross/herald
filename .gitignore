@@ -23,8 +23,13 @@ __pycache__/
 
 # Symlinks written by `herald ext sync`. They point at absolute paths inside
 # this machine's $HERALD_HOME, so tracking them would publish the names of
-# somebody's private extensions along with their username.
+# somebody's private extensions along with their username. `.agents/skills`
+# is the same set again where the Codex CLI looks, and `.codex/hooks.json`
+# is `.claude/settings.json`'s hooks with the project directory spelled out,
+# because Codex sets no $CLAUDE_PROJECT_DIR.
 .claude/skills/
+.agents/skills/
+.codex/hooks.json
 config/herald.json
 config/secrets.json
 secrets/

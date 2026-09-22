@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id            INTEGER PRIMARY KEY,
     ts            TEXT NOT NULL,
     label         TEXT NOT NULL,         -- cycle:dawn, ask, collector:gmail, ...
-    engine        TEXT NOT NULL,         -- 'claude'; there is one engine
+    engine        TEXT NOT NULL,         -- 'claude' or 'codex'
     model         TEXT,
     session_id    TEXT,
     duration_ms   INTEGER,

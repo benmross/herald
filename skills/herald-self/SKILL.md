@@ -64,12 +64,14 @@ sends a notification; the snapshot is free and silent.
 `herald check` enforces these. If one fails, the fix is the code, not the check.
 
 1. **Only `lib/herald/think.py` launches an engine.** Everything else calls
-   `think.think()`. Herald runs `claude` as a subprocess and never
+   `think.think()`. Herald runs `claude` or `codex` as a subprocess and never
    speaks to a model API — that is what keeps it on the user's subscription instead
    of metered billing, and it is a terms-of-service line, not a preference.
+   The engine is chosen before the run (`engine=`, `/codex`, `/claude`,
+   `engines.default_engine`); a failure on one never starts the other.
 2. **Never `--bare`.** Bare mode does not read the subscription login.
-3. **Never set `ANTHROPIC_API_KEY`.** `config.agent_env()` strips it deliberately.
-   An API key would work perfectly and bill them.
+3. **Never set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.** `config.agent_env()`
+   strips both deliberately. An API key would work perfectly and bill them.
 4. **Nothing personal is tracked in the program's repo.** The ledger, the
    config, the secrets and `facts.db` live in `$HERALD_HOME`, which is its own
    private repository. `herald check` fails if any of them appear here.

@@ -49,9 +49,12 @@ restarting after three failures in an hour rather than flapping.
 
 ## Cost
 
-There is one engine. When `claude` hits a usage limit or hangs, the run fails
-with that error and the user is told; nothing takes over. See "One engine, no
-fallback" in `docs/architecture.md` for what that traded away.
+There are two engines and no fallback between them. When `claude` or `codex`
+hits a usage limit or hangs, the run fails with that error and the user is
+told; the other engine does not take over. See "Two engines, chosen, never
+fallen back to" in `docs/architecture.md` for what that traded away. A
+Telegram topic can be moved by hand with `/codex` or `/claude`, and `herald
+status` shows which engines are installed.
 
 Regression tests are offline and do not send messages or invoke a model:
 
@@ -64,7 +67,8 @@ herald db "select label, count(*) runs, round(sum(cost_usd),2) usd from runs
            where ts >= datetime('now','-7 days') group by label order by usd desc"
 ```
 
-Figures are Claude Code's client-side estimate, not the bill. Steady state is
+Figures are Claude Code's client-side estimate, not the bill; Codex reports
+tokens but no dollar figure, so its runs count as $0 here. Steady state is
 roughly: dawn ~$0.35, two scout passes ~$0.15 each when quiet, plus Telegram
 turns. Under a dollar a day.
 

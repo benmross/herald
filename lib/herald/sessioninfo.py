@@ -36,9 +36,12 @@ def latest_session(con: sqlite3.Connection) -> str | None:
 
 
 def report(con: sqlite3.Connection, session_id: str | None, *,
-           running: dict | None = None, model: str | None = None) -> str:
+           running: dict | None = None, model: str | None = None,
+           engine: str | None = None, effort: str | None = None) -> str:
     """Plain text, a screenful. `running` is {'seconds': float, 'step': str}."""
     out: list[str] = []
+    if engine or effort:
+        out.append(f"engine {engine or '?'}" + (f", effort {effort}" if effort else ""))
     if running:
         step = f", now: {running['step']}" if running.get("step") else ""
         out.append(f"a turn is running: {_secs(running['seconds'] * 1000)}{step}")
@@ -62,7 +65,7 @@ def report(con: sqlite3.Connection, session_id: str | None, *,
     last = runs[-1]
     total_ms = sum(r["duration_ms"] or 0 for r in runs)
     cost = sum(r["cost_usd"] or 0 for r in runs)
-    out.append(f"session {session_id[:8]} · {model or last['model'] or '?'} · "
+    out.append(f"session {session_id[:8]} · {model or last['model'] or engine or '?'} · "
                f"{last['label']}")
     out.append(f"{len(runs)} turn{'' if len(runs) == 1 else 's'}, "
                f"{_secs(total_ms)} of turn time, ${cost:.2f}")

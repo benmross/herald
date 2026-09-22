@@ -22,8 +22,6 @@ import re
 import os
 import subprocess
 import sys
-import token
-import tokenize
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
@@ -116,7 +114,7 @@ def main() -> int:
         if p.name == "think.py":
             continue
         text = p.read_text()
-        for m in re.finditer(r'^\s*(?:cmd|proc).*?\[\s*"(claude)"', text, re.M):
+        for m in re.finditer(r'^\s*(?:cmd|proc).*?\[\s*"(claude|codex)"', text, re.M):
             launchers.append(f"{p.relative_to(ROOT)}: launches {m.group(1)!r}")
     c.check("only lib/herald/think.py launches an engine", not launchers,
             "; ".join(launchers[:3]) + ". Route it through think.think() instead.")
@@ -127,8 +125,9 @@ def main() -> int:
             f"so it would demand an API key.")
 
     keyed = [str(p.relative_to(ROOT)) for p in files
-             if re.search(r'os\.environ\[["\']ANTHROPIC_API_KEY', p.read_text())]
-    c.check("nothing sets ANTHROPIC_API_KEY", not keyed, ", ".join(keyed))
+             if re.search(r'os\.environ\[["\'](?:ANTHROPIC|OPENAI|CODEX)_API_KEY',
+                          p.read_text())]
+    c.check("nothing sets an engine API key", not keyed, ", ".join(keyed))
 
     # The tiers, held to the program's own files. Amber Google writes go through
     # gwrite.py, which logs them; red ones go through red.py, which acts only on
@@ -210,28 +209,18 @@ def main() -> int:
             f"tools/guard.py exited {rc} on a synthetic red call instead of 2, "
             f"so sessions are unguarded. Run it by hand to see why.")
 
-    # Herald reaches exactly one engine. The Codex fallback came out on
-    # 9 September 2026, so a reference to it anywhere is leftover logic
-    # rather than a second path that still works.
-    # Tokenised rather than grepped, because think.py's own docstring explains
-    # why the fallback is gone and a plain grep cannot tell prose about a
-    # removal from the removal not having happened. Identifiers and command
-    # strings are logic; a paragraph is not.
-    stragglers = []
-    for path in files:
-        try:
-            with path.open("rb") as fh:
-                for tok in tokenize.tokenize(fh.readline):
-                    hit = (tok.type == token.NAME and "codex" in tok.string.lower()) or (
-                        tok.type == token.STRING
-                        and tok.string.strip("\"'").lower().startswith("codex"))
-                    if hit:
-                        stragglers.append(f"{path.relative_to(ROOT)}:{tok.start[0]}")
-                        break
-        except (tokenize.TokenError, SyntaxError, OSError):
-            pass
-    c.check("no Codex fallback logic remains", not stragglers,
-            ", ".join(stragglers) + " -- there is one engine and no fallback.")
+    # Two engines, and neither falls back to the other. The fallback that
+    # came out on 9 September 2026 carried a transcript between them; what
+    # exists since 22 September 2026 is a choice made before the run. The
+    # tell-tale of a fallback creeping back is a second engine launched from
+    # inside a failure path, so: think.py may name both CLIs, but only in
+    # the two builders, never in think() itself.
+    think_src = (ROOT / "lib" / "herald" / "think.py").read_text()
+    body = think_src[think_src.index("\ndef think("):]
+    revived = [m.group(0) for m in re.finditer(r'\["(?:claude|codex)"', body)]
+    c.check("think() chooses an engine, it does not fall back to one", not revived,
+            "think() builds an engine command itself; launching belongs in "
+            "_run_claude/_run_codex, and a failure must not start the other engine.")
 
     print("\n\033[1mcollectors\033[0m")
     known = set(capabilities.registry())

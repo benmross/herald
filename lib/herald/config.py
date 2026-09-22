@@ -274,15 +274,18 @@ def ensure_dirs() -> None:
 
 
 def agent_env() -> dict:
-    """Environment for a `claude` subprocess.
+    """Environment for an engine subprocess (`claude` or `codex`).
 
     Strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN. Claude Code ranks an API
     key above the subscription login, so a stray key exported anywhere in the
     session would silently move every Herald invocation onto metered API billing
     while appearing to work perfectly. Removing it here is the only guard.
+    OPENAI_API_KEY and CODEX_API_KEY go for the same reason: the Codex CLI
+    takes either over its ChatGPT login.
     """
     env = dict(os.environ)
-    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+    for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE",
+              "OPENAI_API_KEY", "CODEX_API_KEY"):
         env.pop(k, None)
     home = env.get("HOME", str(pathlib.Path.home()))
     env["PATH"] = os.pathsep.join([f"{home}/.local/bin", env.get("PATH", "/usr/bin:/bin")])
