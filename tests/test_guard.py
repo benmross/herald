@@ -76,6 +76,27 @@ class UnloggedWritesAreBlocked(unittest.TestCase):
         ok, _ = bash("cd /tmp && python3 - <<'PY'\ns.tasks().insert(tasklist=l, body=b).execute()\nPY")
         self.assertFalse(ok)
 
+    def test_a_dash_c_string_with_a_semicolon(self):
+        """The line used to be split on `;` before shlex saw the quotes, so
+        the half with the unterminated quote failed to parse and the script
+        was never inspected. Found 22 Sep 2026 proving the guard under Codex;
+        it was just as open under Claude."""
+        ok, why = bash("python3 -c 'svc = build(\"gmail\",\"v1\"); "
+                       "svc.users().messages().send(userId=\"me\", body={}).execute()'")
+        self.assertFalse(ok)
+        self.assertIn("red.py", why)
+
+    def test_a_multi_line_dash_c_string(self):
+        ok, _ = bash("python3 -c 'from googleapiclient.discovery import build\n"
+                     "svc = build(\"drive\",\"v3\")\n"
+                     "svc.files().create(body={}).execute()'")
+        self.assertFalse(ok)
+
+    def test_simple_commands_respect_quotes(self):
+        self.assertEqual(guard._simple_commands("echo 'a; b' | grep c && d"),
+                         ["echo 'a; b' ", " grep c ", " d"])
+        self.assertEqual(guard._simple_commands('x "y\\"; z"'), ['x "y\\"; z"'])
+
     def test_the_logged_path_is_allowed(self):
         with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
             f.write("import sys; sys.path.insert(0, 'lib')\n"

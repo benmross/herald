@@ -123,6 +123,44 @@ def _heredocs(command: str) -> list[tuple[str, str]]:
     return out
 
 
+def _simple_commands(text: str) -> list[str]:
+    """Split a shell line into simple commands at unquoted `;`, `|`, `&` and
+    newlines, leaving anything inside quotes alone.
+
+    This used to be a plain regex split, which cut through quotes: a
+    `python3 -c 'a(); b()'` was severed at the `;`, the half with the
+    unterminated quote failed shlex, and the script was never inspected.
+    Any `-c` string with a semicolon or a second line -- which is to say most
+    real ones -- walked past the guard on both engines. Found 22 Sep 2026
+    while proving the guard under Codex.
+    """
+    out, buf, quote, i = [], [], None, 0
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            buf.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < len(text):
+                buf.append(text[i + 1])
+                i += 1
+            elif ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+        elif ch == "\\" and i + 1 < len(text):
+            buf.append(ch)
+            buf.append(text[i + 1])
+            i += 1
+        elif ch in ";|&\n":
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    out.append("".join(buf))
+    return [s for s in out if s.strip()]
+
+
 def python_sources(command: str, cwd: str) -> list[tuple[str, str]]:
     """Every piece of Python a Bash command is about to execute, labelled."""
     sources = []
@@ -134,7 +172,7 @@ def python_sources(command: str, cwd: str) -> list[tuple[str, str]]:
     outside = command
     for _, body in _heredocs(command):
         outside = outside.replace(body, "\n")
-    for segment in re.split(r"&&|\|\||[;|\n]", outside):
+    for segment in _simple_commands(outside):
         try:
             words = shlex.split(segment, comments=False, posix=True)
         except ValueError:
