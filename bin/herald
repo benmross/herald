@@ -1325,6 +1325,56 @@ def cmd_act(args) -> int:
     return 0 if result.get("state") == "done" else 3
 
 
+def cmd_amber(args) -> int:
+    """Amber changes, the ones a scheduled cycle may make. See lib/herald/amber.py.
+
+    Kept apart from `herald act` so a cycle's allowlist can name this and never
+    reach a red kind.
+    """
+    from herald import amber  # noqa: PLC0415
+
+    try:
+        if args.kind == "find":
+            for ev in amber.find(args.calendar, args.day):
+                print(json.dumps({k: ev[k] for k in
+                                  ("id", "summary", "start", "end", "location")}))
+            return 0
+        with db.session() as con:
+            if args.kind == "update":
+                ev = amber.event_update(
+                    con, actor=args.actor, calendar_name=args.calendar,
+                    event=args.event, why=args.why, summary=args.summary,
+                    location=args.location, start=args.start, end=args.end,
+                    description=args.description)
+            elif args.kind == "cancel":
+                ev = amber.event_cancel(con, actor=args.actor,
+                                        calendar_name=args.calendar,
+                                        event=args.event, why=args.why)
+            elif args.kind == "create":
+                ev = amber.event_create(
+                    con, actor=args.actor, calendar_name=args.calendar,
+                    summary=args.summary, start=args.start, end=args.end,
+                    location=args.location or "", description=args.description or "",
+                    why=args.why)
+            elif args.kind == "task":
+                ev = amber.task_create(con, actor=args.actor, title=args.title,
+                                       why=args.why, due=args.due,
+                                       list_name=args.list)
+            else:
+                print(f"unknown kind {args.kind}", file=sys.stderr)
+                return 1
+    except amber.Refused as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
+    if ev is None:
+        print(json.dumps({"state": "unchanged"}))
+    else:
+        print(json.dumps({"state": "done", "id": ev.get("id"),
+                          "summary": ev.get("summary") or ev.get("title"),
+                          "location": ev.get("location")}))
+    return 0
+
+
 
 def main() -> int:
     p = argparse.ArgumentParser(
@@ -1361,6 +1411,40 @@ def main() -> int:
     act_sub.add_parser("drill", parents=[common],
                        help="red, no effect: exercise the approval path end to end")
     act.set_defaults(fn=cmd_act)
+
+    am = sub.add_parser("amber", help="a reversible change only the user sees, logged")
+    am_sub = am.add_subparsers(dest="kind", required=True)
+    amc = argparse.ArgumentParser(add_help=False)
+    amc.add_argument("--actor", default=os.environ.get("HERALD_ACTOR", "session"),
+                     help="who is acting, for the audit row (default: $HERALD_ACTOR, "
+                          "which a cycle sets, else session)")
+    f = am_sub.add_parser("find", help="read: one day of one of the user's calendars")
+    f.add_argument("--calendar", required=True)
+    f.add_argument("--day", required=True, help="YYYY-MM-DD")
+    for kind, text in (("update", "change an event's title, place, time or notes"),
+                       ("cancel", "retitle CANCELLED and grey; never deletes")):
+        k = am_sub.add_parser(kind, parents=[amc], help=text)
+        k.add_argument("--calendar", required=True)
+        k.add_argument("--event", required=True,
+                       help="Google event id, or a gcal fact's external_id")
+        k.add_argument("--why", required=True, help="the source, with its fact id")
+        if kind == "update":
+            for opt in ("--summary", "--location", "--start", "--end", "--description"):
+                k.add_argument(opt)
+    c = am_sub.add_parser("create", parents=[amc], help="add an event, skipping duplicates")
+    c.add_argument("--calendar", required=True)
+    c.add_argument("--summary", required=True)
+    c.add_argument("--start", required=True, help="ISO datetime, or YYYY-MM-DD for all day")
+    c.add_argument("--end")
+    c.add_argument("--location")
+    c.add_argument("--description")
+    c.add_argument("--why", required=True)
+    t = am_sub.add_parser("task", parents=[amc], help="add a Google Task")
+    t.add_argument("--title", required=True)
+    t.add_argument("--due")
+    t.add_argument("--list")
+    t.add_argument("--why", required=True)
+    am.set_defaults(fn=cmd_amber)
 
     ori = sub.add_parser("orient",
                          help="rebuild state/orientation.md, the session card")

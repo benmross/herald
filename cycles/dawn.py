@@ -23,6 +23,7 @@ the machine is left to prose.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import pathlib
 import subprocess
 import sys
@@ -32,7 +33,7 @@ sys.path.insert(0, str(HERE.parent / "lib"))
 sys.path.insert(0, str(HERE))
 
 from _snapshot import build  # noqa: E402
-from herald import config, db, notify, think  # noqa: E402
+from herald import amber, config, db, notify, think  # noqa: E402
 
 CYCLE = "dawn"
 LABEL = f"cycle:{CYCLE}"
@@ -104,11 +105,19 @@ Do these, in this order:
    Use `herald db "insert into commitments (created_at, text, kind, due, status)
    values (datetime('now'), '...', 'owed', '2026-09-09', 'open')"`.
 
-3. **Append to today's journal** at `ledger/journal/YYYY-MM-DD.md`: what you did,
-   anything you learned about {THEM}, what you are waiting on. Create the file if
-   it does not exist; never edit a previous day.
+3. **Act on what changed.** Before writing the digest, go through what is new
+   and ask of each item whether it makes something already recorded wrong: a
+   calendar event, a commitment's date, an area file, an opportunity row. Fix
+   each one now (the rules are below). This is the step that turns reading into
+   help, and skipping it is how a correct summary sits beside a calendar that
+   sends {THEM} to the wrong building.
 
-4. **Return the digest** through the schema.
+4. **Append to today's journal** at `ledger/journal/YYYY-MM-DD.md`: what you did,
+   including every change from step 3 and its source, anything you learned about
+   {THEM}, what you are waiting on. Create the file if it does not exist; never
+   edit a previous day.
+
+5. **Return the digest** through the schema.
 
 **Include the open commitments.** `state/commitments.md` and the `commitments`
 table hold things {THEY} owe people, deadlines {THEY} {HAVE} accepted, and questions
@@ -153,13 +162,15 @@ What makes a good digest:
   notification. But length still has to be earned; a long digest that is mostly
   filler is worse than a short one.
 
-What you must not do: send anything, reply to anyone, post anything, RSVP, or
-change anything outside `ledger/`. If you want to do one of those, put it in
-`questions` and {THEY} will answer.
+{{ACTING}}
+What you must not do: send anything, reply to anyone, post anything, RSVP,
+spend anything, delete anything, or change anything outside `ledger/` except
+through `herald amber`. If you want to do one of those, put it in `questions`
+and {THEY} will answer.
 
 If the identity files are still thin, lean on evidence from the ledger rather
 than inventing preferences, and say plainly when you are guessing.
-"""
+""".replace("{ACTING}", amber.cycle_rules())
 
 
 def _brain_url() -> str | None:
@@ -182,6 +193,9 @@ def main() -> int:
     snap_dir.mkdir(parents=True, exist_ok=True)
     (snap_dir / f"{now:%Y-%m-%d}-{CYCLE}.md").write_text(snapshot)
 
+    # `herald amber` reads this for its audit rows, so the digest can say
+    # which cycle made a change rather than filing it under "session".
+    os.environ["HERALD_ACTOR"] = LABEL
     result = think.think(
         f"{INSTRUCTIONS}\n\n---\n\n{snapshot}",
         label=LABEL,
@@ -189,7 +203,8 @@ def main() -> int:
         json_schema=SCHEMA,
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep",
-                       "Bash(herald db *)", "Bash(herald status *)", "Skill"],
+                       "Bash(herald db *)", "Bash(herald status *)", "Skill",
+                       *amber.CYCLE_TOOLS],
     )
 
     if not result.ok:

@@ -149,6 +149,37 @@ There is no send in gwrite. Sending mail or messages is red: it needs the user t
 have asked in the conversation, and a conversation already has the
 `google-workspace` skill for it.
 
+### Cycles act, through `herald amber`
+
+A cycle that can only report is a cycle that notices a problem and leaves it
+for the user. Until 22 September 2026 that was the design: the dawn prompt said
+to change nothing outside `ledger/`, and its tool allowlist could not have. That
+morning it read an instructor's announcement that Friday's lecture had moved
+back to its usual room, summarised it correctly into `state/now.md`, and left
+the calendar pointing at the other building. `now.md` is rewritten every day, so
+the one place the news landed was the one place guaranteed to forget it.
+
+The constitution already allowed amber in scheduled runs. What was missing was
+a door narrow enough to hand an unattended session. `lib/herald/amber.py` is
+that door and `herald amber` its command: update, cancel (retitle and grey) or
+create an event, and create a task. It refuses any calendar whose role is not
+`mine`, any event another person can see or that someone else organised, and
+any action without a `why`, which is written into the audit row. It writes only
+through gwrite, so every action is logged and reported like any other amber
+write.
+
+It is a separate command from `herald act` on purpose. `act` carries red kinds
+that put a request on the user's phone, and a cycle must never be able to start
+one. The cycles' allowlists name `Bash(herald amber *)` (`amber.CYCLE_TOOLS`) and
+nothing that reaches `act`; `tests/test_amber.py` holds that.
+
+The prompt half matters as much as the tool half. `amber.CYCLE_RULES` is shared
+by every cycle and turns the instruction from "record what changed" into "fix
+what the change made wrong", with one test: if the user did exactly what their
+calendar and commitments say, would they be wrong? It also says when not to
+act: on inference, on a source with no standing to change the thing, or when
+two sources disagree. Those go in `questions`, as red always does.
+
 `lib/herald/calsync.py` is the general engine on top: given a set of events you
 want on a calendar, make the calendar say that without trampling anything a
 person did by hand. Adopt rather than duplicate; keep the user's own edits; never
@@ -384,6 +415,7 @@ So the rewrite moved each rule from a sentence into a place it cannot be skipped
 | amber is never silent | gwrite logs before returning; `record_action` validates the tier |
 | red needs the user, every time | `lib/herald/red.py`: a tap rendered from the payload, consumed once |
 | a calendar write never emails anyone | gwrite forces `sendUpdates="none"` |
+| a cycle can act but never ask for a tap | `herald amber` is its only door; `act` is not on its allowlist |
 
 Four decisions in there are easy to undo by accident, so they are written down.
 

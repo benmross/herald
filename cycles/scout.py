@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -25,7 +26,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "lib"))
 
-from herald import config, db, notify, think  # noqa: E402
+from herald import amber, config, db, notify, think  # noqa: E402
 
 CYCLE = "scout"
 LABEL = f"cycle:{CYCLE}"
@@ -237,8 +238,20 @@ breadth is fine and duplicates are not: if the same event is plainly in the
 time is not a calendar event. Open the full message when the snippet is not
 enough.
 
+**You are the first to read new mail, so you are the first who can act on
+it.** Opportunities are this cycle's job, but they are not the only thing mail
+changes. A room change, a moved exam, a cancelled meeting, a new deadline from
+someone with standing to set one: if it makes {THEIR} calendar or commitments
+wrong, fix it in this pass rather than leaving it for the morning digest. The
+morning is too late for a change that takes effect today, and the dawn cycle
+reads a summary, not the mail.
+
+{{ACTING}}
+Report every change you made in `summary`, one line each, so it reaches the
+digest.
+
 You may not apply to anything, register for anything, RSVP, or send any message.
-"""
+""".replace("{ACTING}", amber.cycle_rules())
 
 def _brain_url() -> str | None:
     try:
@@ -514,6 +527,7 @@ def main() -> int:
     snap_dir.mkdir(parents=True, exist_ok=True)
     (snap_dir / f"{now:%Y-%m-%d}-{CYCLE}.md").write_text(snapshot)
 
+    os.environ["HERALD_ACTOR"] = LABEL        # attributes `herald amber` rows
     result = think.think(
         f"{INSTRUCTIONS}\n\n---\n\n{snapshot}",
         label=LABEL, cwd=config.ROOT, json_schema=SCHEMA, escalate=escalate,
@@ -521,7 +535,8 @@ def main() -> int:
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                        "WebSearch", "WebFetch",
                        "Bash(herald db *)", "Bash(herald status *)",
-                       "Bash(~/.claude/skills/google-workspace/scripts/grun *)"],
+                       "Bash(~/.claude/skills/google-workspace/scripts/grun *)",
+                       *amber.CYCLE_TOOLS],
     )
 
     if not result.ok:

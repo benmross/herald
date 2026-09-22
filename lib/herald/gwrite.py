@@ -125,6 +125,11 @@ def summarize(ev: dict) -> dict:
     }
 
 
+def calendar_event(cal_id: str, event_id: str) -> dict:
+    """One live event, whole. Read only; amber.py checks attendees with it."""
+    return calendar_service().events().get(calendarId=cal_id, eventId=event_id).execute()
+
+
 def calendar_window(cal_id: str, lo: dt.datetime, hi: dt.datetime) -> list[dict]:
     """Every event on one calendar in [lo, hi), summarised. Read only."""
     svc = calendar_service()
