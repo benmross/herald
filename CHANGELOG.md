@@ -2,6 +2,18 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.2.0 — 22 September 2026
+
+- Setup, doctor and the install docs know about the second engine
+- The guard now reads a -c script that contains a semicolon
+- Codex is a second engine, chosen per run, never a fallback
+- Video goes as video, so it plays where it lands
+- An image answers the topic that asked for it
+- Herald can send images to the user, not just words
+- Drive uploads can convert to a native Google file
+- A message Telegram cut in half is one turn again
+- A think ceiling of 0 means no absolute ceiling
+
 ## v0.1.9 — 14 September 2026
 
 - A quiz no longer eats the message that was not an answer
