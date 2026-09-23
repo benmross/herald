@@ -44,7 +44,7 @@ import hashlib
 import re
 from email.message import EmailMessage
 
-from . import config, db, google
+from . import config, db, google, mailfmt
 
 TZ = "America/New_York"
 CANCEL_PREFIX = "CANCELLED - "
@@ -449,7 +449,7 @@ def gmail_draft(con, *, actor: str, to: str, subject: str, body: str,
     if in_reply_to:
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = in_reply_to
-    msg.set_content(body)
+    mailfmt.set_body(msg, body)
     for path in attachments or []:
         import mimetypes
         from pathlib import Path as _Path

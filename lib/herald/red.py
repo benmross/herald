@@ -44,7 +44,7 @@ import base64
 import json
 from email.message import EmailMessage
 
-from . import approvals, db, google, notify
+from . import approvals, db, google, mailfmt, notify
 
 TAP_TIMEOUT = 600
 
@@ -75,7 +75,7 @@ def _perform_mail(p: dict) -> tuple[str, str]:
     if p.get("in_reply_to"):
         msg["In-Reply-To"] = p["in_reply_to"]
         msg["References"] = p["in_reply_to"]
-    msg.set_content(p["body"])
+    mailfmt.set_body(msg, p["body"])
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     body = {"raw": raw}
     if p.get("thread_id"):
