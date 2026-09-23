@@ -1139,6 +1139,19 @@ def think(prompt: str, *, label: str, escalate: bool = False,
             model = config.get(f"{block}.model", "sonnet" if engine == "claude" else None)
     permission_mode = permission_mode or config.get("engines.primary.permission_mode", "auto")
 
+    # The person's half, $HERALD_HOME, is always a working directory. The
+    # repository reaches it through the `ledger` symlink, but Claude Code
+    # resolves a symlink before its permission check, and from 2.1.280
+    # (installed 22 Sep 2026) a write that resolves outside the working
+    # directories needs approval. With no approval surface the approval is
+    # refused, so every session silently lost the ability to write its own
+    # memory: journal, state, commitments. Granting it here, once, is what
+    # the architecture already assumed was true.
+    add_dirs = list(add_dirs or [])
+    home = str(config.HOME.resolve())
+    if home not in add_dirs:
+        add_dirs.append(home)
+
     def _launch(text: str, resume_id: str | None, timing: dict):
         if engine == "codex":
             return _run_codex(

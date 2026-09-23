@@ -314,6 +314,18 @@ def sync() -> dict:
                               "extension's hooks/hooks.json -- edit those, not this")
     for ext in enabled():
         settings = _merge_hooks(settings, ext.hooks())
+    # $HERALD_HOME is where every session keeps its memory, and the repo only
+    # reaches it through the `ledger` symlink. Claude Code resolves symlinks
+    # before its permission check, so without this a ledger write counts as
+    # outside the project: a prompt in an interactive or Remote Control
+    # session, a silent denial in a headless one (think.py also passes it as
+    # --add-dir for that case). Written here because this file is per install
+    # and gitignored, and the path is this install's own.
+    perms = settings.setdefault("permissions", {})
+    extra = perms.setdefault("additionalDirectories", [])
+    home = str(config.HOME.resolve())
+    if home not in extra:
+        extra.append(home)
     report["hook_events"] = sorted((settings.get("hooks") or {}).keys())
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
