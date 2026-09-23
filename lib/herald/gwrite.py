@@ -433,8 +433,14 @@ def gmail_label(con, *, actor: str, message_id: str, label: str,
 
 def gmail_draft(con, *, actor: str, to: str, subject: str, body: str,
                 thread_id: str | None = None, in_reply_to: str | None = None,
-                cc: str | None = None, tier: str = "green") -> dict:
-    """Create a draft in the user's Gmail. Green: nobody sees it until the user sends it."""
+                cc: str | None = None, tier: str = "green",
+                attachments: list[str] | None = None) -> dict:
+    """Create a draft in the user's Gmail. Green: nobody sees it until the user sends it.
+
+    `attachments` are local file paths. A draft that carries the file is the
+    whole point when the user asked to send one, and without this the only
+    way to attach was a raw Gmail call, which the guard blocks.
+    """
     msg = EmailMessage()
     msg["To"] = to
     msg["Subject"] = subject
@@ -444,6 +450,14 @@ def gmail_draft(con, *, actor: str, to: str, subject: str, body: str,
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = in_reply_to
     msg.set_content(body)
+    for path in attachments or []:
+        import mimetypes
+        from pathlib import Path as _Path
+        f = _Path(path)
+        ctype, _ = mimetypes.guess_type(f.name)
+        maintype, subtype = (ctype or "application/octet-stream").split("/", 1)
+        msg.add_attachment(f.read_bytes(), maintype=maintype, subtype=subtype,
+                           filename=f.name)
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
     payload = {"message": {"raw": raw}}
     if thread_id:
