@@ -310,6 +310,17 @@ def _handle_stream_line(line: str, state: dict, on_progress,
     kind_top = candidate.get("type")
     mark = state.get("mark") or state.get("t0")
 
+    if kind_top == "system" and candidate.get("subtype") == "background_tasks_changed":
+        # The CLI's own list of what is still running in the background (a
+        # Bash or Agent call with run_in_background, a Monitor). Each change
+        # carries the whole list, so the latest one is the truth. `_run_process`
+        # reads it to tell a finished turn from a paused one: a `result` that
+        # arrives while this is non-empty is not the answer yet.
+        state["bg_tasks"] = [t.get("description") or t.get("task_id") or "task"
+                             for t in candidate.get("tasks") or []
+                             if isinstance(t, dict)]
+        return
+
     if kind_top == "system" and candidate.get("subtype") == "init":
         # Process launch through to the CLI being ready. The only phase that is
         # pure overhead: no model, no tool, nothing the prompt can shorten.
@@ -775,7 +786,8 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                    # Phase timing. `t0` starts before Popen so `startup`
                    # includes process spawn, not just the CLI's own init.
                    "t0": time.monotonic(), "mark": None, "saw_init": False,
-                   "phases": [], "pending_tools": {}, "round_trips": 0}
+                   "phases": [], "pending_tools": {}, "round_trips": 0,
+                   "bg_tasks": [], "held_payload": None}
     out_lines: list[str] = []
     err_lines: list[str] = []
     proc = None
@@ -857,6 +869,21 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
             out_lines.append(line)
             handler(line, state, on_progress, cancel_key)
 
+            if state["payload"] is not None and state.get("bg_tasks"):
+                # A result while background work is still out is a pause, not
+                # the end. The CLI keeps the process alive, and when a task
+                # finishes it resumes the same session and emits another
+                # `result`, which is the real answer. Breaking here (as this
+                # loop used to) closed stdin and returned the interim "still
+                # waiting on X" text as the turn's reply, and whatever the
+                # model said after the task landed never reached anyone
+                # (23 Sep 2026: a finished Falconia brief went nowhere).
+                # Hold it: if the task never reports back, the idle or hard
+                # deadline returns the held result rather than an error.
+                state["held_payload"] = state["payload"]
+                state["payload"] = None
+                continue
+
             if state["payload"] is not None:
                 # Saw a result. One more check, atomic with the flag flip
                 # below, for a steer that landed in this exact instant --
@@ -885,6 +912,15 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
         if proc is not None:
             proc.kill()
             proc.wait()
+        if state.get("held_payload") is not None and not cancelled.is_set():
+            # The turn had already answered once and was only waiting on
+            # background work that never came back (or went quiet for longer
+            # than the idle deadline). That answer is still a real one;
+            # deliver it rather than turning the whole turn into a timeout.
+            state["payload"] = state["held_payload"]
+            payload, context_tokens = finish(state)
+            return (0, payload, context_tokens, "".join(out_lines),
+                    "".join(err_lines), False)
         # Return the partial stream rather than "". It carries the session_id
         # of the run that just died, and that id is the only handle anything
         # has on the work it already did. Discarding it (as this used to)

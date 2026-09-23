@@ -91,21 +91,22 @@ sends a notification; the snapshot is free and silent.
   nothing happened is not nearly free, something is being recomputed.
 - **Anything durable goes in the ledger before the session ends.** You will not
   be here tomorrow; the ledger will.
-- **Never dispatch a `run_in_background` Agent from inside a live Telegram
-  turn.** Confirmed 2026-09-08: it does not free the turn early the way it
-  does in an interactive session. `claude -p` (what `think.py` runs) keeps
-  the whole process open until every backgrounded child finishes, then
-  folds the eventual notification back in as more of the *same* turn --
-  invisible from outside. herald-telegram only ever sends one message per
-  turn (`result.text`, the CLI's own final-result field), and that field
-  captured the *pre-dispatch* text ("on it, I'll tell you when it lands"),
-  not what I said after the notification came back. The real findings
-  never reached the user; the turn just ran 10 minutes long with no visible
-  reason why. If a task genuinely needs to run long, do it inline -- the
-  "still on it" notice already covers the wait, and the eventual reply is
-  guaranteed to actually send. Backgrounding only makes sense where
-  something else is polling for the result on its own, which nothing in
-  herald-telegram currently does.
+- **Backgrounding inside a Telegram turn is safe as of 23 Sep 2026, and
+  only because `think._run_process` waits for it.** `claude -p` reports
+  pending background work (a Bash or Agent call with `run_in_background`, a
+  Monitor) as `system/background_tasks_changed` events. A `result` that
+  arrives while that list is non-empty is held rather than returned, and the
+  turn ends at the next `result` after the tasks have drained. Before this,
+  the first `result` ended the turn: the interim "waiting on X" text went to
+  the phone as the reply, and everything said after the task landed was lost.
+  That happened on 8 Sep with an Agent and again on 23 Sep with a Bash
+  transcription job. Two consequences are still worth knowing. The user sees
+  nothing between the "still on it" notices and the final reply, so the
+  final message has to carry the whole answer. A task that never reports back
+  holds the turn until the idle deadline, and then the held reply is
+  delivered, so do not leave a server running in the background of a turn.
+  If you change how turns end, test with a real `sleep 20` background job
+  through `think.think()` rather than assuming it works.
 
 ## A new collector is live the moment the file exists
 
