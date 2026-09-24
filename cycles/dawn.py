@@ -98,12 +98,24 @@ Do these, in this order:
    what is due, anything time-critical. Replace the file; it is working memory,
    not a record. Stale state here makes everything downstream a lie.
 
-2. **Reconcile `ledger/state/commitments.md` and the `commitments` table.**
-   Open a row for anything {THEY} {HAVE} taken on that nothing is tracking — an
-   unanswered email that needs an answer, an accepted deadline, a promise. Close
-   anything that has been settled. Check for duplicates before inserting.
-   Use `herald db "insert into commitments (created_at, text, kind, due, status)
-   values (datetime('now'), '...', 'owed', '2026-09-09', 'open')"`.
+2. **Reconcile the obligations.** The `commitments` table holds open loops
+   only: something {THEY} owe a person, a question {THEY} never answered, a
+   promise, a task, a security problem. Add one with
+   `herald obligation add "<text>" --kind owed|promised|unanswered|task|security
+   [--due YYYY-MM-DD] --notes "<source>" --fact <id>`, which also shows it to
+   {THEM} with Keep / Done / Drop; never insert into the table directly, because
+   a row added that way is one {THEY} never hear about. Check for duplicates first.
+   Close one only on evidence (a sent reply, a payment that arrived) with
+   `herald obligation done <id> --why "<evidence>"` or `drop`, which tells {THEM}.
+   - **A dated course item is not an obligation.** A quiz, exam or due date goes
+     on the calendar: `herald deadline add "<title>" --kind quiz|test|due
+     --due <date or datetime> --course <CODE> --notes "<source>"`, and only if
+     no calendar feed already carries it (`herald deadline list`).
+   - **No placeholders for dates nobody has published.** "Final exam, date TBA"
+     is useless to {THEM}. When the date is announced, add it then.
+   - **A security problem is pushed now, never left for the digest**: a leaked
+     or live credential, an unrecognised sign-in, an account change {THEY} did
+     not make. Add it with `--kind security`, which pushes it on its own.
 
 3. **Act on what changed.** Before writing the digest, go through what is new
    and ask of each item whether it makes something already recorded wrong: a
@@ -119,13 +131,12 @@ Do these, in this order:
 
 5. **Return the digest** through the schema.
 
-**Include the open commitments.** `state/commitments.md` and the `commitments`
-table hold things {THEY} owe people, deadlines {THEY} {HAVE} accepted, and questions
-{THEY} never answered. Do not simply list them — most are not urgent on any given
-day. Lead with the ones where today changes something: a deadline getting close,
-a dependency that has been stalled long enough to chase, something that becomes
-impossible if {THEY} wait. Give the rest a single line of aggregate ("nine
-others, nothing moving").
+**Include the open obligations.** They are listed in the snapshot. Do not
+simply list them: {THEY} can see the whole list any time with /obligations, and
+every one was shown to {THEM} when it was added. Lead with the ones where today
+changes something: a deadline getting close, a dependency that has been stalled
+long enough to chase, something that becomes impossible if {THEY} wait. Say
+nothing about the rest.
 
 **The point of this is to say what {THEY} do not already know.** Items marked
 **NEW** have never been in a digest before. Everything else {THEY} {HAVE} been told at
@@ -204,6 +215,7 @@ def main() -> int:
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep",
                        "Bash(herald db *)", "Bash(herald status *)", "Skill",
+                       "Bash(herald obligation *)", "Bash(herald deadline *)",
                        *amber.CYCLE_TOOLS],
     )
 

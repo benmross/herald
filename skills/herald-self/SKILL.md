@@ -108,6 +108,16 @@ sends a notification; the snapshot is free and silent.
   If you change how turns end, test with a real `sleep 20` background job
   through `think.think()` rather than assuming it works.
 
+## Never restart the bridge you are answering through
+
+A Telegram turn runs as a child of `herald-telegram`. `herald restart
+herald-telegram` from inside that turn kills the turn with it: the live
+message stops updating, the typing indicator goes, and nothing after the
+restart reaches the user. It happened on 23 Sep 2026 at the last step of a long
+build. From a Telegram turn, restart it detached and last, after everything is
+committed (`systemd-run --user --on-active=5 systemctl --user restart
+herald-telegram`), and say in the reply that it is about to happen.
+
 ## A new collector is live the moment the file exists
 
 `herald collect` discovers `collectors/*.py` automatically and the timer fires

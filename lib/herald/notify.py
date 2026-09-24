@@ -397,6 +397,39 @@ def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
     return bool(resp and resp.get("ok"))
 
 
+def buttons(text: str, rows: list[list[tuple[str, str]]], *,
+            thread_id: int | None = None) -> bool:
+    """A message with inline buttons, each `(label, callback_data)`.
+
+    The tap arrives at the Telegram bridge, which routes it by the
+    callback_data prefix; this only sends. Recorded in `notifications` like
+    any other message, so a digest can see it went out.
+    """
+    chat_id = _telegram_chat_id()
+    if not chat_id:
+        return False
+    if thread_id is None:
+        thread_id = _updates_thread_id()
+    extra = {"message_thread_id": thread_id} if thread_id else {}
+    resp = _telegram_api(
+        "sendMessage", chat_id=chat_id,
+        text=tgtext.to_html(text[:tgtext.LIMIT]), parse_mode="HTML",
+        link_preview_options={"is_disabled": True},
+        reply_markup={"inline_keyboard": [
+            [{"text": label, "callback_data": data} for label, data in row]
+            for row in rows]}, **extra)
+    ok = bool(resp and resp.get("ok"))
+    try:
+        with db.session() as con:
+            con.execute(
+                "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
+                " VALUES (?, 'telegram', 'default', ?, ?, ?)",
+                (db.now(), text.splitlines()[0][:120] if text else "", text, int(ok)))
+    except Exception:
+        pass
+    return ok
+
+
 # --------------------------------------------------------------------------
 # One notification, not two.
 #

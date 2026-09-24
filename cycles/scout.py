@@ -241,8 +241,8 @@ enough.
 **You are the first to read new mail, so you are the first who can act on
 it.** Opportunities are this cycle's job, but they are not the only thing mail
 changes. A room change, a moved exam, a cancelled meeting, a new deadline from
-someone with standing to set one: if it makes {THEIR} calendar or commitments
-wrong, fix it in this pass rather than leaving it for the morning digest. The
+someone with standing to set one: if it makes {THEIR} calendar, deadlines or
+obligations wrong, fix it in this pass rather than leaving it for the morning digest. The
 morning is too late for a change that takes effect today, and the dawn cycle
 reads a summary, not the mail.
 
@@ -535,6 +535,7 @@ def main() -> int:
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                        "WebSearch", "WebFetch",
                        "Bash(herald db *)", "Bash(herald status *)",
+                       "Bash(herald obligation *)", "Bash(herald deadline *)",
                        "Bash(~/.claude/skills/google-workspace/scripts/grun *)",
                        *amber.CYCLE_TOOLS],
     )

@@ -1325,6 +1325,54 @@ def cmd_act(args) -> int:
     return 0 if result.get("state") == "done" else 3
 
 
+def cmd_obligation(args) -> int:
+    """Open loops: add, close, list. See lib/herald/obligations.py.
+
+    The only way a session or cycle should add one, because adding through
+    here is what shows it to the user with Keep / Done / Drop."""
+    from herald import obligations  # noqa: PLC0415
+
+    with db.session() as con:
+        if args.op == "list":
+            print(obligations.render(con))
+        elif args.op == "add":
+            oid = obligations.add(con, text=args.text, kind=args.kind, due=args.due,
+                                  notes=args.notes, source_fact=args.fact,
+                                  tell=not args.quiet)
+            print(f"#{oid}")
+        elif args.op in ("done", "drop"):
+            row = obligations.close(con, args.id, "done" if args.op == "done" else "dropped",
+                                    args.why, tell=not args.quiet)
+            print("closed" if row else f"#{args.id} is not open")
+            return 0 if row else 1
+    return 0
+
+
+def cmd_deadline(args) -> int:
+    """Quizzes, tests and due dates, kept on the calendar. See lib/herald/deadlines.py."""
+    from herald import deadlines  # noqa: PLC0415
+
+    with db.session() as con:
+        if args.op == "list":
+            for d in deadlines.upcoming(con, args.days):
+                print(f"#{d['id']:<4} {d['due'][:16]:16} {d['kind']:5} {d['title']}"
+                      f"  [{d['source']}]")
+        elif args.op == "add":
+            did = deadlines.add(con, source="manual", ref=None, course=args.course,
+                                kind=args.kind, title=args.title, due=args.due,
+                                end_at=args.end, notes=args.notes)
+            print(f"#{did}  (on the calendar at the next sync, or run `herald deadline sync`)")
+        elif args.op == "cancel":
+            n = con.execute("UPDATE deadlines SET status='cancelled', updated_at=?,"
+                            " notes=coalesce(notes,'') || ? WHERE id=?",
+                            (db.now(), f"\ncancelled: {args.why}", args.id)).rowcount
+            print("cancelled" if n else f"no deadline #{args.id}")
+            return 0 if n else 1
+        elif args.op == "sync":
+            print(json.dumps(deadlines.sync(con, dry_run=args.dry_run)))
+    return 0
+
+
 def cmd_amber(args) -> int:
     """Amber changes, the ones a scheduled cycle may make. See lib/herald/amber.py.
 
@@ -1411,6 +1459,43 @@ def main() -> int:
     act_sub.add_parser("drill", parents=[common],
                        help="red, no effect: exercise the approval path end to end")
     act.set_defaults(fn=cmd_act)
+
+    ob = sub.add_parser("obligation", help="open loops: add, done, drop, list")
+    ob_sub = ob.add_subparsers(dest="op", required=True)
+    ob_sub.add_parser("list", help="every open loop, and the week's deadlines")
+    oa = ob_sub.add_parser("add", help="track one, and show it to the user")
+    oa.add_argument("text")
+    oa.add_argument("--kind", required=True,
+                    help="owed | promised | unanswered | task | security")
+    oa.add_argument("--due", help="only if there is a real date")
+    oa.add_argument("--notes", help="where it came from")
+    oa.add_argument("--fact", type=int, help="the fact id it came from")
+    oa.add_argument("--quiet", action="store_true", help="do not announce it")
+    for op, text in (("done", "close it, and tell the user why"),
+                     ("drop", "drop it, and tell the user why")):
+        oc = ob_sub.add_parser(op, help=text)
+        oc.add_argument("id", type=int)
+        oc.add_argument("--why", required=True, help="the evidence")
+        oc.add_argument("--quiet", action="store_true", help="the user already knows")
+    ob.set_defaults(fn=cmd_obligation)
+
+    dl = sub.add_parser("deadline", help="quizzes, tests and due dates on the calendar")
+    dl_sub = dl.add_subparsers(dest="op", required=True)
+    dls = dl_sub.add_parser("list", help="what is coming up")
+    dls.add_argument("--days", type=int, default=30)
+    da = dl_sub.add_parser("add", help="one a feed does not publish")
+    da.add_argument("title")
+    da.add_argument("--kind", required=True, help="quiz | test | due | event")
+    da.add_argument("--due", required=True, help="YYYY-MM-DD or an ISO datetime")
+    da.add_argument("--end")
+    da.add_argument("--course", help="its code as the class events start with it")
+    da.add_argument("--notes")
+    dx = dl_sub.add_parser("cancel", help="it is not happening")
+    dx.add_argument("id", type=int)
+    dx.add_argument("--why", required=True)
+    dy = dl_sub.add_parser("sync", help="make the calendar match now")
+    dy.add_argument("--dry-run", action="store_true")
+    dl.set_defaults(fn=cmd_deadline)
 
     am = sub.add_parser("amber", help="a reversible change only the user sees, logged")
     am_sub = am.add_subparsers(dest="kind", required=True)

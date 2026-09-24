@@ -50,5 +50,30 @@
   "capabilities": {},
   "google": {
     "credentials_dir": "~/.config/google-agent"
+  },
+  "deadlines": {
+    "_comment": "Quizzes, tests and due dates, kept on a calendar by lib/herald/deadlines.py. Off until `calendar` names one. A quiz or test on a day its course meets retitles that class meeting (`<prefix>: <title>`) and recolours it; everything else is its own event. `feeds` copies calendar_feeds facts in: {source, kind, course_field, skip_titles (regex)}. Colours are Google colorIds.",
+    "calendar": "",
+    "class_calendar": "",
+    "window_days": 120,
+    "feeds": [],
+    "prefix": {
+      "quiz": "QUIZ",
+      "test": "TEST",
+      "due": "DUE",
+      "event": ""
+    },
+    "colors": {
+      "quiz": "5",
+      "test": "11",
+      "due": "3",
+      "event": ""
+    },
+    "due_block_minutes": 30,
+    "test_minutes": 120
+  },
+  "obligations": {
+    "_comment": "Open loops (lib/herald/obligations.py). Every new row is shown to the user once with keep/done/drop buttons; an undated one nobody has confirmed in `stale_days` is asked about again.",
+    "stale_days": 14
   }
 }

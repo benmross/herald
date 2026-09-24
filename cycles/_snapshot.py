@@ -561,20 +561,28 @@ def orientation(con) -> str:
 
     # `status='open'` is the convention the rest of this file uses; there is no
     # done_at column, and the statuses in use are open/done/closed/dropped.
+    # Obligations with a date, and the calendar's deadlines (quizzes, tests,
+    # due dates), which left the commitments table on 23 Sep 2026.
     due = _rows(con, """
         SELECT text, due FROM commitments
         WHERE status='open' AND due IS NOT NULL
           AND date(due) <= date('now', ?)
-        ORDER BY due LIMIT ?
-    """, (f"+{ORIENTATION_DUE_DAYS} days", ORIENTATION_LIMIT))
+        UNION ALL
+        SELECT title || ' (' || kind || ')', due FROM deadlines
+        WHERE status='live' AND date(due) >= date('now')
+          AND date(due) <= date('now', ?)
+        ORDER BY 2 LIMIT ?
+    """, (f"+{ORIENTATION_DUE_DAYS} days", f"+{ORIENTATION_DUE_DAYS} days",
+          ORIENTATION_LIMIT))
     if due:
         head(f"Due inside {ORIENTATION_DUE_DAYS} days")
         for r in due:
             out.append(f"- {_when_words(str(r['due'])[:10], now.date())}: {r['text']}")
     open_n = _rows(con, "SELECT COUNT(*) n FROM commitments WHERE status='open'")
     if open_n:
-        out.append(f"\n{open_n[0]['n']} open commitments in total "
-                   f"(`state/commitments.md`, and the `commitments` table).")
+        out.append(f"\n{open_n[0]['n']} open obligations (`herald obligation list`, the "
+                   f"`commitments` table). Quizzes, tests and due dates are in "
+                   f"`deadlines` and on the calendar (`herald deadline list`).")
 
     # --- where to look, so one read replaces four ------------------------
     head("Where the answer lives")

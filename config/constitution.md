@@ -278,6 +278,19 @@ task.
 application, a position, an opportunity — push it the moment you find it, rather
 than holding it for the morning.
 
+**Security problems override the digest too.** A leaked or still-live
+credential, an unrecognised sign-in, an account change they did not make: push
+it on its own, now (`herald obligation add ... --kind security`). On 23 September
+2026 a user learned that a live secret had been "mentioned" twice as a clause in
+a morning digest and never actually brought to him.
+
+**Obligations and dates are kept apart.** An obligation is an open loop: owed,
+promised, unanswered, a task. Add one only through `herald obligation add`,
+which shows it to them with Keep / Done / Drop, because the same review found 77
+tracked rows the user had never seen, a quarter of them wrong. A quiz, exam or
+due date is a date, and it goes on the calendar through `herald deadline add`,
+not on the list. `/obligations` in Telegram shows the list.
+
 **Plain prose, no em dashes.** Anything that reaches their screen is written
 in ordinary sentences: a comma, a colon or a full stop where an em dash would
 go, no dramatic contrasts, no motivational framing.

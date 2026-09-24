@@ -98,9 +98,33 @@ CREATE TABLE IF NOT EXISTS commitments (
     source_fact INTEGER REFERENCES facts (id) ON DELETE SET NULL,
     status      TEXT NOT NULL DEFAULT 'open',   -- open | done | dropped
     closed_at   TEXT,
-    notes       TEXT
+    notes       TEXT,
+    announced_at TEXT,    -- when the user was first shown it (obligations.py)
+    confirmed_at TEXT,    -- last time the user said it is still real
+    asked_at     TEXT     -- last "still real?" check
 );
 CREATE INDEX IF NOT EXISTS idx_commit_open ON commitments (status, due);
+
+-- Dated things that belong on a calendar rather than on a to-do list: quizzes,
+-- tests, due dates. lib/herald/deadlines.py keeps the calendar equal to this
+-- table. Rows come from calendar feeds (source = the feed, ref = its fact's
+-- external_id) or are added by hand (source 'manual').
+CREATE TABLE IF NOT EXISTS deadlines (
+    id          INTEGER PRIMARY KEY,
+    source      TEXT NOT NULL,
+    ref         TEXT,
+    course      TEXT,
+    kind        TEXT NOT NULL,             -- quiz | test | due | event
+    title       TEXT NOT NULL,
+    due         TEXT NOT NULL,             -- a date, or a datetime
+    end_at      TEXT,
+    notes       TEXT,
+    status      TEXT NOT NULL DEFAULT 'live',   -- live | cancelled
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE (source, ref)
+);
+CREATE INDEX IF NOT EXISTS idx_deadlines_due ON deadlines (status, due);
 
 -- Things the user could apply for, go to, or ask about. Separate from facts because
 -- an opportunity has a lifecycle -- found, surfaced, acted on, expired -- and a
@@ -290,6 +314,8 @@ def _migrate(con: sqlite3.Connection) -> None:
     for col in ("startup_ms", "model_ms", "tool_ms", "round_trips"):
         _add_column_if_missing(con, "runs", col, "INTEGER")
     _add_column_if_missing(con, "actions", "approval_id", "INTEGER")
+    for col in ("announced_at", "confirmed_at", "asked_at"):
+        _add_column_if_missing(con, "commitments", col, "TEXT")
     con.commit()
 
 
