@@ -286,6 +286,8 @@ class Working:
             head = f"{'stopped' if failed else 'done'} · {clock}{step_note}"
         else:
             head = f"working · {clock}{step_note}"
+        if done and not lines:
+            return f"<i>{tgtext.escape(head)}</i>"
         body = "\n".join(lines) if lines else "thinking..."
         # Trimmed only by the message's real limit, and only from the front, so
         # the newest text is always there and anything cut says so. There used
@@ -325,39 +327,37 @@ class Working:
     def settle(self, reply: str = "", *, stopped: bool = False) -> None:
         """Called once the turn's answer is known, before it is sent.
 
-        Trims the tail of the transcript, because the model's *final* message
-        arrives through the same stream as its narration -- so without this the
-        progress block ends with the first 400 characters of the reply and the
-        reply then arrives underneath it, saying the same thing twice.
+        Drops the reply from the tail of the transcript. The model's *final*
+        message arrives through the same stream as its narration, so without
+        this the progress block ends with the reply and the reply then arrives
+        underneath it, saying the same thing twice.
+
+        Until 23 September 2026 this compared only the first 60 characters and
+        kept the answer whenever it was the turn's only prose, on the theory
+        that a transcript of bare tool calls was worse than a repeat. The user
+        disagreed: the repeat is redundant and takes up the screen, and the
+        reply is directly below it anyway. So every trailing text block the
+        reply contains is removed, and a turn left with nothing but its header
+        shows only that.
         """
         # Compared with punctuation and spacing removed, because the two are
-        # near-identical rather than identical: a narration block that ends
-        # "...read back." precedes a reply that continues "...read back, so
-        # every pass...", and an exact prefix test misses that.
+        # near-identical rather than identical: markdown, a trailing newline,
+        # or a narration block that ends "...read back." preceding a reply
+        # that continues "...read back, so every pass...".
         def _key(text: str) -> str:
             return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
 
-        head = _key(reply)[:60]
-        if head:
+        whole = _key(reply)
+        if whole:
             with self._lock:
-                prose = sum(1 for l in self._lines if not l.startswith(TOOL_BULLET))
-                while self._lines and prose > 1:
-                    if self._lines[-1].startswith(TOOL_BULLET):
-                        break
-                    last = _key(self._lines[-1])[:60]
-                    # A narration line the reply opens with, or that opens the
-                    # reply, is the reply.
-                    if last and (head.startswith(last[:40])
-                                 or last.startswith(head[:40])):
+                while self._lines and not self._lines[-1].startswith(TOOL_BULLET):
+                    last = _key(self._lines[-1])
+                    # Contained in the reply, or opening it: a block the reply
+                    # was assembled from, or one it continues.
+                    if last and (last in whole or last[:40] == whole[:40]):
                         self._lines.pop()
-                        prose -= 1
                         continue
                     break
-                # `prose > 1` above is deliberate. On a short turn the only text
-                # block is the answer itself, and trimming it would leave a
-                # transcript of nothing but file paths -- which is what this
-                # display exists to improve on. Better a first line repeated
-                # once than a wall of tool calls.
         self._settled = True
         self._finish(failed=stopped)
 

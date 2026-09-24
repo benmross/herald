@@ -115,14 +115,28 @@ class TheTranscript(unittest.TestCase):
         self.assertNotIn("The cursor is never read back", self.w._sent_text)
         self.assertIn("Looking at the collector", self.w._sent_text)
 
-    def test_settle_keeps_the_only_prose_line(self):
-        """On a short turn the answer is the only text block there was, and a
-        transcript of nothing but file paths is what this display exists to
-        improve on."""
+    def test_settle_trims_the_answer_even_when_it_is_the_only_prose(self):
+        """The reply is sent right below; repeating it wastes the screen."""
         self.w.on_progress(think.Progress("tool", "Read: a.py"))
-        self.w.on_progress(think.Progress("text", "Both words are alpha and beta."))
+        self.w.on_progress(think.Progress("text", "Both words are **alpha** and beta."))
         self.w.settle("Both words are alpha and beta.")
-        self.assertIn("alpha and beta", self.w._sent_text)
+        self.assertNotIn("alpha and beta", self.w._sent_text)
+        self.assertIn("Read: a.py", self.w._sent_text)
+
+    def test_settle_trims_a_reply_split_across_blocks(self):
+        self.w.on_progress(think.Progress("tool", "Read: a.py"))
+        self.w.on_progress(think.Progress("text", "First paragraph of the answer."))
+        self.w.on_progress(think.Progress("text", "Second paragraph of it."))
+        self.w.settle("First paragraph of the answer.\n\nSecond paragraph of it.")
+        self.assertNotIn("paragraph", self.w._sent_text)
+
+    def test_a_settled_turn_with_only_prose_shows_just_the_header(self):
+        self.w.on_progress(think.Progress("text", "The answer is four."))
+        self.w._publish()
+        self.w.settle("The answer is four.")
+        self.assertNotIn("four", self.w._sent_text)
+        self.assertNotIn("thinking", self.w._sent_text)
+        self.assertIn("done", self.w._sent_text)
 
     def test_the_header_says_done_when_settled(self):
         self.w.on_progress(think.Progress("tool", "Read: a.py"))
