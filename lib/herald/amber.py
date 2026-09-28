@@ -48,7 +48,7 @@ def _why(why: str) -> str:
     why = (why or "").strip()
     if len(why) < 8:
         raise Refused("say why: name the source that justifies this, e.g. "
-                      "'instructor announcement, fact #4648180'")
+                      "'instructor announcement, fact #1234'")
     return why
 
 
