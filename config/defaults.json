@@ -40,11 +40,13 @@
       "default": "primary"
     },
     "roles": {},
+    "ignore": [],
     "role_meanings": {
       "mine": "The user's own commitments. Evidence about them.",
       "feed": "Public events they could attend. Machine-populated, deliberately over-inclusive. NEVER evidence that they are enrolled in, a member of, or committed to anything.",
       "reference": "Holidays, institutional calendars. Context, not commitments.",
-      "other-person": "Someone else's calendar. Their commitments, not the user's."
+      "other-person": "Someone else's calendar. Their commitments, not the user's.",
+      "ignored": "Listed in calendars.ignore. The user has said it is not relevant to them: never surface it, never act on it, never treat it as evidence of anything. Outranks roles."
     }
   },
   "capabilities": {},

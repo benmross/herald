@@ -256,7 +256,8 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
             WHERE source='gcal' AND kind='event' AND substr(ts,1,10) = ?
             ORDER BY ts
         """, (day.isoformat(),))
-        evs = [e for e in evs if _j(e, "calendar") not in ignored]
+        evs = [e for e in evs if _j(e, "calendar") not in ignored
+               and _j(e, "role") != "ignored"]
 
         # Separated by provenance, because mixing them is how a machine-filled
         # firehose calendar gets read as the user's schedule -- or worse, as

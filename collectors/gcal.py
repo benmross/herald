@@ -62,6 +62,16 @@ def _role(cal: dict) -> str:
     """
     roles = config.get("calendars.roles", {}) or {}
     name = cal.get("summary") or ""
+    # `calendars.ignore` outranks `roles`. It used to be honoured by one
+    # section of one snapshot while the calendar still carried role "mine",
+    # so every other reader -- a live session filtering on role, the
+    # orientation card, the cycles' amber door -- treated a shared family
+    # calendar as the user's own commitments. The user had to say so three
+    # times. Stamping the role at the source is the only place every reader
+    # already looks.
+    ignored = set(config.get("calendars.ignore", []) or [])
+    if name in ignored or cal.get("id") in ignored:
+        return "ignored"
     if name in roles:
         return roles[name]
     if cal.get("id") in roles:

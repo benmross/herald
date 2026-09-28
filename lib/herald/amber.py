@@ -55,6 +55,8 @@ def _why(why: str) -> str:
 def calendar(name: str) -> str:
     """Resolve a calendar the user owns, or refuse."""
     role = (config.get("calendars.roles") or {}).get(name)
+    if name in (config.get("calendars.ignore") or []):
+        role = "ignored"          # outranks roles, as it does in the gcal collector
     if role != "mine":
         raise Refused(f"calendar {name!r} has role {role!r}; amber changes only "
                       f"calendars whose role is 'mine' in calendars.roles")
