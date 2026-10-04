@@ -2,6 +2,20 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.3.0 — 4 October 2026
+
+- Safety is Herald's, not the engine's; root goes through a tap on a bot no session can reach
+- Use a placeholder fact id in amber's refusal example
+- An ignored calendar is ignored everywhere, not in one snapshot section
+- Dates go on the calendar; the obligation list holds only open loops, and nothing enters it silently
+- The progress block no longer repeats the reply underneath it
+- Mail Herald writes carries an HTML part, so Gmail does not hard-wrap it
+- Gmail drafts can carry attachments
+- Sessions can write the ledger again
+- A turn waits for its background tasks before it answers
+- Cycles act on what they read, through a narrow amber door
+- herald notify --file: a document arrives on the phone, not on the server
+
 ## v0.2.0 — 22 September 2026
 
 - Setup, doctor and the install docs know about the second engine
