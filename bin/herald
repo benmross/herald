@@ -14,6 +14,7 @@
     herald cycle <name>            run one cycle end to end
     herald setup                   set it up, or fix one part of it
     herald ext                     personal collectors, cycles and skills
+    herald find PATTERN...         locate, minus what has gone since the index
 """
 
 from __future__ import annotations
@@ -1501,6 +1502,39 @@ def cmd_deadline(args) -> int:
     return 0
 
 
+def cmd_find(args) -> int:
+    from herald import find as find_mod
+    q = find_mod.Query(
+        patterns=args.patterns,
+        ignore_case=args.ignore_case,
+        regex=args.regex,
+        basename=args.basename,
+        limit=args.limit,
+        fresh=[pathlib.Path(d) for d in args.fresh],
+    )
+    try:
+        a = find_mod.find(q)
+    except (find_mod.FindError, re.error) as e:
+        print(f"herald find: {e}", file=sys.stderr)
+        return 2
+    if args.count:
+        print(len(a.paths))
+    else:
+        out = sys.stdout.buffer
+        end = b"\0" if args.null else b"\n"
+        for p in a.paths:
+            out.write(os.fsencode(p) + end)
+        out.flush()
+    if not args.quiet:
+        notes = [find_mod.describe_age(a.index_age)]
+        if a.dropped:
+            notes.append(f"{a.dropped} no longer there, left out")
+        if a.fresh_only:
+            notes.append(f"{a.fresh_only} found only by the live search")
+        print(f"herald find: {'; '.join(notes)}", file=sys.stderr)
+    return 0 if a.paths else 1
+
+
 def cmd_amber(args) -> int:
     """Amber changes, the ones a scheduled cycle may make. See lib/herald/amber.py.
 
@@ -1656,6 +1690,22 @@ def main() -> int:
     dy = dl_sub.add_parser("sync", help="make the calendar match now")
     dy.add_argument("--dry-run", action="store_true")
     dl.set_defaults(fn=cmd_deadline)
+
+    fd = sub.add_parser(
+        "find", help="locate, minus what has gone since the index",
+        description="Search the nightly locate index, drop results that no longer exist, "
+                    "and optionally search some directories live for anything newer.")
+    fd.add_argument("patterns", nargs="+", help="every one must match (substring, or regex with -r)")
+    fd.add_argument("-i", "--ignore-case", action="store_true")
+    fd.add_argument("-r", "--regex", action="store_true")
+    fd.add_argument("-b", "--basename", action="store_true", help="match the name only, not the whole path")
+    fd.add_argument("-l", "--limit", type=int)
+    fd.add_argument("-c", "--count", action="store_true")
+    fd.add_argument("-0", "--null", action="store_true", help="NUL-separated, for xargs -0")
+    fd.add_argument("--in", dest="fresh", action="append", default=[], metavar="DIR",
+                    help="also search DIR live, for names newer than the index (repeatable)")
+    fd.add_argument("-q", "--quiet", action="store_true", help="no note about the index on stderr")
+    fd.set_defaults(fn=cmd_find)
 
     am = sub.add_parser("amber", help="a reversible change only the user sees, logged")
     am_sub = am.add_subparsers(dest="kind", required=True)
