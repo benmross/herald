@@ -818,7 +818,9 @@ def handle(update: dict, state: dict) -> None:
             result = think.think(
                 prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
                 engine=engine, effort=effort,
-                permission_mode="auto",
+                # None: think() takes it from safety.engine_mode for the
+                # "telegram" surface, so the setting applies here too.
+                permission_mode=None,
                 allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                "WebSearch", "WebFetch", "Bash"],
                 append_system_prompt=orientation_for(ts, bool(reason)),
@@ -842,7 +844,7 @@ def handle(update: dict, state: dict) -> None:
                 result = think.think(
                     prompt, label=label, model=model, cwd=config.ROOT, resume=None,
                     engine=engine, effort=effort,
-                    permission_mode="auto",
+                    permission_mode=None,
                     allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                    "WebSearch", "WebFetch", "Bash"],
                     # This retry *is* a fresh session, so it earns a fresh card.

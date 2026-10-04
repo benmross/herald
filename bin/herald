@@ -262,6 +262,14 @@ def cmd_doctor(args) -> int:
     check("google token", google_mod.available(),
           f"expected in {google_mod.credentials_dir()}. Run `herald setup --step google`")
 
+    from herald import rootcmd  # noqa: PLC0415
+    if rootcmd.installed():
+        _hdr("root approvals")
+        check("herald-root running", rootcmd.active(),
+              "journalctl -u herald-root -n 50")
+        check("installed daemon matches this checkout", rootcmd.current(),
+              "run `herald root update` (it asks for sudo)")
+
     _hdr("database")
     try:
         with db.session() as con:
@@ -1325,6 +1333,126 @@ def cmd_act(args) -> int:
     return 0 if result.get("state") == "done" else 3
 
 
+def cmd_safety(args) -> int:
+    """Herald's own safety rules: see them, test a command, lift one on a tap.
+
+    The rules live in lib/herald/safety.py and run in tools/guard.py before
+    every hooked tool call, on Claude and Codex alike. `allow` is the only way
+    a session gets past one: it puts the rule and the blocked command on the
+    user's phone, and only their tap writes the short-lived allowance the
+    guard reads.
+    """
+    from herald import red, safety  # noqa: PLC0415
+
+    root, home = str(config.ROOT), str(config.HOME)
+    if args.op == "status":
+        s = safety.load(root, home)
+        print(f"engine mode: {safety.engine_mode('telegram', root, home)} on telegram, "
+              f"{safety.engine_mode('cycle', root, home)} for cycles")
+        for rule in safety.RULES:
+            lifted = "  (lifted by a tap, for now)" if rule in s.allowed else ""
+            print(f"  {rule:16} {s.rules.get(rule, 'block')}{lifted}")
+        print(f"  protected paths: {', '.join(s.protected_paths) or '(none)'}")
+        return 0
+
+    if args.op == "test":
+        command = " ".join(args.command)
+        s = safety.load(root, home)
+        findings = safety.check_bash(command, os.getcwd(), s)
+        if not findings:
+            print("allowed: no rule matches")
+            return 0
+        block, warn = safety.verdict(findings, s)
+        for f in findings:
+            mode = "block" if f in block else ("warn" if f in warn else "off")
+            print(f"  {mode:5} {f.rule:16} {f.what}")
+        return 2 if block else 0
+
+    # allow
+    if args.rule not in safety.RULES:
+        print(f"unknown rule {args.rule!r}; one of {', '.join(safety.RULES)}", file=sys.stderr)
+        return 1
+    payload = {"rule": args.rule, "minutes": args.minutes, "why": args.why or "",
+               "command": args.command_text or ""}
+    result = red.run("safety.allow", payload, actor=args.actor, timeout=args.timeout)
+    print(json.dumps(result))
+    return 0 if result.get("state") == "done" else 3
+
+
+def cmd_root(args) -> int:
+    """Run a command as root, only on the user's tap. See bin/herald-rootd.
+
+    Sessions run under NoNewPrivileges and can never use sudo. `run` is how one
+    asks instead: the exact command goes to the user's phone through a second
+    Telegram bot that only a root process can read, and runs once if they tap.
+    `setup`, `update` and `remove` re-run themselves under sudo, because they
+    install a root-owned copy of the daemon; running it from this checkout would
+    make anything that can edit the checkout root.
+    """
+    import getpass  # noqa: PLC0415
+    from herald import rootcmd  # noqa: PLC0415
+
+    if args.op == "status":
+        st = rootcmd.status()
+        if not st["supported"]:
+            print("not available here: root approvals need Linux with systemd")
+        elif not st["installed"]:
+            print("not set up. `herald root setup` (needs sudo and a second Telegram bot)")
+        else:
+            stale = "" if st["current"] else \
+                ", and the installed copy is older than this checkout: `herald root update`"
+            print(f"herald-root: {'running' if st['active'] else 'NOT running'}{stale}")
+        return 0 if st["active"] else 1
+
+    if args.op in ("setup", "update", "remove"):
+        if not rootcmd.supported():
+            print("root approvals need Linux with systemd", file=sys.stderr)
+            return 1
+        if os.geteuid() != 0:
+            argv = ["sudo", "env", f"HERALD_HOME={config.HOME}", sys.executable,
+                    str(config.ROOT / "bin" / "herald"), "root", args.op,
+                    "--for-user", getpass.getuser()]
+            print("This installs or changes a root service, so it needs sudo:\n  "
+                  + " ".join(argv) + "\n")
+            os.execvp("sudo", argv)
+        if args.op == "setup":
+            if not args.for_user:
+                print("run `herald root setup` as your own user, not under sudo",
+                      file=sys.stderr)
+                return 1
+            return rootcmd.setup(args.for_user)
+        return rootcmd.update() if args.op == "update" else rootcmd.remove()
+
+    words = list(args.command)
+    if words[:1] == ["--"]:
+        words = words[1:]
+    command = " ".join(words).strip()
+    if not command:
+        print("usage: herald root run --why '<reason>' -- <command>", file=sys.stderr)
+        return 1
+    try:
+        result = rootcmd.run(command, why=args.why or "", cwd=args.cwd or os.getcwd(),
+                             timeout=args.timeout, actor=args.actor)
+    except rootcmd.Unavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 4
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    out = result.get("output") or ""
+    if out:
+        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+    state = result.get("state")
+    tail = f", exit {result['exit_code']}" if "exit_code" in result else ""
+    note = f" ({result['note']})" if result.get("note") else ""
+    print(f"[herald root: {state}{tail}{note}]", file=sys.stderr)
+    if state == "done":
+        return 0
+    if state in ("failed", "timeout"):
+        return int(result.get("exit_code") or 1) or 1
+    return 3
+
+
 def cmd_obligation(args) -> int:
     """Open loops: add, close, list. See lib/herald/obligations.py.
 
@@ -1459,6 +1587,38 @@ def main() -> int:
     act_sub.add_parser("drill", parents=[common],
                        help="red, no effect: exercise the approval path end to end")
     act.set_defaults(fn=cmd_act)
+
+    sf = sub.add_parser("safety", help="Herald's own safety rules, the same on every engine")
+    sf_sub = sf.add_subparsers(dest="op", required=True)
+    sf_sub.add_parser("status", help="each rule and its mode")
+    st = sf_sub.add_parser("test", help="which rules a shell command would trip")
+    st.add_argument("command", nargs=argparse.REMAINDER)
+    sa = sf_sub.add_parser("allow", help="lift one rule for a few minutes, on the user's tap")
+    sa.add_argument("rule")
+    sa.add_argument("--why", help="what the user asked for, shown to them")
+    sa.add_argument("--command", dest="command_text", help="the command that was blocked")
+    sa.add_argument("--minutes", type=int, default=10)
+    sa.add_argument("--actor", default="session")
+    sa.add_argument("--timeout", type=int, default=600)
+    sf.set_defaults(fn=cmd_safety)
+
+    ro = sub.add_parser("root", help="run a command as root, only on the user's tap")
+    ro_sub = ro.add_subparsers(dest="op", required=True)
+    rr = ro_sub.add_parser("run", help="ask; blocks until answered and run")
+    rr.add_argument("--why", help="one line the user sees, labelled as your words")
+    rr.add_argument("--cwd", help="working directory (default: the current one)")
+    rr.add_argument("--timeout", type=int, default=600,
+                    help="kill the command after this many seconds (max 3600)")
+    rr.add_argument("--actor", default="session")
+    rr.add_argument("command", nargs=argparse.REMAINDER,
+                    help="the command, after --; run with bash -c")
+    ro_sub.add_parser("status", help="is it set up and running")
+    for op, text in (("setup", "install it: a second bot, a root-only config, a unit"),
+                     ("update", "re-install the daemon from this checkout"),
+                     ("remove", "uninstall it")):
+        rx = ro_sub.add_parser(op, help=text)
+        rx.add_argument("--for-user", help=argparse.SUPPRESS)
+    ro.set_defaults(fn=cmd_root)
 
     ob = sub.add_parser("obligation", help="open loops: add, done, drop, list")
     ob_sub = ob.add_subparsers(dest="op", required=True)

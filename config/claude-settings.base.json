@@ -3,7 +3,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|mcp__.*",
+        "matcher": "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|apply_patch|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -14,5 +14,5 @@
       }
     ]
   },
-  "_hooks_comment": "PreToolUse runs tools/guard.py before every Bash and connector call: it blocks a runtime script or connector that would write to Google outside gwrite.py or red.py. Matched narrowly on purpose, because this runs before every matching call and latency is round trips; Read, Write and Edit cannot execute anything."
+  "_hooks_comment": "PreToolUse runs tools/guard.py before every shell, file and connector call, on Claude and Codex alike. It blocks a runtime script or connector that would write to Google outside gwrite.py or red.py, and applies Herald's own safety rules (lib/herald/safety.py): egress, remote code, tunnels, credential files, destructive git, protected paths and edits to the guard itself. Read, Write and Edit were left out until 4 Oct 2026 because they cannot execute anything; they are matched now because reading a credential file or rewriting the guard's own registration needs no execution at all. The cost is one short Python start per file call."
 }

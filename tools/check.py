@@ -209,6 +209,46 @@ def main() -> int:
             f"tools/guard.py exited {rc} on a synthetic red call instead of 2, "
             f"so sessions are unguarded. Run it by hand to see why.")
 
+    # The same proof for Herald's own safety rules (lib/herald/safety.py),
+    # which since 4 Oct 2026 may be the only check a Claude session has. A
+    # probe against the git rule rather than egress, so it does not depend on
+    # what the user has put on their allowlist. If the user has set the rule to
+    # warn or off, blocking is not expected, and that is their choice.
+    sys.path.insert(0, str(ROOT / "lib"))
+    from herald import safety as _safety  # noqa: PLC0415
+    git_mode = _safety.load(str(ROOT), str(config.HOME)).mode("git_destructive")
+    try:
+        rc = _subprocess.run(
+            [_sys.executable, str(ROOT / "tools" / "guard.py")],
+            input=_json.dumps({"tool_name": "Bash", "cwd": str(ROOT), "tool_input": {
+                "command": "git reset --hard HEAD"}}),
+            capture_output=True, text=True, timeout=20,
+            env={**_os.environ, "HERALD_GUARD_PROBE": "1"}).returncode
+    except (OSError, _subprocess.SubprocessError):
+        rc = None
+    c.check("Herald's safety rules actually block", rc == (2 if git_mode == "block" else 0),
+            f"tools/guard.py exited {rc} on `git reset --hard` with git_destructive "
+            f"set to {git_mode}. Run `herald safety test git reset --hard` to see why.")
+
+    # The root daemon runs as root from an installed copy, under `python3 -I`.
+    # Anything it imported from outside the standard library would be code the
+    # user's account -- and so every session -- could edit. See bin/herald-rootd.
+    import ast as _ast  # noqa: PLC0415
+    rootd = ROOT / "bin" / "herald-rootd"
+    if rootd.exists():
+        tree = _ast.parse(rootd.read_text())
+        mods = {(n.module or "").split(".")[0] for n in _ast.walk(tree)
+                if isinstance(n, _ast.ImportFrom) and n.level == 0}
+        mods |= {a.name.split(".")[0] for n in _ast.walk(tree)
+                 if isinstance(n, _ast.Import) for a in n.names}
+        relative = any(isinstance(n, _ast.ImportFrom) and n.level for n in _ast.walk(tree))
+        foreign = sorted(m for m in mods if m and m not in _sys.stdlib_module_names
+                         and m != "__future__")
+        c.check("bin/herald-rootd imports only the standard library",
+                not foreign and not relative,
+                f"it imports {', '.join(foreign) or 'something relative'}; a root "
+                f"process must not load code the user's account can edit")
+
     # Two engines, and neither falls back to the other. The fallback that
     # came out on 9 September 2026 carried a transcript between them; what
     # exists since 22 September 2026 is a choice made before the run. The

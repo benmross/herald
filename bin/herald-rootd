@@ -1,0 +1,481 @@
+#!/usr/bin/env python3
+"""Run a command as root, only after the owner taps yes on their phone.
+
+Herald's sessions cannot use sudo at all. They run under NoNewPrivileges, so a
+setuid binary never gains anything, and that is correct: a session reads mail
+and web pages all day, and nothing it reads should be one step from root. The
+cost was that every package install, every unit drop-in and every chmod became
+a command the user copied off their phone into a terminal. On 4 Oct 2026 that
+was four separate paste steps in one morning, one of them a multi-line systemd
+drop-in typed through a mobile SSH client.
+
+This is the narrow door. A session asks with `herald root run`; this daemon,
+running as root, shows the user the exact command on Telegram and runs it once,
+only on their tap. Four properties are the point:
+
+**The tap comes through a bot that no session can reach.** Herald's main bot
+token sits in secrets.json, which every session can read, so anything that
+arrives through it is something a session could have arranged: run its own
+poller, or write "approved" into the approvals table. Neither can be trusted
+with root. This daemon has its own bot, whose token lives in a root-only file,
+and it polls that bot itself. A tap is accepted only from the owner's Telegram
+user id, recorded in the same root-only file at setup. Nothing that runs as the
+user can produce one.
+
+**What the user approves is what runs.** The request is read once, copied into
+this process's memory and deleted from the spool before the message is sent.
+The message is rendered here from that copy, and that copy is what executes. A
+session cannot swap the command after the user has read it, and its stated
+reason is labelled as its own words.
+
+**This file runs as root, so it is installed, not run in place.** The program
+checkout is writable by the user, and so by every session. Running root code
+from it would make the user's account root. `herald root setup` copies this file
+to a root-owned path and the unit runs that copy under `python3 -I`, so a later
+edit in the checkout changes nothing until the user re-runs setup under sudo.
+For the same reason it imports only the standard library, and `herald check`
+fails if it ever imports anything else.
+
+**Everything it does in the user's directories, it does as the user.** The
+spool lives in $HERALD_HOME, which the user controls, so a root process opening
+paths there is an invitation to a symlink pointing at /etc/shadow. Every spool
+read and write happens with the effective uid switched to the user's, so it can
+reach nothing the user could not already reach. The daemon is single-threaded
+for the same reason: the effective uid is process-wide, and a command must never
+be spawned while it is switched.
+
+The daemon also keeps its own record in the journal (`journalctl -u
+herald-root`), independent of facts.db, which the user's account can edit.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import os
+import pathlib
+import re
+import secrets
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+
+CONFIG_PATH = pathlib.Path("/etc/herald-root/config.json")
+STATE_DIR = pathlib.Path(os.environ.get("STATE_DIRECTORY", "/var/lib/herald-root"))
+
+#: how long a request waits for a tap before it expires
+TAP_WINDOW = 15 * 60
+#: limits on what a request may carry, checked before anything is shown
+MAX_REQUEST_BYTES = 64 * 1024
+MAX_COMMAND = 3000
+MAX_REASON = 500
+MAX_TIMEOUT = 3600
+#: how much output is kept for the result file, and how much goes to the phone
+KEEP_OUTPUT = 64 * 1024
+SHOW_OUTPUT = 1500
+
+ROOT_ENV = {
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME": "/root",
+    "LANG": "C.UTF-8",
+    "DEBIAN_FRONTEND": "noninteractive",
+}
+
+ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+# --------------------------------------------------------------------------
+# Requests: validation and rendering. Pure functions, tested offline.
+# --------------------------------------------------------------------------
+
+class Rejected(ValueError):
+    """A request this daemon will not show the user at all."""
+
+
+def validate(raw: bytes, request_id: str) -> dict:
+    """Parse one spooled request, or say why it is refused.
+
+    Everything here came from the user's account, so from any session. It is
+    held to a shape before a byte of it reaches the user's screen.
+    """
+    if not ID_RE.match(request_id):
+        raise Rejected("bad request id")
+    if len(raw) > MAX_REQUEST_BYTES:
+        raise Rejected("request too large")
+    try:
+        req = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise Rejected("request is not JSON") from None
+    if not isinstance(req, dict):
+        raise Rejected("request is not an object")
+    cmd = req.get("command")
+    if not isinstance(cmd, str) or not cmd.strip():
+        raise Rejected("no command")
+    if len(cmd) > MAX_COMMAND:
+        raise Rejected(f"command longer than {MAX_COMMAND} characters")
+    if "\x00" in cmd:
+        raise Rejected("command contains a NUL byte")
+    why = req.get("why") or ""
+    if not isinstance(why, str):
+        raise Rejected("reason is not text")
+    cwd = req.get("cwd") or "/"
+    if not isinstance(cwd, str) or not cwd.startswith("/") or len(cwd) > 500:
+        raise Rejected("working directory must be an absolute path")
+    timeout = req.get("timeout", 600)
+    if not isinstance(timeout, int) or isinstance(timeout, bool) \
+            or not 1 <= timeout <= MAX_TIMEOUT:
+        raise Rejected(f"timeout must be 1-{MAX_TIMEOUT} seconds")
+    actor = req.get("actor") or "session"
+    if not isinstance(actor, str):
+        raise Rejected("actor is not text")
+    asked = req.get("requested_at")
+    if not isinstance(asked, (int, float)):
+        raise Rejected("no request time")
+    return {"id": request_id, "command": cmd, "why": why[:MAX_REASON],
+            "cwd": cwd, "timeout": timeout, "actor": actor[:64],
+            "requested_at": float(asked)}
+
+
+def render(req: dict, host: str) -> str:
+    """The message the user decides on, built from the request itself."""
+    lines = [f"<b>Run as root on {html.escape(host)}?</b>", "",
+             f"<pre>{html.escape(req['command'])}</pre>", "",
+             f"In <code>{html.escape(req['cwd'])}</code>, stopped after "
+             f"{req['timeout']}s. Asked by {html.escape(req['actor'])}."]
+    if req["why"].strip():
+        lines += ["", "Its reason, in its own words (not checked): "
+                  + html.escape(req["why"].strip())]
+    return "\n".join(lines)
+
+
+def tail(text: str, limit: int) -> str:
+    return text if len(text) <= limit else "[...]\n" + text[-limit:]
+
+
+def outcome_text(req: dict, host: str, result: dict) -> str:
+    """What the message becomes once the request is settled."""
+    head = {
+        "done": "Ran as root",
+        "failed": f"Ran as root, exited {result.get('exit_code')}",
+        "timeout": f"Ran as root, stopped after {req['timeout']}s",
+        "denied": "Declined, nothing ran",
+        "expired": "Expired, nothing ran",
+        "error": "Could not start, nothing ran",
+    }.get(result["state"], result["state"])
+    lines = [f"<b>{html.escape(head)}</b> on {html.escape(host)}", "",
+             f"<pre>{html.escape(req['command'])}</pre>"]
+    out = (result.get("output") or "").strip()
+    if out:
+        lines += ["", "<pre>" + html.escape(tail(out, SHOW_OUTPUT)) + "</pre>"]
+    if result.get("note"):
+        lines += ["", html.escape(result["note"])]
+    return "\n".join(lines)
+
+
+def parse_callback(data: str) -> tuple[str, str] | None:
+    m = re.fullmatch(r"([yn]):([0-9a-f]{16})", data or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+# --------------------------------------------------------------------------
+# Telegram, through this daemon's own bot only
+# --------------------------------------------------------------------------
+
+class Bot:
+    def __init__(self, token: str):
+        self.token = token
+
+    def call(self, method: str, http_timeout: float = 30, **params) -> dict:
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{self.token}/{method}",
+            data=json.dumps(params).encode(), method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=http_timeout) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as exc:
+            try:
+                return json.load(exc)
+            except Exception:                                       # noqa: BLE001
+                return {"ok": False, "description": f"HTTP {exc.code}"}
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return {"ok": False, "description": str(exc)}
+
+
+# --------------------------------------------------------------------------
+# The spool, touched only as the user
+# --------------------------------------------------------------------------
+
+class Spool:
+    def __init__(self, path: pathlib.Path, uid: int, gid: int, groups: list[int]):
+        self.path, self.uid, self.gid, self.groups = path, uid, gid, groups
+
+    @contextmanager
+    def as_user(self):
+        os.setgroups(self.groups)
+        os.setegid(self.gid)
+        os.seteuid(self.uid)
+        try:
+            yield
+        finally:
+            os.seteuid(0)
+            os.setegid(0)
+            os.setgroups([])
+
+    def take_requests(self) -> list[tuple[str, bytes | None]]:
+        """Read and delete every waiting request. (id, bytes or None if unreadable)."""
+        out: list[tuple[str, bytes | None]] = []
+        with self.as_user():
+            rq = self.path / "requests"
+            try:
+                names = sorted(os.listdir(rq))
+            except OSError:
+                return out
+            for name in names:
+                if not name.endswith(".json"):
+                    continue
+                rid = name[:-5]
+                p = rq / name
+                data = None
+                try:
+                    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                    try:
+                        st = os.fstat(fd)
+                        if st.st_size <= MAX_REQUEST_BYTES and \
+                                (st.st_mode & 0o170000) == 0o100000:
+                            data = os.read(fd, MAX_REQUEST_BYTES + 1)
+                    finally:
+                        os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    os.unlink(p)
+                except OSError:
+                    continue
+                out.append((rid, data))
+        return out
+
+    def write_result(self, rid: str, result: dict) -> None:
+        if not ID_RE.match(rid):
+            return
+        with self.as_user():
+            rd = self.path / "results"
+            tmp = rd / f".{rid}.{secrets.token_hex(4)}.tmp"
+            try:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(result, f)
+                os.replace(tmp, rd / f"{rid}.json")
+            except OSError as exc:
+                log(f"could not write result {rid}: {exc}")
+
+
+# --------------------------------------------------------------------------
+# The daemon
+# --------------------------------------------------------------------------
+
+class Daemon:
+    def __init__(self, cfg: dict):
+        self.bot = Bot(cfg["token"])
+        self.owner = int(cfg["owner_id"])
+        self.host = cfg.get("host") or socket.gethostname()
+        self.spool = Spool(pathlib.Path(cfg["spool"]), int(cfg["uid"]),
+                           int(cfg["gid"]), [int(g) for g in cfg.get("groups", [])])
+        self.offset = self._load_offset()
+        #: key -> request waiting for a tap
+        self.pending: dict[str, dict] = {}
+        #: key -> (request, Popen, output file, started)
+        self.running: dict[str, tuple] = {}
+
+    # offset persistence, so a restart does not replay old taps
+    def _load_offset(self) -> int:
+        try:
+            return int((STATE_DIR / "offset").read_text())
+        except (OSError, ValueError):
+            return 0
+
+    def _save_offset(self) -> None:
+        try:
+            STATE_DIR.mkdir(mode=0o700, exist_ok=True)
+            (STATE_DIR / "offset").write_text(str(self.offset))
+        except OSError:
+            pass
+
+    def settle(self, key: str, req: dict, result: dict) -> None:
+        result = {"id": req["id"], "finished_at": time.time(), **result}
+        self.spool.write_result(req["id"], result)
+        log(f"{req['id']} {result['state']}"
+            + (f" exit={result['exit_code']}" if "exit_code" in result else ""))
+        if req.get("message_id"):
+            self.bot.call("editMessageText", chat_id=self.owner,
+                          message_id=req["message_id"], parse_mode="HTML",
+                          text=outcome_text(req, self.host, result))
+
+    def intake(self) -> None:
+        for rid, raw in self.spool.take_requests():
+            try:
+                if raw is None:
+                    raise Rejected("request unreadable")
+                req = validate(raw, rid)
+            except Rejected as exc:
+                log(f"{rid} rejected: {exc}")
+                self.spool.write_result(rid, {"id": rid, "state": "rejected",
+                                              "note": str(exc)})
+                continue
+            if time.time() - req["requested_at"] > TAP_WINDOW:
+                self.spool.write_result(rid, {"id": rid, "state": "expired",
+                                              "note": "too old when picked up"})
+                continue
+            key = secrets.token_hex(8)
+            resp = self.bot.call(
+                "sendMessage", chat_id=self.owner, parse_mode="HTML",
+                text=render(req, self.host),
+                reply_markup={"inline_keyboard": [[
+                    {"text": "Run as root", "callback_data": f"y:{key}"},
+                    {"text": "No", "callback_data": f"n:{key}"}]]})
+            if not resp.get("ok"):
+                log(f"{rid} could not be shown: {resp.get('description')}")
+                self.spool.write_result(rid, {
+                    "id": rid, "state": "error",
+                    "note": "could not reach Telegram: " + str(resp.get("description"))})
+                continue
+            req["message_id"] = resp["result"]["message_id"]
+            req["shown_at"] = time.time()
+            self.pending[key] = req
+            log(f"{rid} shown: {req['command'][:200]!r} (actor {req['actor']})")
+
+    def start(self, key: str, req: dict) -> None:
+        """Spawn the approved command. Only ever called with euid 0."""
+        STATE_DIR.mkdir(mode=0o700, exist_ok=True)
+        out = open(STATE_DIR / f"{req['id']}.out", "w+b")
+        cwd = req["cwd"] if os.path.isdir(req["cwd"]) else None
+        if cwd is None:
+            out.close()
+            self.settle(key, req, {"state": "error",
+                                   "note": f"no such directory: {req['cwd']}"})
+            return
+        proc = subprocess.Popen(["/bin/bash", "-c", req["command"]], cwd=cwd,
+                                env=ROOT_ENV, stdin=subprocess.DEVNULL,
+                                stdout=out, stderr=subprocess.STDOUT,
+                                start_new_session=True)
+        self.running[key] = (req, proc, out, time.monotonic())
+        log(f"{req['id']} running as pid {proc.pid}")
+        self.bot.call("editMessageText", chat_id=self.owner,
+                      message_id=req["message_id"], parse_mode="HTML",
+                      text=f"<b>Running as root</b> on {html.escape(self.host)}\n\n"
+                           f"<pre>{html.escape(req['command'])}</pre>")
+
+    def reap(self) -> None:
+        for key, (req, proc, out, started) in list(self.running.items()):
+            code = proc.poll()
+            timed_out = code is None and time.monotonic() - started > req["timeout"]
+            if code is None and not timed_out:
+                continue
+            if timed_out:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                code = proc.wait()
+            out.seek(0)
+            data = out.read()
+            out.close()
+            try:
+                os.unlink(out.name)
+            except OSError:
+                pass
+            text = data[-KEEP_OUTPUT:].decode("utf-8", "replace")
+            del self.running[key]
+            state = "timeout" if timed_out else ("done" if code == 0 else "failed")
+            self.settle(key, req, {"state": state, "exit_code": code, "output": text,
+                                   "approved": True})
+
+    def expire(self) -> None:
+        now = time.time()
+        for key, req in list(self.pending.items()):
+            if now - req["shown_at"] > TAP_WINDOW:
+                del self.pending[key]
+                self.settle(key, req, {"state": "expired",
+                                       "note": "no answer within 15 minutes"})
+
+    def handle(self, update: dict) -> None:
+        cq = update.get("callback_query")
+        if cq:
+            sender = (cq.get("from") or {}).get("id")
+            chat = ((cq.get("message") or {}).get("chat") or {}).get("id")
+            self.bot.call("answerCallbackQuery", callback_query_id=cq["id"])
+            if sender != self.owner or chat != self.owner:
+                log(f"ignored a tap from {sender} in chat {chat}")
+                return
+            parsed = parse_callback(cq.get("data", ""))
+            if not parsed:
+                return
+            verdict, key = parsed
+            req = self.pending.pop(key, None)
+            if req is None:
+                return          # already settled, or from before a restart
+            if verdict == "y":
+                log(f"{req['id']} approved by {sender}")
+                self.start(key, req)
+            else:
+                self.settle(key, req, {"state": "denied"})
+            return
+        msg = update.get("message") or {}
+        if (msg.get("from") or {}).get("id") == self.owner:
+            self.bot.call("sendMessage", chat_id=self.owner,
+                          text="This bot only asks before Herald runs a command "
+                               f"as root on {self.host}. Nothing runs without a tap "
+                               "on one of its questions.")
+
+    def poll(self) -> None:
+        # The long-poll is also the loop's idle wait. Four seconds bounds how
+        # long a new request sits in the spool before it reaches the phone.
+        resp = self.bot.call("getUpdates", http_timeout=15, timeout=4,
+                             offset=self.offset,
+                             allowed_updates=["message", "callback_query"])
+        if not resp.get("ok"):
+            time.sleep(5)
+            return
+        for update in resp.get("result", []):
+            self.offset = max(self.offset, update["update_id"] + 1)
+            self._save_offset()
+            try:
+                self.handle(update)
+            except Exception as exc:                                # noqa: BLE001
+                log(f"update {update.get('update_id')} failed: {exc}")
+
+    def run(self) -> None:
+        log(f"herald-rootd up: owner {self.owner}, spool {self.spool.path}")
+        while True:
+            self.intake()
+            self.reap()
+            self.expire()
+            self.poll()
+
+
+def main() -> int:
+    if os.geteuid() != 0:
+        print("herald-rootd runs as root, from the copy `herald root setup` installs",
+              file=sys.stderr)
+        return 1
+    try:
+        cfg = json.loads(CONFIG_PATH.read_text())
+    except (OSError, ValueError) as exc:
+        print(f"cannot read {CONFIG_PATH}: {exc}", file=sys.stderr)
+        return 1
+    Daemon(cfg).run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

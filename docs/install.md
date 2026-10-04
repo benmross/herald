@@ -125,6 +125,21 @@ herald attach      # a terminal conversation with it
 herald brain url   # a link that opens the same agent in the Claude app
 ```
 
+**Optional, Linux: let it ask before running things as root.** Herald's sessions
+cannot use sudo, so anything needing root (installing a package, a service
+drop-in) is otherwise a command it hands you to paste. `herald root setup` sets
+up a second Telegram bot (you make it with @BotFather; the setup walks you
+through it) and a small root service, after which Herald can send you the exact
+command and run it only if you tap yes. It needs your password once, at setup.
+
+**Safety rules.** `herald safety status` lists the rules Herald applies to every
+command its sessions run, whichever engine runs them. Each can be `block`,
+`warn` or `off`. Two settings worth knowing on day one: `safety.protected_paths`,
+for folders whose existing files must never be deleted or overwritten (a photo
+archive with one copy), and `safety.surfaces`, e.g. `{"telegram": "herald"}` to
+let Telegram sessions run on Herald's rules alone without Claude's own
+permission checks on top.
+
 And the thing most people do not expect: **ask it to change itself.** "Also read
 this feed", "put my classes on a separate calendar", "stop telling me about
 recruiting emails", "send the digest at seven". It edits its own source and

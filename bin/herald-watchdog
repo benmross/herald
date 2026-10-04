@@ -261,8 +261,57 @@ def check_daemon(unit: str, state: dict, *, heartbeat: str | None = None,
         return
 
 
+GUARD_PROBES = (
+    # (what it proves, event) -- each must come back blocked, exit 2
+    ("Google red tier", {"tool_name": "Bash", "tool_input": {
+        "command": "python3 -c \"s.users().messages().send(userId='me').execute()\""}}),
+    ("safety rules", {"tool_name": "Bash", "tool_input": {
+        "command": "git reset --hard HEAD"}}),
+)
+
+
+def check_guard(state: dict) -> None:
+    """Is the guard still registered, and does it still block?
+
+    Since 4 Oct 2026 Telegram sessions may run with Claude's own checks off
+    (`safety.engine_mode: herald`), which leaves tools/guard.py as the only
+    thing between a session and the machine -- as it always was for Codex.
+    Under bypass a session can edit `.claude/settings.json` like any file, and
+    `herald check` only notices when somebody runs it. So this proves it every
+    five minutes: the hook is in both engines' generated settings, and a red
+    probe through it still exits 2. A failure is a security alert, pushed once
+    per distinct problem rather than every tick.
+    """
+    problems = []
+    for path in (ROOT / ".claude" / "settings.json", ROOT / ".codex" / "hooks.json"):
+        try:
+            if "tools/guard.py" not in path.read_text():
+                problems.append(f"{path.relative_to(ROOT)} no longer runs tools/guard.py")
+        except OSError:
+            problems.append(f"{path.relative_to(ROOT)} is missing")
+    env = {**os.environ, "HERALD_GUARD_PROBE": "1"}
+    for what, event in GUARD_PROBES:
+        try:
+            r = subprocess.run(["python3", str(ROOT / "tools" / "guard.py")],
+                               input=json.dumps(event), capture_output=True,
+                               text=True, timeout=20, env=env)
+            if r.returncode != 2:
+                problems.append(f"the guard let a {what} probe through (exit {r.returncode})")
+        except (OSError, subprocess.SubprocessError) as exc:
+            problems.append(f"the guard did not run: {exc}")
+    key = "; ".join(problems)
+    if key and key != state.get("guard_alert"):
+        log(f"guard: {key}")
+        notify.tell("Herald's guard is not working",
+                    "Sessions are running without the check that blocks risky "
+                    f"commands: {key}. Run `herald check` on the server.",
+                    priority="high")
+    state["guard_alert"] = key
+
+
 def main() -> int:
     state = load_state()
+    check_guard(state)
 
     # The brain has its own supervisor and its own idea of healthy (a tmux
     # session with a live `claude remote-control` in it), so delegate rather

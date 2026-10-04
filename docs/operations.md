@@ -111,6 +111,23 @@ restarts it within 5 minutes. Remote Control needs a claude.ai login, no
 rather than showing it wrong, because "nobody is waiting" from a sync that
 stopped two days ago is worse than saying nothing.
 
+**A session keeps getting blocked.** `ledger/raw/guard.log` has every block and
+warning with the session id. `herald safety test <command>` shows which rule a
+command trips. A false positive is a bug: fix the rule in `lib/herald/safety.py`
+and add the command to the must-allow list in `tests/test_safety.py`. Changing
+those files is itself `self_protect`, so the session doing it needs your tap
+(`herald safety allow self_protect`).
+
+**"Herald's guard is not working" alert.** `herald-watchdog` probes the guard
+every five minutes. Run `herald check`; the usual fix is `herald ext sync`,
+which rewrites `.claude/settings.json` and `.codex/hooks.json`. Then find out
+what removed it.
+
+**Root requests not arriving.** `herald root status`, then `journalctl -u
+herald-root -n 50` (system unit, not `--user`). After pulling an update that
+touched `bin/herald-rootd`, run `herald root update`; the installed copy does
+not change until you do.
+
 **Login expired.** `claude` on the server, `/login`. Everything model-driven
 stops until this is done. `herald doctor` shows the subscription tier.
 

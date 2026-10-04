@@ -96,9 +96,36 @@ def _perform_drill(_p: dict) -> tuple[str, str]:
     return ("drill: approval path exercised end to end, no outward effect", "drill")
 
 
+def _render_safety_allow(p: dict) -> str:
+    rule = p.get("rule", "?")
+    lines = [f"Lift the safety rule '{rule}' for {p.get('minutes', 10)} minutes?", ""]
+    if p.get("command"):
+        lines += ["The blocked command:", str(p["command"])[:600], ""]
+    if p.get("why"):
+        lines += ["Its reason, in its own words: " + str(p["why"])[:300]]
+    return "\n".join(lines)
+
+
+def _perform_safety_allow(p: dict) -> tuple[str, str]:
+    """Write the allowance the guard reads. See lib/herald/safety.py."""
+    import os  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    from . import config, safety  # noqa: PLC0415
+    rule = p.get("rule")
+    if rule not in safety.RULES:
+        raise ValueError(f"unknown safety rule {rule!r}")
+    minutes = max(1, min(int(p.get("minutes", 10)), 120))
+    d = safety.allow_dir(str(config.HOME))
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    with open(os.path.join(d, f"{rule}.allow"), "w") as f:
+        f.write(str(time.time() + minutes * 60))
+    return (f"lifted safety rule {rule} for {minutes} min", f"safety:{rule}")
+
+
 KINDS = {
     "mail.send": (_render_mail, _perform_mail),
     "drill": (_render_drill, _perform_drill),
+    "safety.allow": (_render_safety_allow, _perform_safety_allow),
 }
 
 

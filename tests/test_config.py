@@ -101,13 +101,13 @@ class SettingsMerge(unittest.TestCase):
 
     def test_the_user_overrides_one_leaf_without_losing_its_siblings(self):
         """The reason this is a deep merge. A user who pins a model must not
-        silently lose the escalate model, the permission mode and the
+        silently lose the escalate model, the command and the
         timeouts that came with it."""
         with tempfile.TemporaryDirectory() as td:
             cfg = self._home_with(td, {"engines": {"primary": {"model": "opus"}}})
             self.assertEqual(cfg.get("engines.primary.model"), "opus")
             self.assertEqual(cfg.get("engines.primary.escalate_model"), "opus")
-            self.assertEqual(cfg.get("engines.primary.permission_mode"), "auto")
+            self.assertEqual(cfg.get("engines.primary.cmd"), "claude")
             self.assertEqual(cfg.get("engines.think_idle_timeout_seconds"), 900)
 
     def test_a_list_replaces_rather_than_appends(self):

@@ -200,6 +200,50 @@ asked is the one that acts — so a session cannot approve itself by reaching th
 approving code, and an approval nobody consumes expires. The bundled iMessage
 extension's send path is the first user.
 
+## Safety rules, owned by Herald rather than the engine
+
+Until October 2026 the machine-level half of Herald's safety was borrowed.
+Claude Code's auto mode ran a classifier in front of every shell command;
+Codex ran with full access and no prompts. The same request could be refused on
+one engine and allowed on the other, and the person could not change either
+without editing the engine's own flags.
+
+`lib/herald/safety.py` is Herald's own version, applied by the same
+`tools/guard.py` hook both engines already ran, now matched on shell, file and
+connector calls. Seven rules, each `block`, `warn` or `off` under
+`safety.rules`: **egress** (data sent to hosts off `safety.allow_hosts`),
+**remote_exec** (`curl | sh` and decoded payloads piped to a shell),
+**tunnels**, **secrets** (reading `safety.secret_paths`), **git_destructive**,
+**protected_paths** (deleting or overwriting under `safety.protected_paths`;
+adding files is fine) and **self_protect** (the guard, its hook registration,
+the engines' settings and the safety settings themselves).
+
+`safety.engine_mode` (per surface in `safety.surfaces`) decides whether Claude
+also keeps its own checks: `auto` runs Claude's classifier on top, `herald` runs
+Claude with `bypassPermissions` so these rules are the only check -- which is
+how Codex has always run. A blocked session that was genuinely asked for the
+thing runs `herald safety allow <rule>`, a red.py kind: the user gets one tap,
+and a yes writes a ten-minute allowance the guard reads. `herald-watchdog`
+probes the guard every five minutes and pushes a security alert if it is
+unregistered or stops blocking.
+
+It is a tripwire, not a sandbox: it reads the command as written, and a session
+determined to get past it can build one at runtime. What it stops is the
+accident and the session talked into something by text it read. The taps are
+the part that cannot be argued with.
+
+## Root, through a second bot
+
+Sessions run under NoNewPrivileges and can never use sudo. `herald root run`
+is the door instead: `bin/herald-rootd`, a root service installed by `herald
+root setup`, shows the exact command on a Telegram bot of its own and runs it
+once on the owner's tap. The second bot is the point. The main bot's token is in
+`secrets.json`, readable by every session, so a tap arriving through it proves
+nothing to a root process; the root bot's token is in a root-only file. The
+daemon runs from a root-owned copy under `python3 -I`, imports only the standard
+library (`herald check` enforces it), and touches the user's spool only with its
+effective uid switched to the user's. Linux with systemd only.
+
 ## Extensions
 
 Anything about one person's life rather than about Herald lives in

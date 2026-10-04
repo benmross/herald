@@ -1,0 +1,21 @@
+# A system unit, not a user one: installed by `herald root setup` (under sudo)
+# to /etc/systemd/system, never by tools/install-units.sh. It lives in this
+# subdirectory so the user-unit installer, which globs systemd/herald-*, never
+# picks it up. See bin/herald-rootd for why it runs an installed copy.
+[Unit]
+Description=Herald root approvals: runs a command as root only after the owner taps yes
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -I /usr/local/lib/herald-root/herald-rootd
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=herald-root
+StateDirectoryMode=0700
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

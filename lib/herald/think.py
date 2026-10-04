@@ -1137,7 +1137,18 @@ def think(prompt: str, *, label: str, escalate: bool = False,
                 effort = normalize_effort(config.get(f"{block}.escalate_effort", "xhigh"))
         if model is None:
             model = config.get(f"{block}.model", "sonnet" if engine == "claude" else None)
-    permission_mode = permission_mode or config.get("engines.primary.permission_mode", "auto")
+    # Who decides what a Claude session may do without asking. Since 4 Oct 2026
+    # this is Herald's `safety.engine_mode`, per surface: "auto" keeps Claude's
+    # own classifier on top of Herald's guard; "herald" makes the guard
+    # (lib/herald/safety.py) the only check, as it always was for Codex. An
+    # explicit engines.primary.permission_mode still overrides everything.
+    if not permission_mode:
+        permission_mode = config.get("engines.primary.permission_mode")
+    if not permission_mode:
+        from . import safety  # noqa: PLC0415
+        surface = (label or "think").split(":", 1)[0]
+        mode = safety.engine_mode(surface, str(config.ROOT), str(config.HOME))
+        permission_mode = "bypassPermissions" if mode == "herald" else "auto"
 
     # The person's half, $HERALD_HOME, is always a working directory. The
     # repository reaches it through the `ledger` symlink, but Claude Code

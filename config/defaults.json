@@ -14,7 +14,8 @@
       "model": "sonnet",
       "escalate_model": "opus",
       "effort": null,
-      "permission_mode": "auto"
+      "permission_mode": null,
+      "_permission_comment": "null derives Claude's permission mode from safety.engine_mode for the surface that is running; set auto, plan or bypassPermissions here only to override that for every surface."
     },
     "codex": {
       "_comment": "model null means whatever ~/.codex/config.toml says. With no escalate_model, an escalated run keeps the model and reasons at escalate_effort instead. sandbox and approval_policy are Codex's own values: the defaults give a Codex session the same standing a Claude session has under permission_mode auto, with tools/guard.py as the tripwire in both.",
@@ -77,5 +78,56 @@
   "obligations": {
     "_comment": "Open loops (lib/herald/obligations.py). Every new row is shown to the user once with keep/done/drop buttons; an undated one nobody has confirmed in `stale_days` is asked about again.",
     "stale_days": 14
+  },
+  "safety": {
+    "_comment": "Herald's own safety rules, applied by tools/guard.py before every hooked tool call on every engine. Each rule is block, warn or off; `herald safety allow <rule>` lifts one for ten minutes on a tap. See lib/herald/safety.py.",
+    "engine_mode": "auto",
+    "_engine_mode_comment": "auto: Claude also runs its own auto-mode classifier on top of these rules. herald: Herald's rules are the only check, and Claude runs with bypassPermissions (Codex always runs this way). Per surface in `surfaces`, e.g. {\"telegram\": \"herald\"}.",
+    "surfaces": {},
+    "rules": {
+      "egress": "block",
+      "remote_exec": "block",
+      "tunnels": "block",
+      "secrets": "block",
+      "git_destructive": "block",
+      "protected_paths": "block",
+      "self_protect": "block"
+    },
+    "allow_hosts": [
+      "github.com",
+      "githubusercontent.com",
+      "api.telegram.org",
+      "pypi.org",
+      "files.pythonhosted.org",
+      "registry.npmjs.org"
+    ],
+    "_allow_hosts_comment": "Hosts data may be sent to. Loopback, private and Tailscale addresses, *.local and *.ts.net are always allowed, and hosts named in ~/.ssh/config count as yours. The cloud metadata address never does.",
+    "protected_paths": [],
+    "_protected_paths_comment": "Paths whose existing files may not be deleted, moved or overwritten. Adding new files under them is fine. ~ and $HERALD_HOME are expanded.",
+    "secret_paths": [
+      "~/.ssh",
+      "~/.aws",
+      "~/.netrc",
+      "~/.gnupg",
+      "~/.config/gh/hosts.yml",
+      "~/.claude/.credentials.json",
+      "~/.codex/auth.json",
+      "~/.config/google-agent",
+      "$HERALD_HOME/secrets.json"
+    ],
+    "self_paths": [
+      "$HERALD_ROOT/tools/guard.py",
+      "$HERALD_ROOT/lib/herald/safety.py",
+      "$HERALD_ROOT/lib/herald/policy.py",
+      "$HERALD_ROOT/.claude/settings.json",
+      "$HERALD_ROOT/.claude/settings.local.json",
+      "$HERALD_ROOT/.codex",
+      "$HERALD_ROOT/config/claude-settings.base.json",
+      "~/.claude/settings.json",
+      "~/.claude/settings.local.json",
+      "~/.codex/config.toml",
+      "~/.codex/hooks.json",
+      "$HERALD_HOME/run/safety"
+    ]
   }
 }

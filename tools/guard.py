@@ -73,6 +73,19 @@ except Exception as _exc:  # noqa: BLE001 -- see main(): fail open, but say so
     policy = None
     _POLICY_ERROR = f"{type(_exc).__name__}: {_exc}"
 
+# Herald's own machine-level rules (egress, secrets, destructive git, protected
+# paths, self-protection), loaded the same way and for the same reason. If it
+# fails to load, the Google tiers above still apply; the failure is logged.
+try:
+    _sspec = importlib.util.spec_from_file_location(
+        "herald_safety", ROOT / "lib" / "herald" / "safety.py")
+    safety = importlib.util.module_from_spec(_sspec)
+    sys.modules[_sspec.name] = safety
+    _sspec.loader.exec_module(safety)
+except Exception as _exc:  # noqa: BLE001
+    safety = None
+    _SAFETY_ERROR = f"{type(_exc).__name__}: {_exc}"
+
 # Files that are the door itself. Running them directly is not a bypass.
 DOOR = {(ROOT / "lib" / "herald" / "gwrite.py").resolve(),
         (ROOT / "lib" / "herald" / "red.py").resolve()}
@@ -198,7 +211,39 @@ def python_sources(command: str, cwd: str) -> list[tuple[str, str]]:
     return sources
 
 
+def _home() -> str:
+    return str(pathlib.Path(os.environ.get("HERALD_HOME", "~/.herald")).expanduser())
+
+
+def decide_safety(event: dict) -> tuple[bool, str]:
+    """Herald's machine-level rules. See lib/herald/safety.py."""
+    if safety is None:
+        _log(f"ERROR safety rules unavailable: {_SAFETY_ERROR}")
+        return True, ""
+    tool = event.get("tool_name") or ""
+    tool_input = event.get("tool_input") or {}
+    cwd = event.get("cwd") or os.getcwd()
+    settings = safety.load(str(ROOT), _home())
+    findings = safety.evaluate(tool, tool_input, cwd, settings)
+    if not findings:
+        return True, ""
+    block, warn = safety.verdict(findings, settings)
+    for f in warn:
+        _log(f"WARN {f.rule} {tool} session={event.get('session_id')} :: {f.what[:300]}")
+    if not block:
+        return True, ""
+    return False, safety.explain(block)
+
+
 def decide(event: dict) -> tuple[bool, str]:
+    """(allowed, reason): the Google tiers first, then Herald's safety rules."""
+    allowed, reason = decide_google(event)
+    if not allowed:
+        return allowed, reason
+    return decide_safety(event)
+
+
+def decide_google(event: dict) -> tuple[bool, str]:
     """(allowed, reason). Pure: no I/O beyond reading scripts to be run."""
     tool = event.get("tool_name") or ""
     tool_input = event.get("tool_input") or {}
