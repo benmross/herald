@@ -12,7 +12,19 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/tools/prose_hook.py\"",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
+  "_stop_comment": "Stop runs tools/prose_hook.py on the reply a session is about to end its turn with. If lib/herald/prose.py finds the stock patterns of machine-written prose, the session is told which and writes the reply again, once. A rule in the constitution fades as a context grows; this does not. `prose.mode` in the config is block, warn or off.",
   "_hooks_comment": "PreToolUse runs tools/guard.py before every shell, file and connector call, on Claude and Codex alike. It blocks a runtime script or connector that would write to Google outside gwrite.py or red.py, and applies Herald's own safety rules (lib/herald/safety.py): egress, remote code, tunnels, credential files, destructive git, protected paths and edits to the guard itself. Read, Write and Edit were left out until 4 Oct 2026 because they cannot execute anything; they are matched now because reading a credential file or rewriting the guard's own registration needs no execution at all. The cost is one short Python start per file call."
 }

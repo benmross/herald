@@ -1535,6 +1535,53 @@ def cmd_find(args) -> int:
     return 0 if a.paths else 1
 
 
+def cmd_prose(args) -> int:
+    """Lint text for the stock patterns of machine-written prose.
+
+    The Stop hook does this to every reply on its own. This is for the other
+    things a session writes for a reader: a README, a page of site copy, the
+    body of an email before it is drafted.
+    """
+    from herald import prose as prose_mod
+    if args.rules:
+        for rule in prose_mod.RULES:
+            print(f"  {rule.name:16} {rule.weight:5} {rule.advice}")
+        for name, (weight, advice) in prose_mod.COUNTED.items():
+            print(f"  {name:16} {weight:5} {advice}")
+        return 0
+    if args.stats:
+        log = config.RAW / "prose.log"
+        counts, flagged, clean, still = {}, 0, 0, 0
+        for line in (log.read_text().splitlines() if log.exists() else []):
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            if parts[1] in ("FLAG", "WARN"):
+                flagged += 1
+                for name in parts[-1].removeprefix("rules=").split(","):
+                    counts[name] = counts.get(name, 0) + 1
+            elif parts[1] == "REWROTE":
+                clean += parts[2] == "clean"
+                still += parts[2] != "clean"
+        print(f"  {flagged} replies flagged; {clean} rewrites came back clean, "
+              f"{still} did not")
+        for name, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            print(f"  {n:5}  {name}")
+        return 0
+    off = config.get("prose.off", []) or []
+    worst = 0
+    for name in args.files or ["-"]:
+        text = sys.stdin.read() if name == "-" else pathlib.Path(name).read_text()
+        hits = prose_mod.lint(text, off=off)
+        if not hits:
+            continue
+        print(_c(f"{'stdin' if name == '-' else name}: {len(hits)} hit(s)",
+                 BAD if prose_mod.flagged(hits) else WARN))
+        print(prose_mod.report(hits, limit=args.limit))
+        worst = max(worst, 1 if prose_mod.flagged(hits) else 0)
+    return worst
+
+
 def cmd_amber(args) -> int:
     """Amber changes, the ones a scheduled cycle may make. See lib/herald/amber.py.
 
@@ -1706,6 +1753,17 @@ def main() -> int:
                     help="also search DIR live, for names newer than the index (repeatable)")
     fd.add_argument("-q", "--quiet", action="store_true", help="no note about the index on stderr")
     fd.set_defaults(fn=cmd_find)
+
+    pr = sub.add_parser(
+        "prose", help="find the stock patterns of machine-written prose in a text",
+        description="Lint files (or stdin) the way the Stop hook lints a reply. "
+                    "Exits 1 if anything would have been sent back for a rewrite.")
+    pr.add_argument("files", nargs="*", help="files to read; - or nothing for stdin")
+    pr.add_argument("--rules", action="store_true", help="list the rules and stop")
+    pr.add_argument("--stats", action="store_true",
+                    help="what the hook has flagged so far, by rule")
+    pr.add_argument("-l", "--limit", type=int, default=40, help="hits to show per file")
+    pr.set_defaults(fn=cmd_prose)
 
     am = sub.add_parser("amber", help="a reversible change only the user sees, logged")
     am_sub = am.add_subparsers(dest="kind", required=True)

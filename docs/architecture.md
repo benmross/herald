@@ -509,6 +509,43 @@ drops medical facts and compliance rules, so `herald check` fails when the
 generated file has drifted from either source, including when somebody has
 edited the generated file directly.
 
+## How a reply is written, and what checks it
+
+The constitution describes how Herald writes: plain sentences, and none of the
+stock patterns readers have learned to recognise as machine prose. That section
+alone would not hold. People who have tried a style rule in a prompt report the
+same thing: it works for a few turns, weakens as the context grows, and is gone
+after a compaction. What they found reliable was a deterministic check.
+
+So there are two parts, and the second exists because of the first one's limit.
+
+- `lib/herald/prose.py` finds the patterns with regular expressions. Rules are
+  hard (a phrase nobody writes by accident) or soft (a construction honest
+  prose also uses, flagged only when two appear). Code, blockquotes, URLs and
+  anything in quotation marks are blanked first, so quoting a pattern or
+  discussing one costs nothing.
+- `tools/prose_hook.py` is a Stop hook on both engines. It runs the linter on
+  the reply a session is about to end its turn with. A flagged reply is
+  returned to the session with the list, the session writes it again, and the
+  second attempt always goes out. The first draft is never delivered as the
+  answer.
+
+The cost is one model round trip, paid only by a reply that trips a rule. A
+clean reply pays a short Python start. Every flag is logged to
+`ledger/raw/prose.log` with whether the rewrite came back clean, and `herald
+prose --stats` reads that out, so a rule that fires constantly or never can be
+found and changed. `prose.mode` is `block`, `warn` or `off`, and `prose.off`
+names rules to skip.
+
+The same linter is `herald prose <file>` for everything else a session writes
+for a reader. Nothing runs that automatically: a README is not a turn ending.
+
+The rule list came from the Hacker News threads "Various LLM Smells" and "Make
+Claude stop talking like a BuzzFeed article" and from Wikipedia's "Signs of AI
+writing". Wikipedia's page warns that the signs are symptoms and that fixing
+only the signs hides the problem, which is why each rule's advice is about the
+sentence and the hook asks for a rewrite. The list will date as models change.
+
 ## Autonomy
 
 Three tiers, in the shared constitution:

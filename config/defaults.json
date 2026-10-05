@@ -79,6 +79,12 @@
     "_comment": "Open loops (lib/herald/obligations.py). Every new row is shown to the user once with keep/done/drop buttons; an undated one nobody has confirmed in `stale_days` is asked about again.",
     "stale_days": 14
   },
+  "prose": {
+    "_comment": "The check on what a session is about to send (lib/herald/prose.py, run by tools/prose_hook.py as a Stop hook). block: a reply with the stock patterns of machine-written prose is sent back to the session once, with the list, to be rewritten. warn: logged to ledger/raw/prose.log and sent as written. off: not checked. `herald prose --stats` reads the log.",
+    "mode": "block",
+    "off": [],
+    "_off_comment": "Rule names to skip, e.g. [\"staccato\", \"label_colon\"]. `herald prose --rules` lists them."
+  },
   "safety": {
     "_comment": "Herald's own safety rules, applied by tools/guard.py before every hooked tool call on every engine. Each rule is block, warn or off; `herald safety allow <rule>` lifts one for ten minutes on a tap. See lib/herald/safety.py.",
     "engine_mode": "auto",
