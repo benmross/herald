@@ -100,9 +100,13 @@ sends a notification; the snapshot is free and silent.
   the first `result` ended the turn: the interim "waiting on X" text went to
   the phone as the reply, and everything said after the task landed was lost.
   That happened on 8 Sep with an Agent and again on 23 Sep with a Bash
-  transcription job. Two consequences are still worth knowing. The user sees
-  nothing between the "still on it" notices and the final reply, so the
-  final message has to carry the whole answer. A task that never reports back
+  transcription job. Since 5 Oct 2026 the held reply is also delivered: it
+  goes to `on_progress` as `Progress("interim", ...)`, the Telegram bridge
+  sends it as a reply at once, and a caller that does not take it gets it
+  prepended to the final text. Before that it survived only as narration in
+  the progress block. Two consequences are still worth knowing. A reply
+  written before background work lands reaches the user as its own message,
+  so write it as one. A task that never reports back
   holds the turn until the idle deadline, and then the held reply is
   delivered, so do not leave a server running in the background of a turn.
   If you change how turns end, test with a real `sleep 20` background job

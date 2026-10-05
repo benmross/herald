@@ -226,7 +226,9 @@ class Progress:
 
     `kind` is "text" for the model's own narration -- the sentences it writes
     between tool calls, explaining what it is about to do and what it found --
-    and "tool" for a call it made. Both come out of the stream-json output that
+    and "tool" for a call it made. "interim" is a whole reply the turn gave
+    before going back to wait on background work; a handler that delivers it
+    returns True (see `_offer_interim`). Both of the first two come out of the stream-json output that
     is already flowing, so neither costs a token or a millisecond.
 
     The narration used to be dropped on the floor here, which is why watching a
@@ -880,6 +882,15 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                 # (23 Sep 2026: a finished Falconia brief went nowhere).
                 # Hold it: if the task never reports back, the idle or hard
                 # deadline returns the held result rather than an error.
+                #
+                # The held text is a reply in its own right, though, and it is
+                # handed over now rather than dropped when the next `result`
+                # replaces it. Until 5 October 2026 it survived only as
+                # narration in the progress transcript: a turn answered half a
+                # question, waited on a subagent, answered the other half, and
+                # the first half reached the user as trimmed monospace above
+                # the reply instead of in it.
+                _offer_interim(state, on_progress)
                 state["held_payload"] = state["payload"]
                 state["payload"] = None
                 continue
@@ -918,6 +929,7 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
             # than the idle deadline). That answer is still a real one;
             # deliver it rather than turning the whole turn into a timeout.
             state["payload"] = state["held_payload"]
+            _fold_interim(state)
             payload, context_tokens = finish(state)
             return (0, payload, context_tokens, "".join(out_lines),
                     "".join(err_lines), False)
@@ -941,8 +953,48 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
             timing["round_trips"] = state.get("round_trips") or 0
 
     out, err = "".join(out_lines), "".join(err_lines)
+    _fold_interim(state)
     payload, context_tokens = finish(state)
     return code, payload, context_tokens, out, err, cancelled.is_set()
+
+
+def _offer_interim(state: dict, on_progress) -> None:
+    """A `result` is about to be held because background work is still out.
+
+    Its text goes to `on_progress` as a `Progress("interim", ...)`. A surface
+    that can show a reply mid-turn sends it and returns True. Anything else --
+    no callback, a callback that ignores the kind, one that raises -- leaves
+    the text in `state["held_texts"]`, and `_fold_interim` puts it in front of
+    the final answer, so no caller has to know about this to keep the words.
+    """
+    text = ((state.get("payload") or {}).get("result") or "").strip()
+    if not text:
+        return
+    delivered = False
+    if on_progress:
+        try:
+            delivered = on_progress(Progress("interim", text)) is True
+        except Exception:
+            delivered = False
+    if not delivered:
+        state.setdefault("held_texts", []).append(text)
+
+
+def _fold_interim(state: dict) -> None:
+    """Prepend any undelivered held replies to the final one, oldest first.
+
+    One the final text already contains is skipped: on the timeout path the
+    held reply *is* the final one, and a model sometimes restates its interim
+    message in full.
+    """
+    payload, held = state.get("payload"), state.get("held_texts") or []
+    if not isinstance(payload, dict) or not held:
+        return
+    final = (payload.get("result") or "").strip()
+    keep = [t for t in dict.fromkeys(held) if t not in final]
+    if keep:
+        payload["result"] = "\n\n".join(keep + ([final] if final else []))
+    state["held_texts"] = []
 
 
 _ANOMALY_LOG = config.LOGS / "think-anomalies.jsonl"

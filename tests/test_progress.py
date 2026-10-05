@@ -149,5 +149,68 @@ class TheTranscript(unittest.TestCase):
         self.assertEqual(self.sent, [])
 
 
+class AReplyHeldForBackgroundWork(unittest.TestCase):
+    """A turn that answers, waits on a background task, and answers again has
+    given two replies. think returns only the last `result`, so the first has
+    to leave by another door or it survives only as transcript."""
+
+    def test_a_surface_that_takes_it_gets_it_once(self):
+        seen = []
+        state = {"payload": {"result": "First half."}}
+        think._offer_interim(state, lambda e: seen.append(e) or True)
+        self.assertEqual([(e.kind, e.text) for e in seen], [("interim", "First half.")])
+        state["payload"] = {"result": "Second half."}
+        think._fold_interim(state)
+        self.assertEqual(state["payload"]["result"], "Second half.")
+
+    def test_a_caller_that_ignores_it_still_gets_the_words(self):
+        for callback in (None, lambda e: None, lambda e: 1 / 0):
+            state = {"payload": {"result": "First half."}}
+            think._offer_interim(state, callback)
+            state["payload"] = {"result": "Second half."}
+            think._fold_interim(state)
+            self.assertEqual(state["payload"]["result"], "First half.\n\nSecond half.")
+
+    def test_the_held_reply_returned_on_timeout_is_not_doubled(self):
+        state = {"payload": {"result": "Only answer."}}
+        think._offer_interim(state, None)
+        think._fold_interim(state)
+        self.assertEqual(state["payload"]["result"], "Only answer.")
+
+    def test_an_empty_held_result_is_nothing(self):
+        seen = []
+        state = {"payload": {"result": "  "}}
+        think._offer_interim(state, seen.append)
+        self.assertEqual(seen, [])
+        self.assertFalse(state.get("held_texts"))
+
+
+class TheBridgeSendsAnInterimReply(TheTranscript):
+    def test_it_goes_out_as_a_reply_and_leaves_the_transcript(self):
+        w = self.w
+        w.on_progress(think.Progress("tool", "Agent: check postings"))
+        w.on_progress(think.Progress("text", "**Here** is the first half."))
+        self.assertIs(w.on_progress(think.Progress("interim", "**Here** is the first half.")), True)
+        sends = [kw["text"] for m, kw in self.sent if m == "sendMessage"]
+        self.assertTrue(any("<b>Here</b> is the first half." in t for t in sends))
+        closed = [kw["text"] for m, kw in self.sent
+                  if "Agent: check postings" in kw.get("text", "")][-1]
+        self.assertNotIn("first half", closed)
+        self.assertEqual(w._lines, [])
+        self.assertIsNone(w._msg_id)
+        w.on_progress(think.Progress("tool", "Bash: later"))
+        self.assertNotIn("check postings", w._render())
+
+    def test_the_same_reply_is_not_sent_twice(self):
+        self.w.on_progress(think.Progress("interim", "The answer, held."))
+        self.assertTrue(self.w.already_sent("The answer, held.\n"))
+        self.assertFalse(self.w.already_sent("A different final answer."))
+        self.assertFalse(self.w.already_sent(""))
+
+    def test_no_empty_block_is_posted_before_it(self):
+        self.w.on_progress(think.Progress("interim", "Straight to the point."))
+        self.assertEqual(len([m for m, _ in self.sent if m == "sendMessage"]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -240,6 +240,7 @@ class Working:
         self._sent_text = ""
         self._last_edit = 0.0
         self._settled = False
+        self._sent_replies: list[str] = []   # interim replies already sent
 
     def __enter__(self):
         self._thread.start()
@@ -270,6 +271,8 @@ class Working:
         text = getattr(event, "text", str(event))
         if not text:
             return
+        if kind == "interim":
+            return self._interim(text)
         with self._lock:
             if kind == "text":
                 self._lines.append(text)
@@ -278,6 +281,56 @@ class Working:
                 self._latest = text
                 self._lines.append(f"{TOOL_BULLET} {text}")
             self._dirty = True
+
+    def _interim(self, text: str) -> bool:
+        """A reply given mid-turn, before the turn went back to waiting on
+        background work. Sent as a reply, now.
+
+        think holds that `result` and returns only the last one, so before
+        5 October 2026 the first reply of such a turn existed nowhere but in
+        this transcript: monospaced, markdown unrendered, and trimmed off the
+        front once the block filled. It is a reply and is sent as one. The
+        transcript so far is closed above it and a new one starts below, so
+        the chat reads in the order things happened.
+        """
+        with self._lock:
+            self._drop_tail(text)
+            shown = self._msg_id is not None or bool(self._lines)
+        if shown:
+            self._publish(done=True)
+        send(self.chat_id, text, self.thread_id)
+        with self._lock:
+            self._sent_replies.append(text)
+            self._lines, self._steps, self._latest = [], 0, ""
+            self._msg_id, self._sent_text, self._dirty = None, "", False
+        return True
+
+    def already_sent(self, reply: str) -> bool:
+        """True if `reply` went out as an interim reply this turn: a turn whose
+        background work never reported back ends on the reply it was holding."""
+        return self._key(reply) in {self._key(t) for t in self._sent_replies}
+
+    # Compared with punctuation and spacing removed, because a narration block
+    # and the reply it became are near-identical rather than identical:
+    # markdown, a trailing newline, or a block that ends "...read back."
+    # preceding a reply that continues "...read back, so every pass...".
+    @staticmethod
+    def _key(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+
+    def _drop_tail(self, reply: str) -> None:
+        """Remove trailing narration that `reply` repeats. Caller holds the lock."""
+        whole = self._key(reply)
+        if not whole:
+            return
+        while self._lines and not self._lines[-1].startswith(TOOL_BULLET):
+            last = self._key(self._lines[-1])
+            # Contained in the reply, or opening it: a block the reply
+            # was assembled from, or one it continues.
+            if last and (last in whole or last[:40] == whole[:40]):
+                self._lines.pop()
+                continue
+            break
 
     def _render(self, *, done: bool = False, failed: bool = False) -> str:
         with self._lock:
@@ -343,24 +396,8 @@ class Working:
         reply contains is removed, and a turn left with nothing but its header
         shows only that.
         """
-        # Compared with punctuation and spacing removed, because the two are
-        # near-identical rather than identical: markdown, a trailing newline,
-        # or a narration block that ends "...read back." preceding a reply
-        # that continues "...read back, so every pass...".
-        def _key(text: str) -> str:
-            return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
-
-        whole = _key(reply)
-        if whole:
-            with self._lock:
-                while self._lines and not self._lines[-1].startswith(TOOL_BULLET):
-                    last = _key(self._lines[-1])
-                    # Contained in the reply, or opening it: a block the reply
-                    # was assembled from, or one it continues.
-                    if last and (last in whole or last[:40] == whole[:40]):
-                        self._lines.pop()
-                        continue
-                    break
+        with self._lock:
+            self._drop_tail(reply)
         self._settled = True
         self._finish(failed=stopped)
 
@@ -856,7 +893,8 @@ def handle(update: dict, state: dict) -> None:
                 reason = "resume failed"
 
         if result.ok:
-            send(chat_id, result.text or "(no reply)", thread_id)
+            if not working.already_sent(result.text):
+                send(chat_id, result.text or "(no reply)", thread_id)
             ts["session_id"] = result.session_id or ts.get("session_id")
             ts["turns"] = 1 if reason else ts.get("turns", 0) + 1
         elif result.cancelled:
