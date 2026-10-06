@@ -1,12 +1,12 @@
 ---
 name: herald-ledger
-description: Query what Herald knows about the person it works for — deadlines and due dates, every calendar and event, recent mail and which threads await a reply, messages and who is waiting on a reply, tasks, contacts, where they have been, GitHub activity, and tracked opportunities with their deadlines. Use this for any question about their schedule, deadlines, inbox, messages, commitments, whereabouts, opportunities, or what they have been working on, and before answering anything about "this week", "what's due", "who am I forgetting", "did I reply to", or "where was I". Also covers Herald's own spend and collector health.
+description: Query what Herald knows about the person it works for: deadlines and due dates, every calendar and event, recent mail and which threads await a reply, messages and who is waiting on a reply, tasks, contacts, where they have been, GitHub activity, and tracked opportunities with their deadlines. Use this for any question about their schedule, deadlines, inbox, messages, commitments, whereabouts, opportunities, or what they have been working on, and before answering anything about "this week", "what's due", "who am I forgetting", "did I reply to", or "where was I". Also covers Herald's own spend and collector health.
 ---
 
 # The ledger
 
 Everything Herald has ingested lives in one SQLite database. Query it; do not
-read files into context. A query returns twenty rows — the corpus is thirty
+read files into context. A query returns twenty rows and the corpus is thirty
 thousand.
 
 ```bash
@@ -16,8 +16,8 @@ herald db "select ..." --json   # parseable
 ```
 
 **Start with `herald db --schema` if you are unsure of a source name or a
-column.** It is one call, it is authoritative, and it reflects *this* install —
-which extensions add sources the program itself has never heard of. Guessing
+column.** It is one call, it is authoritative, and it reflects *this* install,
+including sources its extensions add that the program itself has never heard of. Guessing
 costs far more: a session once spent three minutes on "what did I last text my
 mom". It guessed the sources `imessage`, `sms` and `messages` (none of which
 existed there), tried the `sqlite3` CLI (not installed on that machine), spent
@@ -40,9 +40,9 @@ heterogeneous and a table per source would mean a migration per source.
 
 | column | meaning |
 |---|---|
-| `source` | which collector wrote it — `gmail`, `gcal`, and whatever the extensions add |
+| `source` | which collector wrote it: `gmail`, `gcal`, and whatever the extensions add |
 | `kind` | what it is within that source (below) |
-| `external_id` | the source's own id — stable across runs |
+| `external_id` | the source's own id, stable across runs |
 | `ts` | ISO8601, when the thing happens or happened |
 | `title` / `body` | the human-readable parts |
 | `data` | JSON; reach into it with `json_extract(data, '$.field')` |
@@ -58,13 +58,13 @@ midnight.
 | source/kind | notes |
 |---|---|
 | `gmail/message` | recent mail, full text + `data.snippet`, `data.attachments` | `data.from`, `data.bulk`, `data.unread`, `data.labels` |
-| `gmail/thread` | derived — `data.awaiting_reply` is the one that matters |
+| `gmail/thread` | derived; `data.awaiting_reply` is the one that matters |
 | `gmail/label` | label id → name; join on `data.labels` in messages |
 | `gcal/event` | a window around today, recurrence expanded. **`data.role` first**, then `data.calendar`, `data.location`, `data.attendees` |
 | `gcal/calendar` | the calendar list; `data.role`, and `data.writable` for where Herald may write |
 | `gtasks/task` | all lists; `data.status` is `needsAction` or `completed` |
-| `contacts/person` | address book; `data.emails` — join to put names on senders |
-| `github/event`, `github/repo` | what they have actually been building |
+| `contacts/person` | address book; join on `data.emails` to put names on senders |
+| `github/event`, `github/repo` | what they have been building |
 | `<feed>/assignment` | anything with a due date, from a calendar feed. `data.tag` is the feed's own grouping (a course code, a project) |
 | `<feed>/event`, `<feed>/tag` | the rest of a subscribed `.ics` feed |
 | `opportunities/candidate` | ranked mail, raw material for the scout cycle, not conclusions |
@@ -80,10 +80,10 @@ should you:
 | `thread` | a conversation; `data.awaiting_reply` says the last word was not theirs |
 | `current` | where they are now; `data.age_minutes` |
 | `day` | one row per day of somewhere they were |
-| `health` | a source reporting on its own freshness — **check it before trusting that source**, `data.stale`, `data.hours_behind` |
+| `health` | a source reporting on its own freshness. **Check it before trusting that source**: `data.stale`, `data.hours_behind` |
 
 Extensions add their own sources and document them in their own README or
-skill. `herald db --schema` lists what this install actually has.
+skill. `herald db --schema` lists what this install has.
 
 ### The other tables
 
@@ -91,7 +91,7 @@ skill. `herald db --schema` lists what this install actually has.
 loops), `runs` (every agent invocation and what it cost), `notifications`,
 `collector_state`, `approvals`, and:
 
-`actions` holds every write Herald made outside the ledger — `actor`, `kind`,
+`actions` holds every write Herald made outside the ledger: `actor`, `kind`,
 `target`, `summary`, `ref`, `reported_at`. "What did you change on my calendar?"
 is `select * from actions order by ts desc`.
 
@@ -119,7 +119,7 @@ still waiting, and for one of those the `google-workspace` skill fetches it live
 
 ## Recipes
 
-**What is due, soonest first** — every source, not just one
+**What is due, soonest first**, from every source
 
 ```bash
 herald db "select substr(ts,1,16) due, json_extract(data,'\$.tag') tag, title, source
@@ -127,7 +127,7 @@ herald db "select substr(ts,1,16) due, json_extract(data,'\$.tag') tag, title, s
            order by ts limit 15"
 ```
 
-**Calendar provenance — read this before answering anything about their schedule
+**Calendar provenance. Read this before answering anything about their schedule
 or what they are involved in.**
 
 Every `gcal` event carries `data.role`, and it matters more than any other
@@ -141,12 +141,12 @@ field:
 | `reference` | holidays, institutional dates. Context. |
 
 Google reports a calendar the user's own scraper fills as `accessRole: owner`,
-which is true — they do own it — and completely misleading. A session once
+which is true (they do own it) and completely misleading. A session once
 concluded someone was in a scholars programme from a single event on such a
 calendar. Filter on `role`, from `calendars.roles` in the config, not on
 `accessRole`.
 
-**Today's schedule** — theirs, not the firehose
+**Today's schedule**, their own commitments only
 
 ```bash
 herald db "select substr(ts,12,5) at, title, json_extract(data,'\$.location') where_
@@ -155,7 +155,7 @@ herald db "select substr(ts,12,5) at, title, json_extract(data,'\$.location') wh
              and substr(ts,1,10)=date('now') order by ts"
 ```
 
-**Who is waiting on a reply** — `awaiting_reply` already excludes newsletters,
+**Who is waiting on a reply.** `awaiting_reply` already excludes newsletters,
 listservs and no-reply senders, so trust it as a starting point and apply
 judgment on top.
 
@@ -173,7 +173,7 @@ herald db "select source, title, substr(ts,1,10) last, body
              and json_extract(data,'\$.awaiting_reply')=1 order by ts desc"
 ```
 
-Check freshness first — a source that knows it is behind says so, and "nobody is
+Check freshness first. A source that knows it is behind says so, and "nobody is
 waiting" from a sync that stopped two days ago is worse than saying nothing:
 
 ```bash
@@ -215,7 +215,7 @@ herald db "select id, status, deadline, title, org, score from opportunities
 ## Naming people
 
 Message and contact rows carry the name as it appears in the user's address
-book — a full name, not "Mom". `ledger/identity/` maps relationships to
+book: a full name, not "Mom". `ledger/identity/` maps relationships to
 names, so read it (including `identity/private/people.md` if it exists) before
 answering anything phrased as "my mom" or "my cousin".
 
@@ -229,6 +229,6 @@ herald db "select collector, last_ok, consecutive_failures, last_error
            from collector_state order by collector"
 ```
 
-A collector that is *off* is not a collector that is failing — `herald status`
-distinguishes them, and a capability the user never connected has no business
-being reported as broken.
+A collector that is *off* is not failing. `herald status` distinguishes the
+two, and a capability the user never connected must not be reported as
+broken.

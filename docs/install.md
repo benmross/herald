@@ -17,7 +17,7 @@ model-driven until you sign in again, so something that stays on is worth it.
 you do not have a spare machine. Windows works through WSL2 only, with two
 things to know first: systemd has to be switched on inside WSL (put `[boot]`
 and `systemd=true` on two lines in `/etc/wsl.conf`, run `wsl --shutdown` from
-Windows, open the terminal again -- preflight tells you if this is missing),
+Windows, open the terminal again; preflight tells you if this is missing),
 and WSL only runs while Windows is awake and a WSL process is alive, so a
 laptop that sleeps overnight has no 06:30 digest until it wakes.
 
@@ -31,7 +31,7 @@ Claude when you tell it to (`/codex` in a chat, `engines.default_engine` in
 your config). Nothing uses it unless you ask, so skip this if you do not have
 one.
 
-**A Google account.** Mail and calendar are the spine of everything else.
+**A Google account.** Everything else is built on mail and calendar.
 
 ## Step 1: open a terminal
 
@@ -72,7 +72,7 @@ thing with the same questions.
 
 ## Step 3: the wizard
 
-Eleven screens. Each one checks that what you just did actually worked before
+There are eleven screens. Each one checks that what you just did worked before
 offering the next, so you find out about a problem on the screen that caused it.
 
 1. **Before we start** checks this computer has what Herald needs.
@@ -84,8 +84,8 @@ offering the next, so you find out about a problem on the screen that caused it.
    your agent.
 4. **Updates, or a program of your own** asks whether your copy receives new
    releases (the default, and the reversible choice) or owns its code and stops
-   updating. [`updates.md`](updates.md) is the longer version; the short one is
-   that following costs you almost nothing, because everything you actually
+   updating. [`updates.md`](updates.md) is the longer version; in short,
+   following costs you almost nothing, because everything you would
    want to change lives outside the program.
 5. **Google** is the long one. Google will not let a program read your account
    until you create a project that asks for permission, so the wizard walks you
@@ -102,7 +102,7 @@ offering the next, so you find out about a problem on the screen that caused it.
    trying to do, what a good week looks like, who matters, what you want to be
    interrupted for. There are prompts, and you can ignore them. You can dictate
    instead of typing, and it saves as you go, so you can stop and come back.
-   Then it asks you eight to fifteen follow-up questions about what you actually
+   Then it asks you eight to fifteen follow-up questions about what you
    wrote, and finally turns all of it into the files it reads every day.
 9. **Read what it wrote** shows everything it concluded about you, editable. Fix
    anything wrong now; a wrong fact here becomes a wrong assumption every
@@ -116,7 +116,7 @@ offering the next, so you find out about a problem on the screen that caused it.
 
 Nothing more is required. Tomorrow at 06:30 you get your first digest.
 
-Worth knowing:
+Four commands to know:
 
 ```bash
 herald status      # what it has read, what it cost, what is failing
@@ -134,13 +134,13 @@ command and run it only if you tap yes. It needs your password once, at setup.
 
 **Safety rules.** `herald safety status` lists the rules Herald applies to every
 command its sessions run, whichever engine runs them. Each can be `block`,
-`warn` or `off`. Two settings worth knowing on day one: `safety.protected_paths`,
+`warn` or `off`. Two settings to know on day one: `safety.protected_paths`,
 for folders whose existing files must never be deleted or overwritten (a photo
 archive with one copy), and `safety.surfaces`, e.g. `{"telegram": "herald"}` to
 let Telegram sessions run on Herald's rules alone without Claude's own
 permission checks on top.
 
-And the thing most people do not expect: **ask it to change itself.** "Also read
+Most people do not expect that you can **ask it to change itself**: "Also read
 this feed", "put my classes on a separate calendar", "stop telling me about
 recruiting emails", "send the digest at seven". It edits its own source and
 commits the change.
@@ -152,7 +152,7 @@ each. `herald setup --list` shows which steps are done, and any step can be
 re-run on its own without redoing the others.
 
 [`docs/operations.md`](operations.md) covers the rest: where the logs are, how to
-restart a service, and what the failure modes actually look like.
+restart a service, and what the failure modes look like.
 
 ## The short version
 

@@ -1,12 +1,13 @@
 # Extensions
 
 An extension is the part of Herald that is about *your* life rather than about
-Herald. A university's event scraper, a self-hosted service, a data source only
+Herald: a university's event scraper, a self-hosted service, a data source only
 you have, a skill for querying something only you run.
 
-They exist because the alternative is worse. Herald began as one person's agent
-and its collectors knew one university's event-feed ids, which meant the
-architecture had quietly decided its users were students there. Anything that
+They exist because of what happened without them. Herald began as one person's
+agent and its collectors knew one university's event-feed ids, which meant the
+architecture assumed, without anyone having decided it, that its users were
+students there. Anything that
 specific now lives outside the program, in the same private directory as the
 ledger, and the program stays general.
 
@@ -37,7 +38,7 @@ herald ext disable tides
 
 Herald also ships a few of its own under `extensions/` in the checkout. Those
 are off until you turn them on, and enablement is stored in *your* config rather
-than in their manifest — so a `git pull` can never switch one on.
+than in their manifest, so a `git pull` can never switch one on.
 
 ## The manifest
 
@@ -59,7 +60,7 @@ than in their manifest — so a `git pull` can never switch one on.
 }
 ```
 
-A **capability** is how a collector says what it needs. `secrets`, `settings` and
+A capability is how a collector says what it needs. `secrets`, `settings` and
 `files` are checked before anything runs, so a source you have not configured is
 reported as *off* rather than failing every half hour at a credential nobody
 asked you for.
@@ -69,7 +70,7 @@ never mean running its code.
 
 ## A collector
 
-Exactly the same contract as a built-in one, plus a four-line bootstrap so it
+It has the same contract as a built-in one, plus a four-line bootstrap so it
 can find Herald from outside the checkout:
 
 ```python
@@ -102,14 +103,14 @@ if __name__ == "__main__":
 ```
 
 The rules in [`extending.md`](extending.md) apply unchanged, and `herald check`
-holds extension code to them exactly as it holds Herald's own — no model calls in
+holds extension code to them exactly as it holds Herald's own: no model calls in
 a collector, no engine launched outside `think.py`, no write to Google outside
 `gwrite.py`. Those are the failures that are silent, and a personal collector is
-no less able to cause them.
+as able to cause them as a built-in one.
 
 ## Appearing in the morning brief
 
-The cycle snapshot queries by *shape*, not by source, so a collector that writes
+The cycle snapshot queries by *shape* and never by source, so a collector that writes
 a familiar kind shows up with no further work:
 
 | kind | meaning |
@@ -134,7 +135,7 @@ def section(con, ctx) -> str | None:
         f"- {r['ts'][11:16]}  {r['title']}" for r in rows)
 ```
 
-A section that raises costs itself, not the brief.
+A section that raises is left out, and the rest of the brief is still built.
 
 ## Sharing one
 

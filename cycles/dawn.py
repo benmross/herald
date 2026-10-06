@@ -55,20 +55,20 @@ SCHEMA = {
             "type": "string",
             "description": "One line, under 80 characters. The single most "
                            "important thing about today. This is the phone "
-                           "notification title, so it must stand alone -- and "
+                           "notification title, so it must stand alone, and "
                            "it is addressed to the user, so second person.",
         },
         "digest": {
             "type": "string",
             "description": "The digest itself, in Markdown. Short. Ordered by "
-                           "what actually matters to the user today.",
+                           "what matters to the user today.",
         },
         "priority": {
             "type": "string",
             "enum": ["min", "low", "default", "high", "urgent"],
             "description": "How hard to buzz their watch. 'default' for an "
                            "ordinary morning. 'high' only when something is "
-                           "due today or someone is genuinely waiting.",
+                           "due today or a real person is waiting.",
         },
         "questions": {
             "type": "array",
@@ -85,7 +85,7 @@ You are running the dawn cycle. Nobody is at a keyboard: this is a scheduled,
 unattended run, and the only thing {NAME} will see is a notification and the
 digest you write.
 
-Below is a snapshot built from the ledger a moment ago. It is already filtered —
+Below is a snapshot built from the ledger a moment ago. It is already filtered:
 you do not need to go re-query everything it contains, though you may query for
 anything it does not.
 
@@ -94,9 +94,9 @@ matters to *{THEM}* rather than what merely happened.
 
 Do these, in this order:
 
-1. **Rewrite `ledger/state/now.md`.** Today's real shape: where {THEY} need{"" if WHO["plural_verb"] else "s"} to be,
+1. **Rewrite `ledger/state/now.md`.** Describe today as it is: where {THEY} need{"" if WHO["plural_verb"] else "s"} to be,
    what is due, anything time-critical. Replace the file; it is working memory,
-   not a record. Stale state here makes everything downstream a lie.
+   not a record. Stale state here makes everything downstream wrong.
 
 2. **Reconcile the obligations.** The `commitments` table holds open loops
    only: something {THEY} owe a person, a question {THEY} never answered, a
@@ -120,9 +120,8 @@ Do these, in this order:
 3. **Act on what changed.** Before writing the digest, go through what is new
    and ask of each item whether it makes something already recorded wrong: a
    calendar event, a commitment's date, an area file, an opportunity row. Fix
-   each one now (the rules are below). This is the step that turns reading into
-   help, and skipping it is how a correct summary sits beside a calendar that
-   sends {THEM} to the wrong building.
+   each one now (the rules are below). If you skip this step, a correct summary
+   sits beside a calendar that sends {THEM} to the wrong building.
 
 4. **Append to today's journal** at `ledger/journal/YYYY-MM-DD.md`: what you did,
    including every change from step 3 and its source, anything you learned about
@@ -143,7 +142,7 @@ nothing about the rest.
 least once, so it earns a line again only when one of these is true:
 
 - it happens today or tomorrow, and the timing is now the news
-- something about it changed — a date moved, a status flipped, a deadline that
+- something about it changed: a date moved, a status flipped, a deadline that
   was distant is now close
 - it is about to become impossible, or {THEY} are visibly not acting on it
 
@@ -153,25 +152,25 @@ running is one {THEY} stop reading, and then the one morning it matters {THEY}
 will not see it either.
 
 Things far ahead are still worth a mention *once*, on the day they first appear.
-That is the whole reason the horizon is wide.
+That is why the horizon is wide.
 
 What makes a good digest:
 
 - Lead with what changes the next few hours, not with a summary of the snapshot.
 - Deadlines that could still be missed beat deadlines that are far away.
 - A person waiting on a reply beats a newsletter, always. The snapshot's
-  awaiting-reply list is a starting point, not a verdict — some of it is
+  awaiting-reply list is a starting point: some of it is
   automated mail that slipped the filter, and you should say so rather than
   repeat it.
 - Public events from a feed: there are hundreds. Mention one only if there is a
   real reason this person in particular would want it.
-- If nothing matters today, say that in one line. A short honest digest is worth
-  more than a padded one, and padding is how a digest stops being read.
+- If nothing matters today, say that in one line. A short digest is worth
+  more than a padded one, and a padded digest stops being read.
 - **Write to {THEM}, not about {THEM}.** "You have", never "{NAME} has". Every word
   of this reaches a screen {THEY} are looking at.
-- The digest goes out in full, so it can breathe — it does not have to fit in a
-  notification. But length still has to be earned; a long digest that is mostly
-  filler is worse than a short one.
+- The digest goes out in full and does not have to fit in a notification.
+  Length still has to be earned: a long digest that is mostly filler is worse
+  than a short one.
 
 {{ACTING}}
 What you must not do: send anything, reply to anyone, post anything, RSVP,

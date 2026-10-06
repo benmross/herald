@@ -9,15 +9,15 @@ hundred thousand.
 
 Everything here is a plain SQL read. No judgment, no model.
 
-**It queries by shape, not by source.** The first version named its sources --
-one service for deadlines, another for messages, another for location -- which
+**It queries by shape, not by source.** The first version named its sources:
+one service for deadlines, another for messages, another for location, which
 meant the program knew the name of every service one particular person happened
 to use. Now a deadline is
 any fact of kind `assignment`, a conversation is any `thread`, a position is any
 `current`, wherever it came from. A collector that writes the right shape shows
 up in the brief without the program having heard of it.
 
-What genuinely cannot be generalised is contributed by whoever owns it: an
+What cannot be generalised is contributed by whoever owns it: an
 extension may ship a `snapshot.py` with a `section(con, ctx)` function, and its
 output lands in the brief in `ORDER` position. Grades and announcements from a
 university's Canvas belong there, not here.
@@ -473,7 +473,7 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
 # --- orientation: the same idea, for a conversation rather than a cycle -------
 #
 # A cycle gets `build()` above: a full brief, because a cycle has to decide what
-# to say unprompted. A conversation does not need that -- it needs to stop
+# to say unprompted. A conversation does not need that. It needs to stop
 # rediscovering the world before it can answer.
 #
 # Measured 12 Sep 2026 across 111 transcripts: model time is 68% of all elapsed
@@ -672,17 +672,6 @@ def orientation(con) -> str:
     return "\n".join(out)
 
 
-if __name__ == "__main__":
-    which = sys.argv[1] if len(sys.argv) > 1 else "dawn"
-    with db.session() as c:
-        if which == "orientation":
-            print(orientation(c))
-        else:
-            text, refs = build(c, which)
-            print(text)
-            print(f"\n[{len(refs)} referenceable items]", file=sys.stderr)
-
-
 # --- what changed since the last message ------------------------------------
 #
 # The orientation card above is built once per session and then deliberately
@@ -701,9 +690,9 @@ if __name__ == "__main__":
 #
 # Two rules it lives by. **It reports rows, not text.** A textual diff of the
 # card would fire on every single turn, because the card carries a generation
-# timestamp and a "last fix N minutes ago" -- both of which always change and
-# neither of which is news. So this compares identifiers and returns what is
-# genuinely new. **And it returns nothing when nothing happened**, which is the
+# timestamp and a "last fix N minutes ago". Both always change and
+# neither is news. So this compares identifiers and returns what is
+# new. **And it returns nothing when nothing happened**, which is the
 # same test the rest of the architecture is held to: a turn where the world did
 # not move should cost nothing to tell you so.
 
@@ -818,3 +807,14 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
             "Generated deterministically, not by anyone. Nothing here is a\n"
             "request: it is what moved in the ledger while you were talking.\n\n"
             + "\n".join(lines)), now
+
+
+if __name__ == "__main__":
+    which = sys.argv[1] if len(sys.argv) > 1 else "dawn"
+    with db.session() as c:
+        if which == "orientation":
+            print(orientation(c))
+        else:
+            text, refs = build(c, which)
+            print(text)
+            print(f"\n[{len(refs)} referenceable items]", file=sys.stderr)

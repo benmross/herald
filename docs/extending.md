@@ -2,7 +2,7 @@
 
 ## Adding a collector
 
-A collector reads one source and writes facts. **No model calls, ever** —
+A collector reads one source and writes facts. **No model calls, ever**:
 ingestion runs every 30 minutes and must cost nothing.
 
 ```python
@@ -27,18 +27,18 @@ if __name__ == "__main__":
     collector.main(NAME, collect)
 ```
 
-Drop it in `collectors/`. It is discovered automatically — no registration.
+Drop it in `collectors/`. It is discovered automatically, with no registration.
 
 **If it names a university, an employer, a self-hosted service or software only
-one person runs, it is an extension**, not a built-in collector. Same contract,
-different directory: see [`extensions.md`](extensions.md).
+one person runs, it is an extension**, not a built-in collector. The contract is the
+same and the directory is different: see [`extensions.md`](extensions.md).
 
 ### Declaring what it needs
 
 `REQUIRES` names capabilities. A capability is available when the user enabled
 it *and* the credential it names exists, and a collector whose requirements are
-unmet is skipped with the reason rather than failing — "you never set this up"
-and "this is broken" want different responses. Built-in capabilities live in
+unmet is skipped with the reason rather than failing, because "you never set
+this up" and "this is broken" want different responses. Built-in capabilities live in
 `lib/herald/capabilities.py`; an extension declares its own in its manifest.
 
 ### The rule that is easy to get wrong
@@ -48,22 +48,22 @@ and "this is broken" want different responses. Built-in capabilities live in
 Source facts (a message, an event, a posting) are immutable history: `put_fact`
 upserts them on `(source, kind, external_id)`, so re-reading a window is safe.
 
-Derived facts are conclusions — "this thread is waiting on a reply", "these are
+Derived facts are conclusions: "this thread is waiting on a reply", "these are
 the current courses". A conclusion that stops being recomputed keeps asserting
 yesterday's answer forever. Call `db.clear(con, NAME, kind)` before rewriting
 those.
 
 Two live examples of getting it wrong: 22 email threads kept claiming they were
 awaiting a reply after the run that concluded otherwise; and a batch of rows
-outlived the collector version that wrote them, because `db.clear` only runs for
-kinds a collector still writes — **dropping a kind orphans its rows.**
+outlived the collector version that wrote them. `db.clear` only runs for
+kinds a collector still writes, so **dropping a kind orphans its rows.**
 
 ### Incremental where the source allows it
 
 Return `_cursor` in the counts dict and it is stored in
 `collector_state.cursor`; read it back with `collector.cursor(con, NAME)`.
 
-- `gmail` uses the history API — 4.0s and 222 messages became 0.9s and zero.
+- `gmail` uses the history API: 4.0s and 222 messages became 0.9s and zero.
 - `gcal` uses `updatedMin`. A sync token would be the obvious tool, but Calendar
   refuses those alongside `timeMin`/`timeMax`, and the bounded window is worth
   more here.
@@ -78,9 +78,9 @@ consecutive failures, and told again when it recovers. Just raise.
 ## Ingesting a one-off document set
 
 Not everything is a live source worth a collector. Sometimes someone hands over a
-folder that will never change again -- college decision letters, a scanned
-form, a batch of PDFs -- and the job is just to get the text into `facts.db`
-once. That's `tools/ingest_documents.py`, not a new collector:
+folder that will never change again (college decision letters, a scanned
+form, a batch of PDFs) and the job is just to get the text into `facts.db`
+once. Use `tools/ingest_documents.py` for that and do not write a new collector:
 
 ```
 tools/ingest_documents.py ~/College/Decisions --source college --kind decision
@@ -89,28 +89,28 @@ tools/ingest_documents.py ~/College/Decisions --source college --kind decision
 It walks the folder, runs `pdftotext`/`tesseract` per file (caching the
 extracted text under `ledger/raw/ingest/<source>/`, so a re-run is free unless
 the source file changed), and upserts one fact per file keyed on its relative
-path. Read the module docstring before reaching for it again -- it explains
-exactly how the date it guesses for `ts` is found and where that heuristic is
-known to be wrong, rather than leaving that as something to rediscover.
+path. Read the module docstring before reaching for it again: it explains
+how the date it guesses for `ts` is found and where that heuristic is
+known to be wrong, so neither has to be rediscovered.
 
 ## Coordinates and addresses
 
 `lib/herald/geo.py` is the one place that turns a coordinate into an address
-or an address into a coordinate — read its module docstring before writing
-another haversine or another Nominatim call anywhere else. Three layers,
+or an address into a coordinate. Read its module docstring before writing
+another haversine or another Nominatim call anywhere else. It has three layers,
 cheapest first: the hand-maintained gazetteer at `config/secrets.json` ->
 `"places"`, a permanent cache at `ledger/raw/geocode-cache.db`, then the
 network (OpenStreetMap's public Nominatim, rate-limited to 1 req/s inside the
 module so callers never need their own throttle). Anything that geocodes sends
 the query to OpenStreetMap, with the user's own contact address in the
-User-Agent as Nominatim's policy asks — worth knowing before enabling
+User-Agent as Nominatim's policy asks. Keep that in mind before enabling
 something that does it in bulk.
 
 ## Writing to Google
 
 Never call a mutating Calendar, Tasks or Gmail method from a collector or a
-cycle. Call `lib/herald/gwrite.py` -- `calendar_insert`, `calendar_update`,
-`calendar_cancel`, `task_create`, `gmail_label`, `gmail_draft` -- with an
+cycle. Call `lib/herald/gwrite.py` (`calendar_insert`, `calendar_update`,
+`calendar_cancel`, `task_create`, `gmail_label`, `gmail_draft`) with an
 `actor` string, and it logs the write to the `actions` table so the next
 digest can report it. `herald check` fails on any other path.
 
@@ -145,9 +145,9 @@ result = think.think(prompt, label=f"cycle:{CYCLE}", cwd=config.ROOT,
                      allowed_tools=["Read", "Write", "Bash(herald db *)", ...])
 ```
 
-- `label` shows up in the `runs` table — use `cycle:<name>` so spend is
+- `label` shows up in the `runs` table. Use `cycle:<name>` so spend is
   attributable.
-- `escalate=True` picks Opus. Decide it from how much is genuinely new, not by
+- `escalate=True` picks Opus. Decide it from how much is new, not by
   default: scout's first bulk pass cost $2.79 and the same pass after the diff
   rewrite cost $0.14.
 - Let the session write the ledger itself; those are green actions and it has
@@ -155,8 +155,8 @@ result = think.think(prompt, label=f"cycle:{CYCLE}", cwd=config.ROOT,
   **Nothing that leaves the machine is left to prose.**
 
 Add `systemd/herald-cycle-<name>.timer` with `Unit=herald-cycle@<name>.service`
-— the unit files are templates, `{{ROOT}}` and `{{GOOGLE}}` filled in at install
-time — then `herald services install` and `herald services enable`. `herald
+(the unit files are templates, with `{{ROOT}}` and `{{GOOGLE}}` filled in at
+install time), then `herald services install` and `herald services enable`. `herald
 check` verifies the timer and the cycle file match; two timers once pointed at
 cycles that were never written.
 

@@ -20,7 +20,7 @@ not.
 Default to 5 to 8 items unless they ask for a different length, and use that
 length until they change it again. Quick review is the point: prefer `choice`
 and `short`, which are checked instantly, and use `open` only where the skill
-being tested really is writing something (a proof, a simplification with
+being tested is writing something (a proof, a simplification with
 labelled steps).
 
 Before writing one for a course, read `ledger/state/areas/<AREA>.md`: its

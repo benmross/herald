@@ -146,10 +146,10 @@ below is ranked against those, not against what a generic person in {THEIR}
 position would want. The rules that decide what counts as a real opportunity
 for *this* person live in those files; this prompt only tells you how to work.
 
-You are **updating** a table, not rebuilding one. The snapshot gives you the
+You are updating a table, not rebuilding one. The snapshot gives you the
 judgments you have already made and only the candidates you have never seen.
 Do not re-derive a standing conclusion; new input is here to change it or leave
-it alone. If nothing new arrived, check for passed deadlines and stop — a quiet
+it alone. If nothing new arrived, check for passed deadlines and stop: a quiet
 pass should be a cheap one.
 
 **You are given every email that arrived since the last pass, not a
@@ -158,7 +158,7 @@ mattered: on 9 September 2026 a receipt saying an App Store submission had gone
 into review scored zero, and so did a direct question from a family member.
 Each message carries a `filter score` and it is a reading order, nothing more.
 
-Most of it is genuinely nothing and should cost you a line each. But read all
+Most of it is nothing and should cost you a line each. But read all
 of it, and do not read it only for opportunities: if something in there is a
 person waiting on a reply, a bill, a deadline buried in a listserv digest, or
 a status change on something {THEY} already applied to, say so in `summary` so
@@ -174,13 +174,13 @@ Apply the ranking rules in `goals.md`, and these, which hold for anyone:
   offering it wastes the one thing that makes these worth reading at all. When
   the feed does not say who is eligible, that is the one thing worth opening
   the page to find out.
-- **Would {THEY} have found it {WHO["reflexive"]}?** If obviously yes, do not
+- **Ask whether {THEY} would have found it {WHO["reflexive"]}.** If obviously yes, do not
   surface it. The value here is entirely in what {THEY} would otherwise have
   missed.
 - **Rank against the goals, but do not decide for {THEM}.** Something that
   ranks below an alternative still gets surfaced, one line, marked as such.
-  Silently dropping a whole category is how an agent starts quietly editing
-  someone's options.
+  Silently dropping a whole category edits someone's options without telling
+  them.
 
 **Triage from the line before you open anything.** Each posting arrives as
 company, title, location, category and match reason. Most can be settled from
@@ -190,9 +190,9 @@ how this cycle gets expensive without getting better.
 
 **Watched employers.** The config lists organisations under
 `opportunities.watch_employers` that the crowdsourced feeds miss or cover
-unevenly — the reason the setting exists is a company with sixteen thousand
-postings on an aggregator and not one of its own. Once a day at most — on the
-first pass of the day, not the second — search the web for whether any of them
+unevenly. The setting exists because of a company with sixteen thousand
+postings on an aggregator and not one of its own. Once a day at most (on the
+first pass of the day, not the second), search the web for whether any of them
 have opened a round, and open a row when one has. Do not repeat a search you
 already did today; the journal says what you checked.
 
@@ -205,7 +205,7 @@ For each one that survives, insert a row:
 
 `kind` is one of internship, research, scholarship, hackathon, event, job, other.
 `score` is 1 to 5. `deadline` is ISO or null. **Check for an existing row on the
-same thing before inserting** — the table has a uniqueness constraint on
+same thing before inserting**: the table has a uniqueness constraint on
 (title, org) and a duplicate helps nobody.
 
 Also revisit rows already in the table. If something has been overtaken, mark it
@@ -218,7 +218,7 @@ journal at `ledger/journal/YYYY-MM-DD.md`.
 Finally, return the schema. `push_now` is for things worth interrupting for
 immediately rather than waiting for the morning: a real deadline closing soon is
 pushed the moment it is found. Good-but-not-urgent finds are worth pushing too
-rather than holding — err towards telling {THEM}, and {THEY} will say if it
+rather than holding: err towards telling {THEM}, and {THEY} will say if it
 becomes annoying.
 
 **Write `push_now` to {THEM}, not about {THEM}.** Everything in it lands on a
@@ -229,8 +229,8 @@ return it.
 
 **Mail → calendar.** The snapshot may end with a section of mail from labels
 {THEY} chose (`scout.event_mail_labels` in the config): listservs, club mail,
-announcements. For each concrete event in that mail — a named thing at a real
-date, time and place — that the ledger does not already carry, return it in
+announcements. For each concrete event in that mail (a named thing at a real
+date, time and place) that the ledger does not already carry, return it in
 `calendar_events`. Python writes them to the calendar named by
 `calendars.write.event`, which is a firehose rather than a commitment list, so
 breadth is fine and duplicates are not: if the same event is plainly in the
@@ -314,7 +314,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
                "only if something below changes it, or if its deadline has "
                "passed.\n")
     if not live:
-        out.append("nothing yet — this is the first scout pass")
+        out.append("nothing yet: this is the first scout pass")
     for o in live:
         out.append(f"- #{o['id']} [{o['status']}] due {o['deadline'] or '—'} "
                    f"score {o['score']}  **{o['title']}** ({o['org'] or '?'})")
@@ -345,7 +345,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
                    f"showing {len(shown)})\n")
         out.append("From the crowdsourced Summer 2027 lists, already filtered to "
                    "DMV, remote, watched employers, or a named early-career "
-                   "programme. **Nothing in this feed states year eligibility** — "
+                   "programme. **Nothing in this feed states year eligibility**: "
                    "3,082 active listings and not one names a first- or "
                    "second-year track in its title, so if a posting looks right, "
                    "open it and check whether a freshman can apply before "
@@ -371,15 +371,15 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
     out.append(f"\n## New in {THEIR} mail ({len(rows)})\n")
     if not rows:
         out.append("Nothing new arrived. Check whether any deadline above has "
-                   "passed, then stop — a quiet pass should be a cheap one.\n")
+                   "passed, then stop: a quiet pass should be a cheap one.\n")
     else:
         out.append(
             f"**This is every message that reached {THEM} since the last pass, "
             "not a filtered selection.** A keyword filter cannot know in "
             "advance which words "
             "matter and a message it scored zero was never seen by anything "
-            "that could tell. Most of what follows is genuinely nothing — "
-            "receipts, shipping, security alerts — and skimming past those "
+            "that could tell. Most of what follows is nothing "
+            "(receipts, shipping, security alerts) and skimming past those "
             "costs a line each. The `filter score` is a reading order, not a "
             "verdict: high first, `junk` last. Read all of it anyway, and "
             "notice the things that are not opportunities but still matter: "

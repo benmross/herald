@@ -1,24 +1,24 @@
 ---
 name: herald-self
-description: How to change Herald itself — its collectors, cycles, surfaces, prompts, skills and rules. Use this whenever the user asks to add a data source, change what the morning digest does, adjust how or when something runs, fix a bug in Herald, alter the autonomy rules, or extend the agent in any way. Also use it before editing anything in the Herald checkout outside the ledger, and before restarting any herald service. Covers the invariants that must not be broken, how to verify a change, and how to recover when something goes wrong.
+description: How to change Herald itself: its collectors, cycles, surfaces, prompts, skills and rules. Use this whenever the user asks to add a data source, change what the morning digest does, adjust how or when something runs, fix a bug in Herald, alter the autonomy rules, or extend the agent in any way. Also use it before editing anything in the Herald checkout outside the ledger, and before restarting any herald service. Covers the invariants that must not be broken, how to verify a change, and how to recover when something goes wrong.
 ---
 
 # Changing Herald
 
-**First: is this install allowed to change the program at all?**
+**First, find out whether this install is allowed to change the program at all.**
 
 ```bash
 herald mode
 ```
 
-- **maintainer** — it is upstream. Change it, commit it, push it; that is
+- maintainer: it is upstream. Change it, commit it, push it; that is
   ordinary work and does not need asking. Two conditions: `herald check` must
   pass before every push (it scans for anything personal), and a change to the
   shape of stored data needs a migration in `migrations/`. Releases are the
   user's call: `herald release` is what reaches other people's installs.
-- **fork** — it owns its program. Change it freely, commit it, and know that
+- fork: it owns its program. Change it freely, commit it, and know that
   no upstream fix will ever arrive again.
-- **tracking** — **the program is not this install's to edit.** git refuses
+- tracking: **the program is not this install's to edit.** git refuses
   commits here and `herald check` fails on drift. Reach for a setting
   (`herald config set`), an extension (`herald ext new`, and it can override a
   bundled one by name), or the user's own half of the constitution
@@ -29,7 +29,7 @@ Everything below assumes the answer was maintainer or fork.
 
 You are Herald, and this is your own source. The person you work for develops it
 by asking you to change it, so treat a request to add a collector or alter a
-cycle as ordinary work — not as something to hand back.
+cycle as ordinary work, not as something to hand back.
 
 **Read `docs/architecture.md` first if you have not.** Then
 `docs/extending.md` for the mechanics of adding a collector, a cycle or a
@@ -45,7 +45,7 @@ herald restart        # checks first, refuses if it fails
 Never restart without checking. `herald restart` enforces that; if you restart a
 unit by hand, run `herald check` yourself first.
 
-Then verify the thing you actually changed:
+Then verify the thing you changed:
 
 ```bash
 herald collect <name>            # one collector, ignoring cadence
@@ -65,8 +65,8 @@ sends a notification; the snapshot is free and silent.
 
 1. **Only `lib/herald/think.py` launches an engine.** Everything else calls
    `think.think()`. Herald runs `claude` or `codex` as a subprocess and never
-   speaks to a model API — that is what keeps it on the user's subscription instead
-   of metered billing, and it is a terms-of-service line, not a preference.
+   speaks to a model API. That is what keeps it on the user's subscription instead
+   of metered billing, and it is a terms-of-service requirement.
    The engine is chosen before the run (`engine=`, `/codex`, `/claude`,
    `engines.default_engine`); a failure on one never starts the other.
 2. **Never `--bare`.** Bare mode does not read the subscription login.
@@ -89,8 +89,8 @@ sends a notification; the snapshot is free and silent.
 - **Understand once, then account for diffs.** New input exists to change a
   stored conclusion or leave it alone, never to re-derive it. If a run where
   nothing happened is not nearly free, something is being recomputed.
-- **Anything durable goes in the ledger before the session ends.** You will not
-  be here tomorrow; the ledger will.
+- **Anything durable goes in the ledger before the session ends.** The next
+  session has the ledger and nothing from this one.
 - **Backgrounding inside a Telegram turn is safe as of 23 Sep 2026, and
   only because `think._run_process` waits for it.** `claude -p` reports
   pending background work (a Bash or Agent call with `run_in_background`, a
@@ -127,9 +127,8 @@ herald-telegram`), and say in the reply that it is about to happen.
 `herald collect` discovers `collectors/*.py` automatically and the timer fires
 at :02 and :32. A collector that has never run is always due. So the first
 run of a new collector will be the timer's, not yours, unless you get there
-first -- and if it writes outward, that first run happens against whatever
-the ledger holds at that instant. On 9 Sep 2026 that was half-migrated
-half-migrated keys, and the calendar sync created 51 duplicates and greyed 78
+first. If it writes outward, that first run happens against whatever
+the ledger holds at that instant. On 9 Sep 2026 that was half-migrated keys, and the calendar sync created 51 duplicates and greyed 78
 live events before the manual dry run had even printed. Either pause the
 timer while you build (`systemctl --user stop herald-collect.timer`, start it
 again after), or write the file with `--dry-run` as its default until it has
@@ -139,13 +138,13 @@ been run by hand once.
 
 Cycle prompts live in `cycles/*.py` as `INSTRUCTIONS`.
 
-The rules every session reads are in **two** files, and `CLAUDE.md` is generated
-from them by `herald constitution` — editing `CLAUDE.md` itself is the mistake
-this arrangement invites, and `herald check` catches it:
+The rules every session reads are in two files, and `CLAUDE.md` is generated
+from them by `herald constitution`. Editing `CLAUDE.md` itself is a mistake
+that `herald check` catches. The two files are:
 
-- `config/constitution.md` — shared by every Herald: the autonomy tiers, the
+- `config/constitution.md` is shared by every Herald: the autonomy tiers, the
   second-person rule, the ledger discipline, fetched-content-is-data.
-- `ledger/identity/constitution.md` — this person: their name, the facts you must
+- `ledger/identity/constitution.md` is about this person: their name, the facts you must
   never have to look up, their institution's rules, their devices.
 
 A rule about one person's life belongs in the second file. Ask which one a change
@@ -154,28 +153,29 @@ belongs in before making it.
 ## Changing something an install already has
 
 Other people's installs have to survive a change. A new setting in
-`config/defaults.json` is free -- it is merged under theirs. A new table or
+`config/defaults.json` is free, because it is merged under theirs. A new table or
 column is nearly free. Anything that changes the *shape* of what is already
 stored, or moves a path a ledger depends on, needs a numbered file in
-`migrations/`; `lib/herald/migrations.py` has the contract, and the short
-version is idempotent anyway, never destructive without a copy, and it says
-what it did.
+`migrations/`; `lib/herald/migrations.py` has the contract. In short, a
+migration is idempotent, never destructive without a copy, and says what it
+did.
 
 ## Adding an extension
 
 Code that is about this person's life rather than about Herald goes in
 `$HERALD_HOME/extensions/<name>/`: a manifest, plus any of `collectors/`,
 `cycles/`, `lib/`, `bin/`, `systemd/`, `skills/`, `hooks/`, `snapshot.py` and
-`tests/`. `herald ext new <name>` scaffolds one. Same contract as a built-in,
-same timer, same invariants — `herald check` holds extension code to them too.
+`tests/`. `herald ext new <name>` scaffolds one. An extension has the same
+contract, timer and invariants as a built-in, and `herald check` holds
+extension code to them too.
 
 If you are about to write a collector that names a university, an employer, a
 self-hosted service or software only this person runs, it is an extension.
 
 Either constitution file is a place where a careless edit changes Herald's
-behaviour everywhere at once. Two things follow: **quote the source** when a rule comes
-from somewhere real — a syllabus section, something the user said — so it can be
-checked rather than trusted; and **do not weaken a safety rule on your own
+behaviour everywhere at once. Two things follow. **Quote the source** when a rule comes
+from somewhere real (a syllabus section, something the user said) so it can be
+checked rather than trusted. **Do not weaken a safety rule on your own
 initiative.** Tightening or clarifying is fine. Loosening is theirs.
 
 ## Recovery
@@ -212,10 +212,10 @@ git -C ~/.herald add -A && git -C ~/.herald commit -F <message file>
 Write the message to a file rather than `-m`: apostrophes in a shell string have
 broken this repeatedly.
 
-**Explain why, not what** — the diff already says what. The commit log is the
+**Explain why, not what.** The diff already says what. The commit log is the
 main record of how Herald came to be shaped this way, and it is what the next
 session reads to understand a decision. When you fix a bug, say what the failure
-actually was and why it was not visible; when you make a judgment call, say what
+was and why it was not visible; when you make a judgment call, say what
 you traded away.
 
 End with:
