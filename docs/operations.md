@@ -122,6 +122,8 @@ those files is itself `self_protect`, so the session doing it needs your tap
 every five minutes. Run `herald check`; the usual fix is `herald ext sync`,
 which rewrites `.claude/settings.json` and `.codex/hooks.json`. Then find out
 what removed it.
+A safety rule you lifted with a tap, or set to `warn` or `off`, is not
+expected to block and does not raise this.
 
 **Root requests not arriving.** `herald root status`, then `journalctl -u
 herald-root -n 50` (system unit, not `--user`). After pulling an update that

@@ -262,12 +262,26 @@ def check_daemon(unit: str, state: dict, *, heartbeat: str | None = None,
 
 
 GUARD_PROBES = (
-    # (what it proves, event) -- each must come back blocked, exit 2
+    # (what it proves, event, the safety rule it rests on or None) -- each must
+    # come back blocked, exit 2, unless that rule is not blocking right now
     ("Google red tier", {"tool_name": "Bash", "tool_input": {
-        "command": "python3 -c \"s.users().messages().send(userId='me').execute()\""}}),
+        "command": "python3 -c \"s.users().messages().send(userId='me').execute()\""}},
+     None),
     ("safety rules", {"tool_name": "Bash", "tool_input": {
-        "command": "git reset --hard HEAD"}}),
+        "command": "git reset --hard HEAD"}}, "git_destructive"),
 )
+
+
+def _expected_exit(rule: str | None, home: str | None = None) -> int:
+    """2 when the probe should be blocked. A safety rule the user has lifted
+    with a tap (`herald safety allow`), or set to warn or off, is not expected
+    to block: on 5 Oct 2026 a ten-minute lift of git_destructive, approved for
+    a force push, was reported three minutes later as the guard not working.
+    `herald check` has always read the rule's mode the same way."""
+    if rule is None:
+        return 2
+    from herald import safety  # noqa: PLC0415
+    return 2 if safety.load(str(ROOT), home or str(config.HOME)).mode(rule) == "block" else 0
 
 
 def check_guard(state: dict) -> None:
@@ -290,13 +304,22 @@ def check_guard(state: dict) -> None:
         except OSError:
             problems.append(f"{path.relative_to(ROOT)} is missing")
     env = {**os.environ, "HERALD_GUARD_PROBE": "1"}
-    for what, event in GUARD_PROBES:
+    for what, event, rule in GUARD_PROBES:
         try:
-            r = subprocess.run(["python3", str(ROOT / "tools" / "guard.py")],
-                               input=json.dumps(event), capture_output=True,
-                               text=True, timeout=20, env=env)
-            if r.returncode != 2:
-                problems.append(f"the guard let a {what} probe through (exit {r.returncode})")
+            # Twice at most: a lift can run out between reading the rule's mode
+            # and the probe, and that is not a fault either.
+            for _ in range(2):
+                want = _expected_exit(rule)
+                r = subprocess.run(["python3", str(ROOT / "tools" / "guard.py")],
+                                   input=json.dumps(event), capture_output=True,
+                                   text=True, timeout=20, env=env)
+                if r.returncode == want:
+                    break
+            else:
+                problems.append(
+                    f"the guard let a {what} probe through (exit {r.returncode})"
+                    if want == 2 else
+                    f"the guard exited {r.returncode} on a {what} probe, not {want}")
         except (OSError, subprocess.SubprocessError) as exc:
             problems.append(f"the guard did not run: {exc}")
     key = "; ".join(problems)
