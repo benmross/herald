@@ -53,6 +53,25 @@ detect_os() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+on_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
+
+have_native() {
+  # WSL appends the Windows PATH, so a program installed on the Windows side
+  # is found by name and then does not run. Anything under /mnt is not ours.
+  local where; where="$(command -v "$1" 2>/dev/null)" || return 1
+  case "$where" in /mnt/*) return 1 ;; *) return 0 ;; esac
+}
+
+add_to_profile() {
+  # Put ~/.local/bin on the PATH for every new terminal window. Appended
+  # once, to the profile of the shell this person actually uses.
+  local line='export PATH="$HOME/.local/bin:$PATH"' rc
+  case "${SHELL:-}" in */zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
+  grep -qsF "$line" "$rc" && return 0
+  printf '\n# Added by the Herald installer, so `herald` and `claude` are found.\n%s\n' "$line" >> "$rc"
+  dim "Added ~/.local/bin to your PATH in $rc"
+}
+
 python_ok() {
   local py="$1"
   have "$py" || return 1
@@ -135,7 +154,7 @@ install_linux_deps() {
 }
 
 install_claude() {
-  have claude && return 0
+  have_native claude && return 0
   bold "Installing the Claude Code CLI"
   dim  "Herald runs it for you, on your own Claude subscription. There is"
   dim  "nothing extra to pay."
@@ -153,6 +172,13 @@ main() {
 
   local os; os="$(detect_os)"
   [ "$os" = other ] && die "This installer works on macOS and Linux. On Windows, install WSL first and run it there."
+
+  # Remembered before anything below adds to it. The check further down used
+  # to read the PATH after install_claude had exported ~/.local/bin into this
+  # script's own copy, so it always passed, said nothing, and the commands
+  # printed at the end were "command not found" in the window they were
+  # printed in.
+  local path_before=":$PATH:" need_path=""
 
   if [ "$os" = macos ]; then install_macos_deps; else install_linux_deps; fi
 
@@ -189,6 +215,12 @@ main() {
 
   cd "$DEST"
 
+  if on_wsl; then
+    case "$DEST" in /mnt/*)
+      die "$DEST is on a Windows drive. Herald has to live on the Linux disk: a Windows drive cannot keep its credentials private and corrupts its database. Run this again from your Linux home folder (type: cd ~)." ;;
+    esac
+  fi
+
   # A venv without pip is the leftover of a venv module that had no ensurepip
   # -- what the check above now catches first. Rebuilt rather than trusted,
   # because trusting it is how the second run failed on "./venv/bin/pip: No
@@ -206,17 +238,39 @@ main() {
   # `herald` on PATH, without needing a package manager or a sudo write.
   mkdir -p "$HOME/.local/bin"
   ln -sf "$DEST/bin/herald" "$HOME/.local/bin/herald"
-  case ":$PATH:" in
+  case "$path_before" in
     *":$HOME/.local/bin:"*) ;;
-    *) warn "So that typing \`herald\` works in every new terminal window, add this"
-       warn "line to the end of your shell profile (~/.zshrc or ~/.bashrc), then"
-       warn "open a new window:"
-       dim  "  export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+    *) add_to_profile
+       export PATH="$HOME/.local/bin:$PATH"
+       need_path=1 ;;
   esac
 
   echo
   bold "Installed."
   echo
+
+  if [ -n "$need_path" ]; then
+    warn "This terminal window was opened before \`herald\` existed, so it"
+    warn "cannot find it yet. Close this window and open a new one before"
+    warn "running the commands below. (Or paste this line first:"
+    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\" )"
+    echo
+  fi
+
+  # WSL without systemd runs Herald only when asked. Said here, before half
+  # an hour of setup, because the fix restarts WSL.
+  if on_wsl && ! systemctl --user is-system-running 2>/dev/null \
+       | grep -qE 'running|degraded|starting'; then
+    warn "WSL is running without systemd, so Herald could not run on a schedule."
+    warn "Fix it now, before setup. Add these two lines to /etc/wsl.conf:"
+    echo
+    echo "    [boot]"
+    echo "    systemd=true"
+    echo
+    warn "(sudo nano /etc/wsl.conf), then run \`wsl --shutdown\` in Windows"
+    warn "PowerShell and open this terminal again."
+    echo
+  fi
 
   # Signed in? Asked of the CLI, which is right on macOS too, where the login
   # lives in the Keychain and no credentials file exists. If not, that is the

@@ -24,6 +24,9 @@ from .engine import DONE, PARTIAL, TODO, Field, Outcome, Prompt, State, Step
 
 def status(state: State) -> tuple[str, str]:
     if not services.available():
+        if services.platform_name() == "systemd":
+            return DONE, ("nothing is scheduled: systemd is not running here "
+                          "(`herald setup --step preflight` says how to fix it)")
         return DONE, "this computer cannot run things on a schedule; run it by hand"
     running = [name for name, state_ in services.status()
                if state_ in ("active", "loaded")]
@@ -38,7 +41,14 @@ def prompt(state: State) -> Prompt:
     kind = services.platform_name()
     telegram = bool(config.secret("telegram.bot_token"))
     lines = []
-    if kind == "systemd":
+    why = services.unavailable_reason()
+    if why and kind == "systemd":
+        lines.append("**Nothing can be scheduled on this computer yet.** "
+                     + why + "\n\nYou can go on without it: everything works "
+                     "when you run `herald collect` and `herald cycle dawn` "
+                     "yourself, and re-running this step after the fix "
+                     "switches the schedule on.")
+    elif kind == "systemd":
         lines.append("Herald will set itself up to run in the background: "
                      "reading what you connected every 30 minutes, a digest at "
                      "06:30, a look for opportunities twice a day, and a check "
@@ -143,7 +153,11 @@ def apply(state: State, answers: dict) -> Outcome:
         warnings.append(f"{key} is switched on but cannot be read yet: "
                         f"{capabilities.missing(key)}")
 
-    return Outcome(ok=True, message="Running.", detail=detail, warnings=warnings)
+    scheduled = result["platform"] != "none"
+    return Outcome(ok=True,
+                   message="Running." if scheduled else
+                           "Read everything once. Nothing is scheduled yet.",
+                   detail=detail, warnings=warnings)
 
 
 STEP = Step(key="install", title="Start it running",

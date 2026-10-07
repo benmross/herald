@@ -103,8 +103,7 @@ def _systemd_state() -> tuple[bool, str, str]:
         return False, str(exc)[:80], "systemctl did not answer"
     text = (r.stdout + r.stderr).strip()
     if "not been booted with systemd" in text or "Failed to connect" in text:
-        wsl = pathlib.Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists() \
-            or "microsoft" in platform.release().lower()
+        wsl = on_wsl()
         fix = ("systemd is installed but switched off. "
                + ("On WSL: add these two lines to the file /etc/wsl.conf, "
                   "then run `wsl --shutdown` in Windows and open the terminal "
@@ -115,6 +114,44 @@ def _systemd_state() -> tuple[bool, str, str]:
     # "running" or "degraded" both mean the user manager is up; degraded only
     # says some unrelated unit failed.
     return True, "running", ""
+
+
+def on_wsl() -> bool:
+    return pathlib.Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists() \
+        or "microsoft" in platform.release().lower()
+
+
+def _wsl_checks(root: pathlib.Path) -> list[dict]:
+    """The two ways Windows leaks into a WSL install.
+
+    WSL puts the Windows PATH after the Linux one and mounts the Windows
+    disks under /mnt. So a `claude` installed on the Windows side is found by
+    name and then fails to run, and a checkout or a home folder under /mnt/c
+    sits on a filesystem where `chmod 600` does nothing and SQLite's locking
+    is unreliable.
+    """
+    from herald import config  # noqa: PLC0415
+    out = []
+    claude = shutil.which("claude") or ""
+    if claude.startswith("/mnt/"):
+        out.append({
+            "name": "Claude Code is the Linux one, not the Windows one",
+            "ok": False, "required": True, "detail": claude,
+            "fix": "curl -fsSL https://claude.ai/install.sh | bash\n      then "
+                   "open a new terminal window, so ~/.local/bin comes first.",
+        })
+    on_windows_disk = [str(p) for p in (root, config.HOME)
+                       if str(p.resolve()).startswith("/mnt/")]
+    if on_windows_disk:
+        out.append({
+            "name": "Herald lives on the Linux disk",
+            "ok": False, "required": True,
+            "detail": "on a Windows drive: " + ", ".join(on_windows_disk),
+            "fix": "move it under your Linux home folder (~), for example "
+                   "~/herald and ~/.herald. A Windows drive cannot keep the "
+                   "credentials file private and corrupts the database.",
+        })
+    return out
 
 
 def checks() -> list[dict]:
@@ -150,6 +187,9 @@ def checks() -> list[dict]:
         "detail": "installed" if claude else "not installed",
         "fix": "curl -fsSL https://claude.ai/install.sh | bash",
     })
+
+    if on_wsl():
+        out += _wsl_checks(root)
 
     auth = claude_auth() if claude else {}
     sub = auth.get("subscriptionType")

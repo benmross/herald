@@ -231,16 +231,39 @@ def install_launchd(labels: list[str] | None = None) -> list[str]:
 
 # --------------------------------------------------------------------------
 
+def unavailable_reason() -> str:
+    """Why nothing can be scheduled here, or "" if it can.
+
+    systemd being installed is not systemd running. WSL2 with it switched
+    off, and every container, have a `systemctl` that answers each call with
+    an error, or no `systemctl` at all. Until 7 October 2026 only preflight
+    knew the difference: `herald services install` died with a traceback
+    where systemctl was missing, and where it was present but off the last
+    wizard step reported six raw bus errors and then said "Running."
+    """
+    kind = platform_name()
+    if kind == "none":
+        return ("no supported scheduler on this platform; run `herald collect` "
+                "and `herald cycle dawn` by hand, or from cron.")
+    if kind == "launchd":
+        return "" if shutil.which("launchctl") else "launchctl is not on the PATH"
+    from .preflight import _systemd_state  # noqa: PLC0415
+    ok, detail, fix = _systemd_state()
+    if ok:
+        return ""
+    return f"systemd is not installed: {fix}" if detail == "not found" else fix
+
+
 def install(labels: list[str] | None = None, force: bool = False) -> dict:
     """Install (and reload) whatever this platform uses. Does not enable."""
     kind = platform_name()
+    if why := unavailable_reason():
+        return {"platform": "none", "written": [], "note": why}
     if kind == "systemd":
         return {"platform": kind, "written": install_systemd(force=force)}
     if kind == "launchd":
         return {"platform": kind, "written": install_launchd(labels)}
-    return {"platform": "none", "written": [],
-            "note": "no supported scheduler on this platform; run `herald "
-                    "collect` and `herald cycle dawn` by hand, or from cron."}
+    return {"platform": "none", "written": [], "note": unavailable_reason()}
 
 
 def wanted_units(telegram_configured: bool) -> list[str]:
@@ -256,6 +279,8 @@ def wanted_units(telegram_configured: bool) -> list[str]:
 def status() -> list[tuple[str, str]]:
     """(unit, state) for whatever is installed."""
     out = []
+    if not available():
+        return out
     if platform_name() == "systemd":
         for unit, _, _ in SYSTEMD_UNITS:
             r = subprocess.run(["systemctl", "--user", "is-active", unit],
@@ -278,6 +303,8 @@ def restart(unit: str) -> tuple[bool, str]:
     bare `systemctl` that fails on a Mac with "command not found".
     """
     kind = platform_name()
+    if why := unavailable_reason():
+        return False, why
     if kind == "systemd":
         r = subprocess.run(["systemctl", "--user", "restart", unit],
                            capture_output=True, text=True)
@@ -298,5 +325,5 @@ def restart(unit: str) -> tuple[bool, str]:
 
 
 def available() -> bool:
-    return platform_name() != "none" and bool(shutil.which(
-        "systemctl" if platform_name() == "systemd" else "launchctl"))
+    """Whether jobs can actually be scheduled here, not merely installed."""
+    return not unavailable_reason()

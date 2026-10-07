@@ -14,12 +14,9 @@ machine with 4 GB of RAM or more. A laptop is fine, but one that sleeps for more
 than about a day comes back logged out of Claude Code and stops doing anything
 model-driven until you sign in again, so something that stays on is worth it.
 [`hosting.md`](hosting.md) compares the free options, including what to use if
-you do not have a spare machine. Windows works through WSL2 only, with two
-things to know first: systemd has to be switched on inside WSL (put `[boot]`
-and `systemd=true` on two lines in `/etc/wsl.conf`, run `wsl --shutdown` from
-Windows, open the terminal again; preflight tells you if this is missing),
-and WSL only runs while Windows is awake and a WSL process is alive, so a
-laptop that sleeps overnight has no 06:30 digest until it wakes.
+you do not have a spare machine. Windows works through WSL2 only; the section
+[On Windows](#on-windows-wsl2) below has the four things to know before you
+start.
 
 **A Claude subscription**, and the Claude Code app or CLI signed in to it.
 Herald works by running Claude Code for you. There is no separate bill, no API
@@ -33,10 +30,38 @@ one.
 
 **A Google account.** Everything else is built on mail and calendar.
 
+## On Windows (WSL2)
+
+Herald runs inside WSL2, which is a Linux computer inside Windows. Install it
+from PowerShell with `wsl --install`, restart, and open **Ubuntu** from the
+Start menu. Everything in this guide is then typed into that Ubuntu window,
+never into PowerShell.
+
+- Stay on the Linux disk. Run the installer from your Linux home folder
+  (type `cd ~` first), never from somewhere under `/mnt/c`. A Windows drive
+  cannot keep the credentials file private and corrupts the database, so the
+  installer refuses it.
+- systemd has to be on. Recent Ubuntu installs have it on already. If the
+  installer says it is off, put `[boot]` and `systemd=true` on two lines in
+  `/etc/wsl.conf` (`sudo nano /etc/wsl.conf`), run `wsl --shutdown` in
+  PowerShell, and open Ubuntu again. Without it nothing runs on a schedule.
+- WSL stops when its last window closes. Windows shuts the Linux side
+  down about a minute after the last Ubuntu window is closed, and Herald with
+  it: no digest, no Telegram replies. Either leave an Ubuntu window open, or
+  have Windows keep it alive: in Task Scheduler, create a task that runs at
+  log on with the program `wsl.exe` and the arguments
+  `-d Ubuntu --exec sleep infinity`.
+- A sleeping laptop is a stopped Herald. WSL only runs while Windows is
+  awake, so a laptop asleep at 06:30 sends that digest when it wakes.
+
+The wizard's page and the Google sign-in both open in your normal Windows
+browser. No port forwarding is needed.
+
 ## Step 1: open a terminal
 
 On a Mac: press `⌘ Space`, type `Terminal`, press enter.
 On Linux: `Ctrl+Alt+T`, or find Terminal in your applications.
+On Windows: open **Ubuntu** from the Start menu (see above).
 
 A window appears with a blinking cursor. That is where the next line goes.
 
@@ -51,6 +76,9 @@ curl -fsSL https://raw.githubusercontent.com/benmross/herald/main/install.sh | b
 It will tell you what it is installing before it installs it, and ask before
 anything needs your password. If something is missing that it cannot install for
 you, it stops and prints the one command that fixes it.
+
+If it says this window cannot find `herald` yet, close the window and open a
+new one first.
 
 When it finishes it prints two options. Use the first:
 
