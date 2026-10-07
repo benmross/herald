@@ -53,7 +53,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, obligations, sessioninfo, study, tgtext, think  # noqa: E402
+from herald import activity, approvals, config, db, obligations, sessioninfo, study, tgsessions, tgtext, think  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -84,6 +84,10 @@ TOOL_BULLET = "\u2023"      # a single right-pointing bracket
 # The cost of this is honest and worth stating: resuming a long-idle topic
 # re-sends its accumulated context uncached, so an old thread costs more per
 # message than a new one. `/new` in any topic starts that topic over.
+#
+# `/new` moves the topic's pointer and leaves the old session where it was.
+# Replying to any message from an earlier conversation in the topic points the
+# topic back at that session and continues it: see `_reply_target`.
 #
 # General is the one exception. It is where digests land and where quick
 # questions go -- never a place the user is building a persistent conversation --
@@ -241,6 +245,7 @@ class Working:
         self._last_edit = 0.0
         self._settled = False
         self._sent_replies: list[str] = []   # interim replies already sent
+        self.message_ids: list[int] = []     # everything this turn has posted
 
     def __enter__(self):
         self._thread.start()
@@ -298,8 +303,9 @@ class Working:
             shown = self._msg_id is not None or bool(self._lines)
         if shown:
             self._publish(done=True)
-        send(self.chat_id, text, self.thread_id)
+        sent = send(self.chat_id, text, self.thread_id)
         with self._lock:
+            self.message_ids += sent
             self._sent_replies.append(text)
             self._lines, self._steps, self._latest = [], 0, ""
             self._msg_id, self._sent_text, self._dirty = None, "", False
@@ -369,6 +375,8 @@ class Working:
             if resp and resp.get("ok"):
                 self._msg_id = (resp.get("result") or {}).get("message_id")
                 self._sent_text = text
+                if self._msg_id:
+                    self.message_ids.append(self._msg_id)
             # Without this the first edit could fire immediately after the
             # send, since _last_edit was still 0.
             self._last_edit = time.monotonic()
@@ -427,7 +435,7 @@ class Working:
 
 
 def send(chat_id: int, text: str, thread_id: int | None = None,
-         *, markup: bool = True) -> None:
+         *, markup: bool = True) -> list[int]:
     """One reply, as HTML this process generated itself.
 
     Markdown mode was tried and removed, for a reason worth keeping in mind
@@ -444,19 +452,33 @@ def send(chat_id: int, text: str, thread_id: int | None = None,
 
     `markup=False` sends the text exactly as given, for the few places that
     have already built their own HTML.
+
+    Returns the ids of the messages Telegram accepted, which is how a reply
+    to one of them later finds its session.
     """
     extra = {"message_thread_id": thread_id} if thread_id else {}
-    if not markup:
-        api("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
-            link_preview_options={"is_disabled": True}, **extra)
-        return
-    for chunk in tgtext.chunks(text, MAX_REPLY):
-        resp = api("sendMessage", chat_id=chat_id, text=tgtext.to_html(chunk),
-                   parse_mode="HTML",
-                   link_preview_options={"is_disabled": True}, **extra)
+    ids: list[int] = []
+
+    def sent(resp) -> bool:
         if not (resp and resp.get("ok")):
-            api("sendMessage", chat_id=chat_id, text=chunk,
-                link_preview_options={"is_disabled": True}, **extra)
+            return False
+        mid = (resp.get("result") or {}).get("message_id") \
+            if isinstance(resp.get("result"), dict) else None
+        if mid:
+            ids.append(mid)
+        return True
+
+    if not markup:
+        sent(api("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
+                 link_preview_options={"is_disabled": True}, **extra))
+        return ids
+    for chunk in tgtext.chunks(text, MAX_REPLY):
+        if not sent(api("sendMessage", chat_id=chat_id, text=tgtext.to_html(chunk),
+                        parse_mode="HTML",
+                        link_preview_options={"is_disabled": True}, **extra)):
+            sent(api("sendMessage", chat_id=chat_id, text=chunk,
+                     link_preview_options={"is_disabled": True}, **extra))
+    return ids
 
 
 def download(file_id: str, suggested: str) -> pathlib.Path | None:
@@ -668,6 +690,49 @@ anything. Two or three sentences, like you're texting.
 """
 
 
+def _reply_target(msg: dict, key: str, ts: dict):
+    """The earlier session this message asks to resume, or None.
+
+    A reply to a message from a conversation this topic is no longer in is a
+    request to go back to it. A reply to a message of the current session is
+    an ordinary message, and so is a reply to anything never recorded. That
+    last case covers every plain message in a forum topic, which Telegram
+    delivers as a reply to the service message that created the topic.
+    """
+    ref = (msg.get("reply_to_message") or {}).get("message_id")
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not ref or not chat_id:
+        return None
+    try:
+        with db.session() as con:
+            row = tgsessions.lookup(con, chat_id, ref)
+    except Exception as exc:  # noqa: BLE001 -- the message still gets answered
+        print(f"reply lookup unavailable ({type(exc).__name__}: {exc})")
+        return None
+    if not row or row["topic"] != key or row["session_id"] == ts.get("session_id"):
+        return None
+    return row
+
+
+def _remember_turn(chat_id: int, key: str, session_id: str | None, ts: dict,
+                   message_ids, *, turns: int | None = None) -> None:
+    """File a turn's messages under its session. Never fatal: losing this
+    costs the ability to reply to those messages later, and nothing else."""
+    ids = [m for m in message_ids if m]
+    if not session_id or not ids:
+        return
+    try:
+        with db.session() as con:
+            if turns is not None:
+                tgsessions.save(
+                    con, session_id, key,
+                    engine=ts.get("engine") or DEFAULT_ENGINE, model=ts.get("model"),
+                    turns=turns, orientation=ts.get("orientation"))
+            tgsessions.record(con, chat_id, ids, session_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"turn not filed for reply-resume ({type(exc).__name__}: {exc})")
+
+
 def _topic_key(update: dict) -> str | None:
     """Same rule `handle()` uses to key a topic, exposed standalone so the
     dispatcher can pick a per-topic lock before `handle()` starts running."""
@@ -757,12 +822,19 @@ def handle(update: dict, state: dict) -> None:
         return
 
     if command_word(text) in ("/new", "/clear", "/reset"):
+        ended, turns = ts.get("session_id"), ts.get("turns", 0)
         ts["session_id"] = None
         ts["turns"] = 0
         ts["last_ts"] = time.time()
-        send(chat_id, "Fresh start in this topic. Anything worth keeping is in "
-                      "the ledger, so I have not forgotten you - just this "
-                      "conversation.", thread_id)
+        note = send(chat_id, "Fresh start in this topic. Anything worth keeping "
+                             "is in the ledger. Reply to any earlier message "
+                             "here to pick that conversation back up.", thread_id)
+        # The command and its answer are the last two messages of the
+        # conversation they ended, so a reply to either one resumes it. This
+        # also saves the session itself, which is what makes a conversation
+        # that began before messages were being recorded resumable at all.
+        _remember_turn(chat_id, key, ended, ts, [msg.get("message_id"), *note],
+                       turns=turns)
         print(f"[{key}] cleared on request")
         return
 
@@ -813,7 +885,27 @@ def handle(update: dict, state: dict) -> None:
         print(f"[{key}] effort set to {level}")
         return
 
-    reason = should_rotate(ts, is_general)
+    # A reply to a message from an earlier conversation in this topic goes
+    # back to that conversation. The topic now points at it, so the messages
+    # after this one continue it without having to be replies themselves, and
+    # the conversation being left stays resumable the same way.
+    notices: list[int] = []
+    target = _reply_target(msg, key, ts)
+    if target:
+        when = datetime.fromtimestamp(target["last_ts"] or 0, tz=EASTERN)
+        ts["session_id"] = target["session_id"]
+        ts["turns"] = target["turns"] or 0
+        ts["engine"] = target["engine"] or DEFAULT_ENGINE
+        ts["model"] = target["model"]
+        # Its own card, not the one the topic was last on: the system prompt
+        # has to match what that session was started with.
+        ts["orientation"] = target["orientation"]
+        notices = send(chat_id, f"*Back in the conversation from "
+                                f"{when.strftime('%-d %b, %-I:%M %p')}.*", thread_id)
+        print(f"[{key}] resumed {target['session_id'][:8]} by reply")
+
+    # Asked for by name, so neither idleness nor the turn ceiling rotates it.
+    reason = None if target else should_rotate(ts, is_general)
     resume = None if reason else ts.get("session_id")
 
     sent_at = sent_at_line(msg)
@@ -851,6 +943,7 @@ def handle(update: dict, state: dict) -> None:
     model = ts.get("model") or (DEFAULT_MODEL if engine == "claude" else None)
     effort = ts.get("effort")
     with activity.Turn("telegram", key):
+        posted: list[int] = [*(m.get("message_id") for m in parts), *notices]
         with Working(chat_id, thread_id) as working:
             result = think.think(
                 prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
@@ -877,6 +970,7 @@ def handle(update: dict, state: dict) -> None:
         if not result.ok and not result.cancelled and resume \
                 and "resume" in (result.error or "").lower():
             print(f"[{key}] resume failed, retrying fresh")
+            posted += working.message_ids
             with Working(chat_id, thread_id) as working:
                 result = think.think(
                     prompt, label=label, model=model, cwd=config.ROOT, resume=None,
@@ -888,13 +982,14 @@ def handle(update: dict, state: dict) -> None:
                     append_system_prompt=orientation_for(ts, True),
                     on_progress=working.on_progress, cancel_key=key)
             if result.ok:
-                send(chat_id, "*(lost this topic's earlier transcript, so I "
-                              "re-read the ledger instead)*", thread_id)
+                posted += send(chat_id, "*(lost this topic's earlier transcript, "
+                                        "so I re-read the ledger instead)*", thread_id)
                 reason = "resume failed"
 
+        posted += working.message_ids
         if result.ok:
             if not working.already_sent(result.text):
-                send(chat_id, result.text or "(no reply)", thread_id)
+                posted += send(chat_id, result.text or "(no reply)", thread_id)
             ts["session_id"] = result.session_id or ts.get("session_id")
             ts["turns"] = 1 if reason else ts.get("turns", 0) + 1
         elif result.cancelled:
@@ -917,6 +1012,10 @@ def handle(update: dict, state: dict) -> None:
                 # resume-failed retry above falls back to fresh on its own.
                 ts["session_id"] = result.session_id
         ts["last_ts"] = time.time()
+        # Filed under the session the turn ran in, whatever became of the
+        # topic's pointer: a cancelled or failed turn still left a transcript.
+        _remember_turn(chat_id, key, result.session_id or resume, ts, posted,
+                       turns=ts.get("turns", 0))
 
 
 _state_lock = threading.Lock()          # guards save_state() itself
@@ -1153,7 +1252,7 @@ def _handle_obligation_callback(update: dict) -> None:
                 message_id=message["message_id"], reply_markup={"inline_keyboard": []})
 
 
-def _try_steer(update: dict, key: str) -> bool:
+def _try_steer(update: dict, key: str, state: dict | None = None) -> bool:
     """If `key` already has a live turn still accepting input, fold this
     message into it instead of waiting for `_lock_for(key)` -- which a turn
     in progress holds for its entire duration, so a second message would
@@ -1177,6 +1276,8 @@ def _try_steer(update: dict, key: str) -> bool:
     text = (msg.get("text") or msg.get("caption") or "").strip()
     if not text or command_word(text):
         return False  # commands always take the normal path, never steer
+    if state is not None and _reply_target(msg, key, thread_state(state, key)):
+        return False  # meant for another conversation, not the one running
 
     if not think.steer(key, f"{sent_at_line(msg)}{text}"):
         return False
@@ -1345,7 +1446,7 @@ def _flush_split(key: str, state: dict) -> None:
     if len(updates) > 1:
         print(f"[{key}] rejoined {len(updates)} parts of a split message")
     try:
-        if not _try_steer(merged, key):
+        if not _try_steer(merged, key, state):
             with _lock_for(key):
                 handle(merged, state)
     except Exception as e:                                    # noqa: BLE001
@@ -1442,7 +1543,7 @@ def _dispatch(update: dict, state: dict) -> None:
             handed_off = True  # _flush_album handles it and releases the id
         elif _collect_split(update, state):
             handed_off = True  # _flush_split handles it and releases the ids
-        elif _try_steer(update, key):
+        elif _try_steer(update, key, state):
             pass  # folded into the turn already running; no new handle() call
         else:
             with _lock_for(key):

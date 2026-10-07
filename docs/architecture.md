@@ -278,6 +278,13 @@ topic, `herald think --engine` per call, and `engines.default_engine` for the
 cycles. A session id belongs to the engine that made it; switching engines in a
 topic starts a fresh session from the ledger, and says so.
 
+`/new` moves a topic's pointer to a fresh session and leaves the old transcript
+where it was. Every message of a turn (what the user sent, the progress block,
+each reply) is recorded against its session in `telegram_messages`, so a reply
+to any of them points the topic back at that session and continues it, on the
+engine and with the orientation card it started with. A message sent before
+7 October 2026 has no row and cannot be resumed this way.
+
 The cost accepted in exchange is that **there is still no engine redundancy.**
 A usage limit or an engine timeout during a cycle is a failure with a clear
 error and a notification, and the run never finishes on the other engine. A

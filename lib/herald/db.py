@@ -247,6 +247,25 @@ CREATE TABLE IF NOT EXISTS study_answers (
     PRIMARY KEY (set_id, idx)
 );
 
+-- Which session each Telegram message came from, so replying to an old
+-- message can resume the conversation it was part of. See tgsessions.py.
+CREATE TABLE IF NOT EXISTS telegram_sessions (
+    session_id  TEXT PRIMARY KEY,
+    topic       TEXT NOT NULL,          -- "<chat_id>:<thread_id>" or "<chat_id>:main"
+    engine      TEXT,                   -- a transcript resumes only on its own engine
+    model       TEXT,
+    turns       INTEGER NOT NULL DEFAULT 0,
+    last_ts     REAL,
+    orientation TEXT                    -- the card its system prompt was built with
+);
+
+CREATE TABLE IF NOT EXISTS telegram_messages (
+    chat_id     INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    session_id  TEXT NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+);
+
 CREATE TABLE IF NOT EXISTS approvals (
     id          INTEGER PRIMARY KEY,
     ts          TEXT NOT NULL,
