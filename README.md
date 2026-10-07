@@ -1,158 +1,106 @@
 # Herald
 
-A personal agent that runs on your own machine.
+A personal agent that runs on your own machine, on your own Claude
+subscription.
 
-It reads what you connect (your mail, your calendars, your tasks, whatever
-feeds you point it at), keeps a durable record of what it concludes, briefs you
-each morning on what matters that day, and interrupts you when
-something real is closing. You talk to it on Telegram, in a terminal, or through
-the Claude app, and it is the same agent every time, because its memory is a
-directory of files rather than a conversation.
+Herald reads your mail, calendars and tasks, keeps a written record of what it
+concludes, sends you a digest each morning, and messages you when a deadline
+is about to close. You talk to it on Telegram, in a terminal or in the Claude
+app. Its memory is a folder of files on your disk, so it is the same agent
+everywhere.
 
-It is also yours to shape by asking: "Read my library's events feed too", "stop
-telling me about X", "send the digest at seven". It writes the setting, the
-extension or the rule itself.
+| | |
+|---|---|
+| Reads | Gmail, Google Calendar, Tasks and Contacts, GitHub activity, any `.ics` feed, public job postings, and iMessage on a Mac. |
+| Remembers | Conclusions are written to a ledger and updated when something changes. A morning where nothing happened costs almost nothing. |
+| Ranks | Setup interviews you about what you are trying to do. Everything it surfaces is judged against your answers. |
+| Reaches you | A digest at 06:30, and a message the hour it finds something closing tomorrow. |
+| Asks first | It never sends, posts, applies, spends or deletes without your tap on the exact text. |
+| Changes itself | "Read this feed too", "send the digest at seven", "stop telling me about X". It writes the setting or the extension. |
+| No API bill | It runs the official `claude` CLI (or `codex`) as a subprocess. No API key, no per-token cost. |
 
-Setup asks once whether your copy should follow updates (the default: it
-offers each new release as a one-tap install, and treats the program as not its
-own to edit) or own its program (it can rewrite any part of itself, and
-receives no further updates). See [`docs/updates.md`](docs/updates.md).
+## Quick start
+
+You need a Claude subscription, a Google account, and a Mac or Linux machine
+with 4 GB of RAM. Windows works through WSL2 or Docker.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/benmross/herald/main/install.sh | bash
 herald setup --web
 ```
 
-[docs/install.md](docs/install.md) is the full walkthrough, written for
-someone who has not used a terminal before. Setup takes about half an hour, most
-of which is you writing about yourself.
+The first line installs Herald and the Claude Code CLI and asks before it uses
+sudo. The second prints a link to a setup page in your browser. Setup takes
+about half an hour, most of it you writing about yourself.
+[`docs/install.md`](docs/install.md) is the full walkthrough, written for
+someone who has not used a terminal.
 
-## What it costs, and what it needs
+### Docker
 
-Herald runs the `claude` CLI as a subprocess on your own Claude subscription.
-It never calls a model API and never uses an API key, so there is no per-token
-bill: a normal day is a handful of invocations. It needs a Mac or a Linux
-machine that is on when you want it working, a Google account, and about half an
-hour.
+```bash
+git clone https://github.com/benmross/herald herald-docker && cd herald-docker
+docker compose -f docker/compose.yml up -d --build
+docker exec -it herald claude auth login
+docker exec -it herald herald setup --web
+```
 
-"On when you want it working" takes some thought, because Herald is most useful
-always-on. An old laptop or a Raspberry Pi in a cupboard is the
-best answer for most people; Oracle Cloud's Always Free tier is the only cloud
-free tier with enough memory, and it has caveats.
-[`docs/hosting.md`](docs/hosting.md) compares them and covers setting up over
-SSH.
+The container has no sudo and sees one volume, so a command that goes wrong
+cannot touch the rest of your computer. On Windows, Docker Desktop keeps it
+running with no window open. [`docs/docker.md`](docs/docker.md) covers what
+the container does and does not protect.
 
-## The idea
+## Using it
 
-Most tools that read your calendar can tell you what is on Thursday. Almost none
-can tell you which of the four things on Thursday matters, because that depends
-entirely on what you are trying to do and what you are like. Herald asks you, at
-length, during setup, and then everything it ever surfaces is ranked against
-what you said.
+```bash
+herald status       # what it has read, what it cost, what is failing
+herald attach       # a conversation in this terminal
+herald brain url    # a link that opens the same agent in the Claude app
+herald doctor       # find what is broken and how to fix it
+herald update       # install the newest release
+herald setup        # re-run any setup step
+```
 
-It also remembers what it decided. A conclusion is written
-down and then maintained, never recomputed, so a morning where nothing happened
-costs almost nothing and a morning where something changed says what changed.
+In Telegram, each forum topic is its own conversation. `/new` starts a topic
+over, and replying to an older message picks that conversation back up.
+`/opus`, `/sonnet` and `/codex` choose the model for a topic, `/stop` cancels
+a running turn, and `/obligations` lists what you owe.
 
-## What it can read
+## What it does without asking
 
-Out of the box: Gmail, Google Calendar, Google Tasks, Contacts, your GitHub
-activity, any published `.ics` calendar feed, and public job and internship
-postings. On a Mac it can read your Messages database and tell you who is
-waiting on a reply.
+| | |
+|---|---|
+| Does it | Anything that stays on the machine: reading, searching, writing its own notes, drafting. |
+| Does it, then tells you | Reversible things only you see: adding an event to a calendar it manages, labelling mail, opening a task. Each one is in the next digest. |
+| Asks every time | Anything another person sees, anything that costs money, anything permanent. |
 
-Anything else is an extension: a directory with a manifest, discovered
-automatically, holding collectors, cycles, skills and background jobs of its
-own. Extensions are where anything specific to one person's life belongs: a
-university's event scraper, a self-hosted service, a data source only you have.
-See [docs/extensions.md](docs/extensions.md).
-
-## What it will and will not do without asking
-
-There are three tiers, and the middle one surprises people:
-
-- It acts freely when nothing leaves the machine: reading, searching,
-  writing to its own notes, drafting something for you to look at.
-- It acts and then tells you for reversible things only you see: putting an
-  event it found on a calendar it manages, labelling mail, opening a task. It
-  never does this silently: every one appears in the next digest.
-- It asks first, every time, for anything anyone else sees: sending a
-  message, posting, applying, registering, spending money, deleting anything
-  permanently.
-
-Being asked to *look* at something is never permission to *change* it. The rules
-are in [`config/constitution.md`](config/constitution.md), which every session
-reads, and enforcement of the amber tier is mechanical: writes to Google go
-through one module that logs each one, and the morning digest reads that log.
+The rules are in [`config/constitution.md`](config/constitution.md), which
+every session reads. [`SECURITY.md`](SECURITY.md) covers what is stored, what
+is sent where, and how text from mail and web pages is kept from acting as
+instructions.
 
 ## Where your data lives
 
-There are two directories, and they are kept separate deliberately:
+The checkout is the program, and it is the same for everyone. `~/.herald` is
+you: settings, credentials, and the ledger. Nothing in it is sent anywhere
+except to the services you connected and to the model CLI you already use.
+Delete the folder and Herald knows nothing about you.
 
-```
-the checkout        the program. Public, identical for everyone.
-$HERALD_HOME        you. Private, yours, ~/.herald by default:
-                    config, credentials, and the ledger: identity, state,
-                    journal, and the database of everything ingested.
-```
+## Where to run it
 
-Nothing personal is ever committed to the program's repository, and `herald
-check` fails if anything is. Your ledger is yours to version, back up, read, or
-delete; nothing is sent anywhere except to the services you connected and to
-Claude Code (or the Codex CLI, if you choose it), which is what you are already
-using.
+Herald is most useful on a machine that stays on. A laptop asleep at 06:30
+sends that digest late, and a machine off for more than about a day comes back
+signed out of Claude. An old laptop or a Raspberry Pi works well.
+[`docs/hosting.md`](docs/hosting.md) compares the free options.
 
-## Staying current
+## Docs
 
-```bash
-herald update --check     # what a new release would change
-herald update             # apply it: fast-forward, migrate, restart
-herald mode               # follow updates, or own the program
-```
-
-An install that follows updates checks daily and asks before installing
-anything. An update touches nothing in your own directory: your ledger, your
-settings and your extensions stay as they are.
-
-## Reading further
-
-- [`docs/install.md`](docs/install.md): setting it up
-- [`docs/docker.md`](docs/docker.md): running it in a container instead
-- [`docs/hosting.md`](docs/hosting.md): where to run it, free options compared
-- [`docs/architecture.md`](docs/architecture.md): what it is and why it is
-  shaped this way
-- [`docs/extending.md`](docs/extending.md): adding a collector, a cycle, a surface
-- [`docs/extensions.md`](docs/extensions.md): packaging your own
-- [`docs/updates.md`](docs/updates.md): following releases, forking, releasing
-- [`docs/operations.md`](docs/operations.md): running it, and what to do when
-  something breaks
-- [`SECURITY.md`](SECURITY.md): what it stores, what it never sends, and how
-  the prompt-injection surface is handled
-
-## The rule that shapes everything
-
-Herald runs the official `claude` CLI as a subprocess, or the official `codex`
-CLI when asked to. It never calls a model HTTP API. That is what keeps it billed
-to a subscription rather than API credit, and `lib/herald/think.py` is the only
-module allowed to launch an engine. The engine is chosen before a run (`/codex`
-and `/claude` in a chat, `--engine` on the CLI, `engines.default_engine` in the
-config); a run never falls back from one to the other.
-
-## Layout
-
-```
-bin/herald            the one CLI
-bin/herald-brain      the persistent session server
-bin/herald-telegram   the Telegram bridge
-lib/herald/           config, db, notify, think, collector, gwrite, calsync
-collectors/           one module per source. Pure Python, no model calls.
-cycles/               snapshot → one session → apply
-setup/                the wizard: one engine, a terminal and a browser frontend
-extensions/           optional extras Herald ships, off by default
-skills/               what a session loads: the ledger, itself, Google
-config/constitution.md  the rules every session reads
-systemd/              unit templates
-docs/                 this
-```
+- [`docs/install.md`](docs/install.md): installing, step by step
+- [`docs/docker.md`](docs/docker.md): running it in a container
+- [`docs/hosting.md`](docs/hosting.md): where to run it
+- [`docs/updates.md`](docs/updates.md): following releases, or owning your copy
+- [`docs/extensions.md`](docs/extensions.md): adding your own data sources
+- [`docs/extending.md`](docs/extending.md): collectors, cycles and surfaces
+- [`docs/architecture.md`](docs/architecture.md): how it is built, and why
+- [`docs/operations.md`](docs/operations.md): logs, restarts, and what to do when something breaks
 
 MIT licensed.
