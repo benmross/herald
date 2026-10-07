@@ -278,6 +278,12 @@ topic, `herald think --engine` per call, and `engines.default_engine` for the
 cycles. A session id belongs to the engine that made it; switching engines in a
 topic starts a fresh session from the ledger, and says so.
 
+Where there is no systemd and no launchd, which is the Docker image
+(`HERALD_CONTAINER=1`), `bin/herald-supervisor` is the scheduler. It runs the
+same job table launchd does, so there is one list of jobs behind all three.
+`setup/services.py` is the only place that knows which scheduler a machine
+has.
+
 `/new` moves a topic's pointer to a fresh session and leaves the old transcript
 where it was. Every message of a turn (what the user sent, the progress block,
 each reply) is recorded against its session in `telegram_messages`, so a reply

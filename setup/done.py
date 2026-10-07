@@ -71,8 +71,10 @@ def prompt(state: State) -> Prompt:
         "",
     ]
     if jobs:
-        stop = ("systemctl --user stop 'herald-*'" if services.platform_name() == "systemd"
-                else "launchctl unload ~/Library/LaunchAgents/com.herald.*.plist")
+        stop = {"systemd": "systemctl --user stop 'herald-*'",
+                "container": "docker stop herald"}.get(
+                    services.platform_name(),
+                    "launchctl unload ~/Library/LaunchAgents/com.herald.*.plist")
         lines.append(f"- `{stop}` stops everything straight away.")
     lines.append("- Deleting the folder " + str(config.HOME) + " deletes everything "
                  "it knows about you.")

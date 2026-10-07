@@ -859,7 +859,9 @@ def cmd_services(args) -> int:
     if args.action == "status":
         rows = services.status()
         if not rows:
-            print(_c(f"  no scheduler support on this platform", DIM))
+            print(_c("  " + (services.unavailable_reason() or
+                             "nothing is switched on yet: `herald services enable`"),
+                     DIM))
             return 0
         for unit, state in rows:
             colour = OK if state in ("active", "loaded") else DIM

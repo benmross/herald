@@ -52,6 +52,34 @@ def over_ssh() -> bool:
     import os  # noqa: PLC0415
     return any(os.environ.get(k) for k in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"))
 
+
+def in_container() -> bool:
+    """Whether this is the Docker image, which sets HERALD_CONTAINER=1.
+
+    Three things follow from it and nothing else does: jobs are run by
+    bin/herald-supervisor, since a container has no systemd; the setup page
+    and the Google sign-in listen on every interface *inside* the container,
+    because a published port cannot reach a listener on the container's own
+    127.0.0.1; and the WSL checks stand down, because Docker Desktop on
+    Windows runs on a WSL kernel and would otherwise look like WSL.
+    """
+    import os  # noqa: PLC0415
+    return os.environ.get("HERALD_CONTAINER") == "1"
+
+
+def listen_host() -> str:
+    """The address a setup listener binds.
+
+    127.0.0.1, always, on a real machine: these pages can read the Google
+    token and write the constitution. In the container it is 0.0.0.0, and
+    what keeps the page off the network is docker/compose.yml publishing both
+    ports to the host's 127.0.0.1 only. Someone who rewrites those port lines
+    without the address has put the wizard on their network; the per-request
+    token is then the only thing in front of it.
+    """
+    return "0.0.0.0" if in_container() else "127.0.0.1"
+
+
 DONE, TODO, BLOCKED, PARTIAL = "done", "todo", "blocked", "partial"
 
 

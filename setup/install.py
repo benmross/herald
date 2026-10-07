@@ -60,6 +60,13 @@ def prompt(state: State) -> Prompt:
                          f"will not ask for it. After this step finishes, run "
                          f"this in a terminal window:\n\n    {how}\n\n"
                          f"Without it, everything stops when you log out.")
+    elif kind == "container":
+        lines.append("The container will start running Herald's jobs: reading "
+                     "what you connected every 30 minutes, a digest at 06:30 in "
+                     "your timezone, and a look for opportunities twice a day"
+                     + (", plus the Telegram connection." if telegram else ".")
+                     + "\n\nThey run for as long as the container does. Docker "
+                     "starts it again after a restart of the computer.")
     elif kind == "launchd":
         lines.append("Herald will set itself up to run in the background: "
                      "reading what you connected every 30 minutes, a digest at "

@@ -649,7 +649,7 @@ def main() -> int:
     print("\n\033[1mexecutables\033[0m")
     import os
     for b in ("bin/herald", "bin/herald-brain", "bin/herald-telegram",
-              "tools/install-units.sh"):
+              "bin/herald-supervisor", "tools/install-units.sh"):
         p = ROOT / b
         c.check(b, p.exists() and os.access(p, os.X_OK), "not executable")
 
@@ -660,7 +660,11 @@ def main() -> int:
     # rather than the raw one.
     sys.path.insert(0, str(ROOT))
     from setup import services  # noqa: PLC0415
-    for p in services.unit_sources():
+    in_container = services.platform_name() == "container"
+    if in_container:
+        print("  \033[2ma container: bin/herald-supervisor runs the jobs, and "
+              "no unit is installed\033[0m")
+    for p in ([] if in_container else services.unit_sources()):
         live = dest / p.name
         rendered = services.render(p.read_text())
         if not live.exists():

@@ -1,0 +1,6 @@
+# The image holds no part of the program: the container clones a release into
+# its volume on first start, so that `herald update` works as it does anywhere.
+# The build needs two files and nothing else, least of all a ledger.
+*
+!install.sh
+!docker/entrypoint.sh

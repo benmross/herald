@@ -117,6 +117,9 @@ def _systemd_state() -> tuple[bool, str, str]:
 
 
 def on_wsl() -> bool:
+    from .engine import in_container  # noqa: PLC0415
+    if in_container():
+        return False   # Docker Desktop on Windows runs on a WSL kernel
     return pathlib.Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists() \
         or "microsoft" in platform.release().lower()
 
@@ -264,7 +267,11 @@ def checks() -> list[dict]:
     })
 
     system = platform.system()
-    if system == "Linux":
+    from .engine import in_container  # noqa: PLC0415
+    if in_container():
+        out.append({"name": "background scheduling", "ok": True,
+                    "required": False, "detail": "the container runs it", "fix": ""})
+    elif system == "Linux":
         ok, detail, fix = _systemd_state()
         out.append({"name": "background scheduling (systemd)", "ok": ok,
                     "required": False, "detail": detail, "fix": fix})

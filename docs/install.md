@@ -57,6 +57,9 @@ never into PowerShell.
 The wizard's page and the Google sign-in both open in your normal Windows
 browser. No port forwarding is needed.
 
+If you would rather not manage WSL at all, [`docker.md`](docker.md) runs
+Herald in a container that Docker Desktop keeps alive with no window open.
+
 ## Step 1: open a terminal
 
 On a Mac: press `⌘ Space`, type `Terminal`, press enter.

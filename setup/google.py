@@ -127,7 +127,11 @@ def main():
         "then open the URL below in that computer's browser.\\n"
     )
     flow = InstalledAppFlow.from_client_secrets_file(str(CREDENTIALS_FILE), SCOPES)
-    creds = flow.run_local_server(host="127.0.0.1", port=port, open_browser=False,
+    # In Herald's Docker image the listener has to be reachable through the
+    # published port; the redirect still goes to 127.0.0.1 on the host.
+    bind = "0.0.0.0" if os.environ.get("HERALD_CONTAINER") == "1" else None
+    creds = flow.run_local_server(host="127.0.0.1", bind_addr=bind, port=port,
+                                  open_browser=False,
                                   authorization_prompt_message="Open this URL:\\n{{url}}")
     TOKEN_FILE.write_text(creds.to_json())
     TOKEN_FILE.chmod(0o600)
@@ -246,7 +250,8 @@ def authorize(port: int = DEFAULT_PORT, on_url=None, timeout: int = 900) -> str:
     auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent",
                                          include_granted_scopes="true")
     _Catcher.code = _Catcher.error = None
-    server = HTTPServer(("127.0.0.1", port), _Catcher)
+    from .engine import listen_host  # noqa: PLC0415
+    server = HTTPServer((listen_host(), port), _Catcher)
     server.timeout = timeout
     if on_url:
         on_url(auth_url)

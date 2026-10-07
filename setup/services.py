@@ -39,6 +39,9 @@ LABEL_PREFIX = "com.herald"
 
 
 def platform_name() -> str:
+    from .engine import in_container  # noqa: PLC0415
+    if in_container():
+        return "container"
     return {"Linux": "systemd", "Darwin": "launchd"}.get(platform.system(), "none")
 
 
@@ -230,6 +233,40 @@ def install_launchd(labels: list[str] | None = None) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# A container: bin/herald-supervisor is the scheduler
+
+def supervisor_marker() -> pathlib.Path:
+    """Exists once the jobs have been switched on. The supervisor idles
+    until then, the way a unit does nothing until it is enabled."""
+    return config.HOME / "supervisor.enabled"
+
+
+def supervisor_state_path() -> pathlib.Path:
+    return config.LOGS / "supervisor.json"
+
+
+def container_jobs() -> dict[str, dict]:
+    """What the supervisor runs: the launchd table, which is already a list
+    of commands with an interval, times of day, or keep-alive. The Telegram
+    bridge is in it only once there is a bot to connect to."""
+    jobs = launchd_jobs()
+    if not config.secret("telegram.bot_token"):
+        jobs.pop(f"{LABEL_PREFIX}.telegram", None)
+    return jobs
+
+
+def supervisor_state() -> dict:
+    """What the supervisor last wrote, or {} if none is running."""
+    import json  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    try:
+        state = json.loads(supervisor_state_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    return state if time.time() - state.get("ts", 0) < 120 else {}
+
+
+# --------------------------------------------------------------------------
 
 def unavailable_reason() -> str:
     """Why nothing can be scheduled here, or "" if it can.
@@ -245,6 +282,11 @@ def unavailable_reason() -> str:
     if kind == "none":
         return ("no supported scheduler on this platform; run `herald collect` "
                 "and `herald cycle dawn` by hand, or from cron.")
+    if kind == "container":
+        return "" if supervisor_state() else (
+            "the container's supervisor is not running. It is the image's "
+            "entrypoint, so this means the container was started with a "
+            "different command; `docker compose up -d` starts it properly.")
     if kind == "launchd":
         return "" if shutil.which("launchctl") else "launchctl is not on the PATH"
     from .preflight import _systemd_state  # noqa: PLC0415
@@ -259,6 +301,13 @@ def install(labels: list[str] | None = None, force: bool = False) -> dict:
     kind = platform_name()
     if why := unavailable_reason():
         return {"platform": "none", "written": [], "note": why}
+    if kind == "container":
+        # Nothing to write: the supervisor reads the job table itself. The
+        # marker is what "enabled" means here.
+        marker = supervisor_marker()
+        new = not marker.exists()
+        marker.touch()
+        return {"platform": kind, "written": ["the supervisor's schedule"] if new else []}
     if kind == "systemd":
         return {"platform": kind, "written": install_systemd(force=force)}
     if kind == "launchd":
@@ -270,7 +319,7 @@ def wanted_units(telegram_configured: bool) -> list[str]:
     if platform_name() == "systemd":
         return [u for u, _, default in SYSTEMD_UNITS
                 if default or (default is None and telegram_configured)]
-    if platform_name() == "launchd":
+    if platform_name() in ("launchd", "container"):
         return [label for label in launchd_jobs()
                 if telegram_configured or not label.endswith(".telegram")]
     return []
@@ -291,6 +340,10 @@ def status() -> list[tuple[str, str]]:
                                  text=True).stdout
         for label in launchd_jobs():
             out.append((label, "loaded" if label in listing else "not loaded"))
+    elif platform_name() == "container":
+        # "active" is running now; "loaded" is scheduled and between runs.
+        for label, row in supervisor_state().get("jobs", {}).items():
+            out.append((label, row.get("state") or "unknown"))
     return out
 
 
@@ -309,6 +362,23 @@ def restart(unit: str) -> tuple[bool, str]:
         r = subprocess.run(["systemctl", "--user", "restart", unit],
                            capture_output=True, text=True)
         return r.returncode == 0, (r.stderr or "").strip()[:200]
+    if kind == "container":
+        label = f"{LABEL_PREFIX}." + unit.removeprefix("herald-").removesuffix(".service")
+        if label == f"{LABEL_PREFIX}.brain":
+            r = subprocess.run([str(config.ROOT / "bin" / "herald-brain"), "restart"],
+                               capture_output=True, text=True)
+            return r.returncode == 0, (r.stderr or "").strip()[:200]
+        row = supervisor_state().get("jobs", {}).get(label)
+        if row is None:
+            return False, f"the supervisor is not running {label}"
+        if row.get("pid"):
+            # A kept-alive job is started again by the supervisor; a
+            # scheduled one that happens to be mid-run is simply stopped.
+            try:
+                os.kill(row["pid"], 15)
+            except OSError as exc:
+                return False, str(exc)
+        return True, ""
     if kind == "launchd":
         label = f"{LABEL_PREFIX}." + unit.removeprefix("herald-").removesuffix(".service")
         if label == f"{LABEL_PREFIX}.brain":

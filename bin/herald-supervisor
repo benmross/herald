@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Run Herald's background jobs where there is no systemd and no launchd.
+
+A container has neither. This process is the container's entrypoint and does
+what the nine systemd units do on a Linux machine: keeps the Telegram bridge
+and the brain alive, runs the collectors every thirty minutes, and fires the
+cycles at their times of day. The job table is `services.container_jobs()`,
+which is the launchd table, so the three schedulers cannot drift apart.
+
+Two things it does differently from the units, both on purpose.
+
+**Times of day are in the configured timezone.** A container's clock is UTC
+unless somebody sets it, and a 06:30 digest that arrives at 02:30 is the
+first thing a new user would see.
+
+**It waits to be switched on.** Nothing runs until the "Start it running"
+step of setup (or `herald services enable`) has created the marker file, the
+same way no unit runs before it is enabled. Without that the bridge and the
+brain would spend the half hour of setup failing against a Herald that has no
+config and no login.
+
+There is no watchdog here. A job that exits is restarted; one that is alive
+and wedged is not noticed, which the systemd watchdog does notice.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lib"))
+sys.path.insert(0, str(ROOT))
+
+from herald import config  # noqa: E402
+from setup import services  # noqa: E402
+
+TICK = 5                # seconds between looks at the job table
+RESTART_BACKOFF = 15    # least time between two starts of a kept-alive job
+STALE_AFTER = 120       # a state file older than this means no supervisor
+
+
+def due(job: dict, now: dt.datetime, last_start: float | None,
+        fired: set[str], clock: float) -> bool:
+    """Whether a job that is not running should be started now.
+
+    `now` is wall-clock time in the user's timezone, for the times of day.
+    `clock` is monotonic-ish seconds, for intervals and backoff. `fired` holds
+    the calendar minutes already acted on, so a five-second tick does not run
+    the 06:30 digest twelve times.
+    """
+    if job.get("KeepAlive"):
+        return last_start is None or clock - last_start >= RESTART_BACKOFF
+    if interval := job.get("StartInterval"):
+        return last_start is None or clock - last_start >= interval
+    for at in job.get("StartCalendarInterval") or []:
+        if (now.hour, now.minute) == (at.get("Hour"), at.get("Minute", 0)):
+            key = f"{job['Label']}@{now:%Y-%m-%d %H:%M}"
+            if key not in fired:
+                fired.add(key)
+                return True
+    return False
+
+
+class Supervisor:
+    def __init__(self):
+        self.procs: dict[str, subprocess.Popen] = {}
+        self.last_start: dict[str, float] = {}
+        self.last_exit: dict[str, int] = {}
+        self.fired: set[str] = set()
+        self.stopping = False
+        self.waiting_said = False
+
+    def log(self, text: str) -> None:
+        print(f"{dt.datetime.now():%Y-%m-%d %H:%M:%S} {text}", flush=True)
+
+    def start(self, label: str, job: dict) -> None:
+        env = dict(os.environ)
+        # The table's PATH is a Mac's. The container's own is already right.
+        env.update({k: v for k, v in job.get("EnvironmentVariables", {}).items()
+                    if k != "PATH"})
+        config.LOGS.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(job["StandardOutPath"], "ab") as out:
+                self.procs[label] = subprocess.Popen(
+                    job["ProgramArguments"], cwd=job["WorkingDirectory"], env=env,
+                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+        except OSError as exc:
+            self.log(f"could not start {label}: {exc}")
+            self.last_exit[label] = 127
+        else:
+            self.log(f"started {label} (pid {self.procs[label].pid})")
+        self.last_start[label] = time.time()
+
+    def reap(self) -> None:
+        for label, proc in list(self.procs.items()):
+            code = proc.poll()
+            if code is None:
+                continue
+            del self.procs[label]
+            self.last_exit[label] = code
+            if code != 0:
+                self.log(f"{label} exited with {code}; see {config.LOGS}/{label}.log")
+
+    def write_state(self, jobs: dict, enabled: bool) -> None:
+        rows = {}
+        for label in jobs:
+            proc = self.procs.get(label)
+            rows[label] = {
+                "state": "active" if proc else "loaded",
+                "pid": proc.pid if proc else None,
+                "last_start": self.last_start.get(label),
+                "last_exit": self.last_exit.get(label),
+            }
+        state = {"pid": os.getpid(), "ts": time.time(), "enabled": enabled,
+                 "jobs": rows if enabled else {}}
+        path = services.supervisor_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state))
+        tmp.replace(path)
+
+    def tick(self) -> None:
+        self.reap()
+        enabled = services.supervisor_marker().exists()
+        if not enabled:
+            if not self.waiting_said:
+                self.log("waiting: nothing is scheduled until setup's last step "
+                         "has run (`herald setup --web`)")
+                self.waiting_said = True
+            self.write_state({}, False)
+            return
+        config.reload()   # the Telegram token arrives while this is running
+        jobs = services.container_jobs()
+        now = dt.datetime.now(config.tz())
+        clock = time.time()
+        for label, job in jobs.items():
+            if label in self.procs:
+                continue
+            if due(job, now, self.last_start.get(label), self.fired, clock):
+                self.start(label, job)
+        # A job dropped from the table (Telegram unconfigured) is stopped.
+        for label in [l for l in self.procs if l not in jobs]:
+            self.procs[label].terminate()
+        if len(self.fired) > 200:
+            self.fired = set(sorted(self.fired)[-50:])
+        self.write_state(jobs, True)
+
+    def stop(self, *_) -> None:
+        self.stopping = True
+
+    def run(self) -> int:
+        signal.signal(signal.SIGTERM, self.stop)
+        signal.signal(signal.SIGINT, self.stop)
+        self.log(f"herald-supervisor up ({ROOT})")
+        while not self.stopping:
+            try:
+                self.tick()
+            except Exception as exc:  # noqa: BLE001 -- pid 1 must not die
+                self.log(f"tick failed ({type(exc).__name__}: {exc})")
+            time.sleep(TICK)
+        self.log("stopping")
+        for proc in self.procs.values():
+            proc.terminate()
+        deadline = time.time() + 20
+        for proc in self.procs.values():
+            try:
+                proc.wait(max(0.1, deadline - time.time()))
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        return 0
+
+
+def healthy() -> int:
+    """For the image's HEALTHCHECK: is a supervisor ticking?"""
+    try:
+        state = json.loads(services.supervisor_state_path().read_text())
+    except (OSError, ValueError):
+        return 1
+    return 0 if time.time() - state.get("ts", 0) < STALE_AFTER else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(healthy() if "--healthy" in sys.argv else Supervisor().run())

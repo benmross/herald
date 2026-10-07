@@ -53,7 +53,12 @@ detect_os() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
-on_wsl() { grep -qi microsoft /proc/version 2>/dev/null; }
+on_wsl() {
+  # Docker Desktop on Windows runs its containers on a WSL kernel, so the
+  # image says what it is rather than being mistaken for WSL.
+  [ "${HERALD_CONTAINER:-}" = 1 ] && return 1
+  grep -qi microsoft /proc/version 2>/dev/null
+}
 
 have_native() {
   # WSL appends the Windows PATH, so a program installed on the Windows side
@@ -206,7 +211,9 @@ main() {
     # Start at the newest release, not at whatever main is this minute. main
     # is where the maintainer works; a tag is where a change is meant for
     # other people, and `herald update` moves between tags from here.
-    latest="$(git -C "$DEST" tag --list 'v[0-9]*' | sort -V | tail -1)"
+    # HERALD_REF names something else to start at, for testing a change
+    # before it is released.
+    latest="${HERALD_REF:-$(git -C "$DEST" tag --list 'v[0-9]*' | sort -V | tail -1)}"
     if [ -n "$latest" ]; then
       git -C "$DEST" checkout --quiet -B main "$latest"
       dim "At release $latest"
@@ -271,6 +278,10 @@ main() {
     warn "PowerShell and open this terminal again."
     echo
   fi
+
+  # In the Docker image the entrypoint says what comes next, because every
+  # command there is typed on the host with `docker exec` in front of it.
+  [ "${HERALD_CONTAINER:-}" = 1 ] && exit 0
 
   # Signed in? Asked of the CLI, which is right on macOS too, where the login
   # lives in the Keychain and no credentials file exists. If not, that is the

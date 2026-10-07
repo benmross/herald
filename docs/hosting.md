@@ -15,7 +15,7 @@ costs you in ways other than money.
 | **CPU** | Anything. It is idle almost all the time and bursts for a couple of minutes a day. |
 | **Disk** | A few hundred MB to start. Mail metadata and message history grow slowly; the ledger here is ~80 MB after a fortnight of heavy use. |
 | **Architecture** | x64 or ARM64 both work: Claude Code ships native binaries for both, and no longer needs Node at runtime. |
-| **OS** | Ubuntu 20.04+, Debian 10+, Alpine 3.19+, or macOS 13+. Windows only through WSL2. |
+| **OS** | Ubuntu 20.04+, Debian 10+, Alpine 3.19+, or macOS 13+. Windows through WSL2, or through Docker ([`docker.md`](docker.md)). |
 | **Network** | Outbound HTTPS. **No inbound ports**, ever: Telegram is long-polled, and the setup wizard binds to localhost. |
 | **Uptime** | See the login warning below. This is the constraint people do not expect. |
 

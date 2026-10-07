@@ -1,0 +1,38 @@
+# Herald in Docker. docs/docker.md is the guide.
+#
+#   docker compose -f docker/compose.yml up -d --build
+#
+services:
+  herald:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: herald
+    container_name: herald
+    # Back after a reboot, and after Docker Desktop starts at login.
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    # Sessions run shell commands. These three lines are what a container adds
+    # to Herald's own guard: no way to gain privileges, none to start with,
+    # and no view of the host's files beyond the one volume below.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - herald-home:/home/herald
+    # The setup page and the Google sign-in redirect. Published to this
+    # computer only. Keep the 127.0.0.1: both pages can read your Google
+    # token, and without it they are on your network.
+    ports:
+      - "127.0.0.1:8799:8799"
+      - "127.0.0.1:8765:8765"
+    environment:
+      # Leave unset to start at the newest release.
+      HERALD_REPO: ${HERALD_REPO:-https://github.com/benmross/herald.git}
+      HERALD_REF: ${HERALD_REF:-}
+
+volumes:
+  # Everything: the program, its logins, and what Herald knows about you.
+  herald-home:

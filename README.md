@@ -117,6 +117,7 @@ settings and your extensions stay as they are.
 ## Reading further
 
 - [`docs/install.md`](docs/install.md): setting it up
+- [`docs/docker.md`](docs/docker.md): running it in a container instead
 - [`docs/hosting.md`](docs/hosting.md): where to run it, free options compared
 - [`docs/architecture.md`](docs/architecture.md): what it is and why it is
   shaped this way

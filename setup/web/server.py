@@ -12,7 +12,9 @@ dependencies is a joke at the user's expense.
 
 Three things about it are load-bearing rather than incidental:
 
-**It binds to 127.0.0.1 only.** This page can read the machine's Google
+**It binds to 127.0.0.1 only**, with one exception: inside the Docker image
+it binds every interface of the container, and compose publishes the port to
+the host's 127.0.0.1 (see `engine.listen_host`). This page can read the machine's Google
 credentials and write its config; it has no business being reachable from the
 network. Someone setting Herald up on a server gets an SSH port-forward
 instruction rather than a bind address.
@@ -203,7 +205,7 @@ def _forward_command(port: int) -> str:
 def serve(port: int = 8799) -> int:
     config.ensure_dirs()
     try:
-        httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        httpd = ThreadingHTTPServer((engine.listen_host(), port), Handler)
     except OSError as exc:
         print(f"cannot listen on 127.0.0.1:{port}: {exc}", file=sys.stderr)
         print("something else is using it -- try --port 8800", file=sys.stderr)
