@@ -2,6 +2,12 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.3.2 — 7 October 2026
+
+- The README leads with a quick start and says each thing once
+- Herald runs in a Docker container, with a supervisor in place of systemd
+- A fresh install ends on commands that work, and says so when nothing can be scheduled
+
 ## v0.3.1 — 7 October 2026
 
 - A reply to a message from an earlier conversation resumes that conversation
