@@ -2,6 +2,16 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.3.1 — 7 October 2026
+
+- A reply to a message from an earlier conversation resumes that conversation
+- The watchdog no longer reports a rule the user lifted as a broken guard
+- Skills, cycle prompts and docs are rewritten without the patterns the prose check looks for
+- The constitution is rewritten in the style it asks sessions to write in
+- A reply is linted for machine-prose patterns as the turn ends, and rewritten once if it has them
+- A reply given before background work lands is delivered, not left in the progress block
+- herald find: locate, minus what has gone since the nightly index
+
 ## v0.3.0 — 4 October 2026
 
 - Safety is Herald's, not the engine's; root goes through a tap on a bot no session can reach
