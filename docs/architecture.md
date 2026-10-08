@@ -325,6 +325,20 @@ differences that could not be hidden are all documented on `think._run_codex`:
   `engines.codex` stand in), no dollar cost, and no context size (its usage
   is summed over the turn, so `context_tokens` stays null on Codex rows).
 
+Telegram's `/models` asks both first-party CLIs for their model catalogs
+without sending a user prompt or starting a model turn. Claude's stream
+initialization returns its supported models. Codex's
+[`model/list`](https://learn.chatgpt.com/docs/app-server#list-models-modellist) returns
+its full catalog, including hidden entries and every page. All subprocesses
+stay in `think.py`; Herald never reads auth files to discover models.
+
+The command prints every model and provides selection buttons. Each button
+refers to the saved catalog and the topic where the list was requested, so
+catalog changes and bridge restarts cannot make a tap choose a different model.
+Selections wait for the topic's current turn before changing its engine or
+model. A model change within one engine preserves its transcript; changing
+engines clears the session pointer. The existing engine commands still work.
+
 ## The ledger
 
 `ledger/` is the whole memory, and it lives in `$HERALD_HOME`.

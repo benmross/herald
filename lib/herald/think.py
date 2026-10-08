@@ -57,6 +57,129 @@ _ARGV_PROMPT_LIMIT = 120_000
 
 ENGINES = ("claude", "codex")
 
+
+@contextlib.contextmanager
+def _catalog_process(cmd: list[str], timeout: int = 20):
+    """Metadata from a first-party CLI, without a user prompt or model turn.
+
+    Keep stderr private: startup/auth diagnostics can contain account data.
+    Both protocols stream unrelated notifications before their response.
+    """
+    with tempfile.TemporaryDirectory(prefix="herald-models-") as folder:
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+                                env=config.agent_env(), cwd=folder, start_new_session=True)
+        lines = queue.Queue()
+
+        def read():
+            try:
+                for line in proc.stdout:
+                    lines.put(line)
+            finally:
+                lines.put(None)
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        deadline = time.monotonic() + timeout
+
+        def ask(messages, matches):
+            for message in messages:
+                proc.stdin.write(json.dumps(message) + "\n")
+            proc.stdin.flush()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Model catalog timed out")
+                try:
+                    line = lines.get(timeout=remaining)
+                except queue.Empty:
+                    raise TimeoutError("Model catalog timed out") from None
+                if line is None:
+                    raise RuntimeError("Model catalog process exited before replying")
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(value, dict) and matches(value):
+                    return value
+
+        try:
+            yield ask
+        finally:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=3)
+            reader.join(timeout=3)
+            proc.stdin.close()
+            proc.stdout.close()
+
+
+def available_models(engine: str) -> list[dict]:
+    """Ask the installed CLI for its complete catalog; never run inference.
+
+    Claude's initialization control response contains the picker models.
+    Codex's model/list includes hidden entries and supports pagination.
+    No credential files, SDK clients or model HTTP APIs are involved.
+    """
+    resolve_engine(engine)
+    if engine == "claude":
+        cmd = ["claude", "-p", "--input-format", "stream-json", "--output-format",
+               "stream-json", "--verbose", "--no-session-persistence"]
+        with _catalog_process(cmd) as ask:
+            value = ask([{"type": "control_request", "request_id": "herald-models",
+                          "request": {"subtype": "initialize"}}],
+                        lambda v: v.get("type") == "control_response" and
+                        (v.get("response") or {}).get("request_id") == "herald-models")
+            response = value.get("response") or {}
+            if response.get("subtype") != "success":
+                raise RuntimeError("Claude could not list models")
+            rows = (response.get("response") or {}).get("models", [])
+            result = [{"engine": engine, "model": r["value"],
+                       "name": r.get("displayName") or r["value"]}
+                      for r in rows if isinstance(r, dict) and isinstance(r.get("value"), str)]
+    else:
+        with _catalog_process(["codex", "app-server"]) as ask:
+            init = ask([{"id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "herald", "version": "1"}}}], lambda v: v.get("id") == 1)
+            if "error" in init:
+                raise RuntimeError("Codex could not initialize its model catalog")
+            messages = [{"method": "initialized"}]
+            result, seen, cursor = [], set(), None
+            for request_id in range(2, 102):
+                params = {"includeHidden": True, "limit": 100}
+                if cursor:
+                    params["cursor"] = cursor
+                value = ask([*messages, {"id": request_id, "method": "model/list", "params": params}],
+                            lambda v: v.get("id") == request_id)
+                messages = []
+                if "error" in value:
+                    raise RuntimeError("Codex could not list models")
+                page = value.get("result") or {}
+                result.extend({"engine": engine, "model": r["model"],
+                               "name": r.get("displayName") or r["model"]}
+                              for r in page.get("data", []) if isinstance(r, dict) and
+                              isinstance(r.get("model"), str))
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+                if cursor in seen:
+                    raise RuntimeError("Codex repeated a model catalog page")
+                seen.add(cursor)
+            else:
+                raise RuntimeError("Codex model catalog exceeded its page limit")
+    # Catalogs can repeat aliases; expose each selectable value once.
+    unique = {}
+    for row in result:
+        if row["model"]:
+            unique.setdefault(row["model"], row)
+    if not unique:
+        raise RuntimeError(f"{engine.capitalize()} returned no selectable models")
+    return list(unique.values())
+
 # Herald's own vocabulary for how hard the model should think, which is Claude
 # Code's `--effort` scale. Codex's `model_reasoning_effort` has no "max" and
 # adds "minimal" below "low"; `codex_effort()` maps between them.

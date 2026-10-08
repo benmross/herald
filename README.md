@@ -62,7 +62,10 @@ herald setup        # re-run any setup step
 
 In Telegram, each forum topic is its own conversation. `/new` starts a topic
 over, and replying to an older message picks that conversation back up.
-`/opus`, `/sonnet` and `/codex` choose the model for a topic, `/stop` cancels
+`/models` lists both CLIs' available models and lets you switch by tapping a
+button or sending `/models engine/model`. Switching models within an engine
+keeps the conversation; switching engines starts a fresh session.
+`/opus`, `/sonnet` and `/codex` also choose the model for a topic, `/stop` cancels
 a running turn, and `/obligations` lists what you owe.
 
 ## What it does without asking

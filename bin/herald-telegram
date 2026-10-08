@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import secrets
 import subprocess
 import sys
 import threading
@@ -133,7 +134,7 @@ OBLIGATION_COMMANDS = ("/obligations",)
 # slash is text for the model.
 SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop")
 COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
-            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS)
+            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, "/models")
 
 
 def command_word(text: str) -> str:
@@ -1054,6 +1055,104 @@ def _lock_for(key: str) -> threading.Lock:
         return _topic_locks.setdefault(key, threading.Lock())
 
 
+def _select_model(ts: dict, engine: str, model: str) -> str:
+    switched = engine != (ts.get("engine") or DEFAULT_ENGINE)
+    ts.update(engine=engine, model=model)
+    if switched:
+        ts.update(session_id=None, turns=0, last_ts=time.time())
+    return (f"This topic now uses {engine}/{model}. " +
+            ("Your next message starts a fresh session; your ledger carries over."
+             if switched else "Your conversation continues."))
+
+
+def _model_catalog() -> tuple[list[dict], list[str]]:
+    """Refresh both first-party catalogs in parallel, without inference."""
+    from concurrent.futures import ThreadPoolExecutor
+    rows, errors = [], []
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        jobs = {engine: pool.submit(think.available_models, engine) for engine in think.ENGINES}
+        for engine, job in jobs.items():
+            try:
+                rows.extend(job.result())
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+                errors.append(f"{engine.capitalize()} model list unavailable. Try /models again.")
+    return rows, errors
+
+
+def _handle_models(update: dict, state: dict) -> None:
+    msg = update.get("message") or {}
+    if (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        return
+    chat_id = (msg.get("chat") or {}).get("id")
+    key = _topic_key(update)
+    if not chat_id or not key:
+        return
+    rows, errors = _model_catalog()
+    ts = thread_state(state, key)
+    arg = (msg.get("text") or "").strip().split(None, 1)
+    selector = arg[1].strip() if len(arg) > 1 else ""
+    if selector:
+        matches = [r for r in rows if selector in (r["model"], r["engine"] + "/" + r["model"])]
+        if len(matches) == 1:
+            with _lock_for(key):
+                note = _select_model(ts, matches[0]["engine"], matches[0]["model"])
+            send(chat_id, note, msg.get("message_thread_id"))
+            return
+        send(chat_id, "Choose a model below, or use /models engine/model.", msg.get("message_thread_id"))
+    engine = ts.get("engine") or DEFAULT_ENGINE
+    current = ts.get("model") or (DEFAULT_MODEL if engine == "claude" else "CLI default")
+    lines = [f"This topic uses {engine}/{current}.", "Tap a model to switch, or use /models engine/model."]
+    for vendor in think.ENGINES:
+        vendor_rows = [r for r in rows if r["engine"] == vendor]
+        if vendor_rows:
+            lines += ["", vendor.capitalize()]
+            lines += [f"{r['name']}: {vendor}/{r['model']}" for r in vendor_rows]
+    lines += ["", *errors] if errors else []
+    send(chat_id, "\n".join(lines), msg.get("message_thread_id"))
+    menus = state.setdefault("model_menus", {})
+    # Bounded, persisted menus survive a bridge restart without stale taps
+    # selecting the wrong entry from a newer catalog.
+    for token, menu in list(menus.items()):
+        if time.time() - menu.get("created", 0) > 86400:
+            menus.pop(token, None)
+    for offset in range(0, len(rows), 40):
+        choices = rows[offset:offset + 40]
+        token = secrets.token_hex(8)
+        buttons = [{"text": f"{r['engine'].capitalize()}: {r['name']}",
+                    "callback_data": f"model:{token}:{i}"} for i, r in enumerate(choices)]
+        keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        response = api("sendMessage", chat_id=chat_id, text="Choose your model:",
+                       reply_markup={"inline_keyboard": keyboard},
+                       **({"message_thread_id": msg["message_thread_id"]} if msg.get("message_thread_id") else {}))
+        if response and response.get("ok"):
+            menus[token] = {"key": key, "message_id": response["result"]["message_id"],
+                            "created": time.time(), "choices": choices}
+    while len(menus) > 50:
+        menus.pop(min(menus, key=lambda token: menus[token]["created"]))
+
+
+def _handle_model_callback(update: dict, state: dict) -> None:
+    cq = update["callback_query"]
+    if (cq.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Not your Herald.")
+        return
+    match = re.fullmatch(r"model:([0-9a-f]{16}):(\d+)", cq.get("data") or "")
+    menu = (state.get("model_menus") or {}).get(match[1]) if match else None
+    msg = cq.get("message") or {}
+    key = _topic_key({"message": msg})
+    if (not menu or menu.get("key") != key or menu.get("message_id") != msg.get("message_id") or
+            time.time() - menu.get("created", 0) > 86400 or int(match[2]) >= len(menu["choices"])):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Run /models again for a fresh list.")
+        return
+    # Acknowledge before waiting for a running turn's topic lock. Changing
+    # its model must not race the turn writing back its session pointer.
+    api("answerCallbackQuery", callback_query_id=cq["id"], text="Switching after the current turn.")
+    with _lock_for(key):
+        choice = menu["choices"][int(match[2])]
+        note = _select_model(thread_state(state, key), choice["engine"], choice["model"])
+    send((msg.get("chat") or {})["id"], note, msg.get("message_thread_id"))
+
+
 def _checkpoint(state: dict) -> None:
     """Persist state, capping the saved offset at the oldest update still in
     flight (or the live offset, if nothing is).
@@ -1537,7 +1636,9 @@ def _dispatch(update: dict, state: dict) -> None:
     handed_off = False
     try:
         if update.get("callback_query"):
-            if (update["callback_query"].get("data") or "").startswith("study:"):
+            if (update["callback_query"].get("data") or "").startswith("model:"):
+                _handle_model_callback(update, state)
+            elif (update["callback_query"].get("data") or "").startswith("study:"):
                 _handle_study_callback(update, state)
             elif (update["callback_query"].get("data") or "").startswith(
                     obligations.CALLBACK + ":"):
@@ -1550,6 +1651,8 @@ def _dispatch(update: dict, state: dict) -> None:
             _handle_debug(update, key, state)
         elif _is_obligations_command(update):
             _handle_obligations(update)
+        elif command_word((update.get("message") or {}).get("text") or "") == "/models":
+            _handle_models(update, state)
         elif _study_text(update, state):
             pass  # a quiz answer, checked without a session
         elif _collect_album(update, state):
