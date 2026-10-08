@@ -45,7 +45,7 @@ def over_ssh() -> bool:
     """Whether the wizard is being run through an SSH session.
 
     The port-forwarding instruction only means anything then. Shown to
-    somebody sitting at the machine -- or in WSL, or in the Claude app -- it
+    somebody sitting at the machine -- or in WSL, or in a model CLI -- it
     reads as a step they are failing to do, and the first outside install
     stalled on exactly that.
     """
@@ -204,8 +204,9 @@ def steps() -> list[Step]:
     broken.
     """
     from . import (basics, done, google, home, install, interview,  # noqa: PLC0415
-                   preflight, rules, sources, telegram, updates)
+                   preflight, providers, rules, sources, telegram, updates)
     return [
+        providers.STEP,
         preflight.STEP,
         home.STEP,
         basics.STEP,
@@ -234,7 +235,7 @@ def overview(state: State) -> list[dict]:
     """Every step with its live status, for a progress list.
 
     Statuses are computed concurrently: two of them ask something slow (Google
-    who the token belongs to, the Claude CLI whether it is signed in) and a
+    who the token belongs to, the selected CLIs whether they are signed in) and a
     page that waits for each in turn feels broken on a slow connection.
     """
     from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415

@@ -23,7 +23,7 @@ $HERALD_HOME/extensions/<name>/
   bin/                     long-running surfaces of its own
   systemd/                 unit templates, installed with Herald's
   skills/<name>/SKILL.md   symlinked where sessions load them
-  hooks/hooks.json         Claude Code hooks, merged into .claude/settings.json
+  hooks/hooks.json         shared hooks, synced into both CLIs' hook settings
   red.py                   red actions of its own, behind the same tap
   tests/                   run by `herald test`
 ```

@@ -55,7 +55,7 @@ _RATE_LIMIT_HINTS = ("rate limit", "usage limit", "quota", "overloaded",
 # of passed on argv.
 _ARGV_PROMPT_LIMIT = 120_000
 
-ENGINES = ("claude", "codex")
+ENGINES = config.ENGINE_NAMES
 
 
 @contextlib.contextmanager
@@ -127,7 +127,7 @@ def available_models(engine: str) -> list[dict]:
     """
     resolve_engine(engine)
     if engine == "claude":
-        cmd = ["claude", "-p", "--input-format", "stream-json", "--output-format",
+        cmd = [config.engine_settings("claude").get("cmd") or "claude", "-p", "--input-format", "stream-json", "--output-format",
                "stream-json", "--verbose", "--no-session-persistence"]
         with _catalog_process(cmd) as ask:
             value = ask([{"type": "control_request", "request_id": "herald-models",
@@ -144,7 +144,7 @@ def available_models(engine: str) -> list[dict]:
                                    if isinstance(e, str)] if r.get("supportsEffort") else []}
                       for r in rows if isinstance(r, dict) and isinstance(r.get("value"), str)]
     else:
-        with _catalog_process(["codex", "app-server"]) as ask:
+        with _catalog_process([config.engine_settings("codex").get("cmd") or "codex", "app-server"]) as ask:
             init = ask([{"id": 1, "method": "initialize", "params": {
                 "clientInfo": {"name": "herald", "version": "1"}}}], lambda v: v.get("id") == 1)
             if "error" in init:
@@ -216,12 +216,12 @@ def claude_effort(level: str | None) -> str | None:
 
 
 def resolve_engine(engine: str | None) -> str:
-    """The engine a call runs on: the one asked for, else the configured
-    default, else claude. Unknown names are a ValueError rather than a
-    silent fallback -- the whole point is that the engine is a choice."""
-    engine = (engine or config.get("engines.default_engine") or "claude").lower()
+    """The requested provider, or the user's configured default."""
+    engine = (engine or config.default_engine()).lower()
     if engine not in ENGINES:
         raise ValueError(f"unknown engine {engine!r}; one of {', '.join(ENGINES)}")
+    if engine not in config.enabled_engines():
+        raise ValueError(f"{engine} is disabled; change `herald setup --step providers`")
     return engine
 
 # Subprocesses currently in flight, keyed by whatever the caller wants to be
@@ -523,7 +523,7 @@ def _handle_stream_line(line: str, state: dict, on_progress,
                         entry["progress"] = summary
 
 
-def _run_claude(prompt: str, *, model: str, effort: str | None, cwd: Path,
+def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
                 timeout: int, idle_timeout: int,
                 allowed_tools: list[str] | None, append_system_prompt: str | None,
                 json_schema: dict | None, resume: str | None,
@@ -554,16 +554,17 @@ def _run_claude(prompt: str, *, model: str, effort: str | None, cwd: Path,
     # (one `result` event, `turns > 1`), not queued as a separate turn.
     # --replay-user-messages echoes each injected message back on stdout for
     # confirmation; not consumed yet, but costs nothing to enable now.
-    cmd = ["claude", "-p",
+    cmd = [config.engine_settings("claude").get("cmd") or "claude", "-p",
            "--input-format", "stream-json",
            "--output-format", "stream-json", "--verbose",
            "--replay-user-messages",
-           "--model", model,
            "--permission-mode", permission_mode,
            # Nobody is at the terminal. Without this the run blocks forever on
            # anything that would have prompted.
            "--permission-prompts", "none"]
 
+    if model:
+        cmd += ["--model", model]
     if effort:
         cmd += ["--effort", effort]
     if allowed_tools:
@@ -923,7 +924,7 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
         overrides["model_reasoning_effort"] = effort
     if append_system_prompt:
         overrides["developer_instructions"] = append_system_prompt
-    cmd = ["codex", "--dangerously-bypass-hook-trust", "app-server", "--listen", "stdio://"]
+    cmd = [config.engine_settings("codex").get("cmd") or "codex", "--dangerously-bypass-hook-trust", "app-server", "--listen", "stdio://"]
     for key, value in overrides.items():
         cmd += ["-c", key + "=" + json.dumps(value)]
     state = {"payload": None, "t0": time.monotonic(), "mark": None, "saw_init": False,
@@ -1583,16 +1584,15 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     `engine` is "claude" or "codex"; None means `engines.default_engine` from
     the config. `model` and `effort` are read as belonging to that engine:
     a model name is passed through as given, and None means the engine's
-    configured model (`engines.primary.model` for claude, `engines.codex.model`
-    for codex, where null defers to Codex's own config.toml). `effort` is one
+    configured model (`engines.claude.model` for claude, `engines.codex.model`
+    for codex; null uses either CLI's native default). `effort` is one
     of `EFFORTS`; None means `engines.<engine>.effort`, which itself defaults
     to null -- the CLI's own default. Explicit "auto" bypasses that configured
     effort override and lets the CLI choose for the selected model.
 
-    `escalate` picks the engine's `escalate_model`. For Codex, whose models
-    are few and whose default is already the large one, an install that sets
-    no escalate model gets `engines.codex.escalate_effort` instead: the same
-    model, told to reason harder.
+    `escalate` picks the selected provider's `escalate_model`. With no
+    escalation model, it keeps the model and applies that provider's
+    `escalate_effort`. Both providers use the same rule.
 
     `on_progress` receives a `Progress` for each thing the turn does: the
     model's own narration as it writes it, and each tool call as it makes
@@ -1624,27 +1624,24 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     if timeout is None:
         timeout = config.get("engines.think_timeout_seconds", 7200)
     idle_timeout = idle_timeout or config.get("engines.think_idle_timeout_seconds", 900)
-    # The claude block is still called `primary` in config for the sake of
-    # every config.json that already sets `engines.primary.model`.
-    block = "engines.primary" if engine == "claude" else "engines.codex"
-    # Explicit auto bypasses Herald's configured override, letting the CLI
-    # choose its default for this model. None retains the configured default.
+    block = f"engines.{engine}"
+    # Explicit auto leaves the selected CLI's native effort default.
     effort = (None if isinstance(effort, str) and effort.strip().lower() == "auto" else
               normalize_effort(effort) or normalize_effort(config.get(f"{block}.effort")))
     if model is None:
         if escalate:
             model = config.get(f"{block}.escalate_model")
-            if model is None and engine == "codex":
-                effort = normalize_effort(config.get(f"{block}.escalate_effort", "xhigh"))
+            if model is None:
+                effort = normalize_effort(config.get(f"{block}.escalate_effort", "high"))
         if model is None:
-            model = config.get(f"{block}.model", "sonnet" if engine == "claude" else None)
+            model = config.get(f"{block}.model")
     # Who decides what a Claude session may do without asking. Since 4 Oct 2026
     # this is Herald's `safety.engine_mode`, per surface: "auto" keeps Claude's
     # own classifier on top of Herald's guard; "herald" makes the guard
     # (lib/herald/safety.py) the only check, as it always was for Codex. An
-    # explicit engines.primary.permission_mode still overrides everything.
+    # explicit engines.claude.permission_mode still overrides everything.
     if not permission_mode:
-        permission_mode = config.get("engines.primary.permission_mode")
+        permission_mode = config.get(f"{block}.permission_mode")
     if not permission_mode:
         from . import safety  # noqa: PLC0415
         surface = (label or "think").split(":", 1)[0]
@@ -1804,3 +1801,22 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     return Result(ok=False, engine=engine, model=model, duration_ms=elapsed,
                   session_id=(payload or {}).get("session_id") or _session_from_stream(out) or resume,
                   rate_limited=limited, error=engine_error)
+
+
+
+def interactive(engine: str | None = None) -> int:
+    """A first-party terminal conversation with the selected provider."""
+    engine = resolve_engine(engine)
+    settings = config.engine_settings(engine)
+    cmd = [settings.get("cmd") or engine]
+    if engine == "codex":
+        cmd += ["--dangerously-bypass-hook-trust", "-c", 'project_doc_fallback_filenames=["CLAUDE.md"]']
+    if settings.get("model"):
+        cmd += ["--model", settings["model"]]
+    effort = normalize_effort(settings.get("effort"))
+    if effort:
+        if engine == "claude":
+            cmd += ["--effort", claude_effort(effort)]
+        else:
+            cmd += ["-c", "model_reasoning_effort=" + json.dumps(codex_effort(effort))]
+    return subprocess.call(cmd, cwd=config.ROOT, env=config.agent_env())

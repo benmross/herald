@@ -7,7 +7,7 @@
 #
 #   ./install.sh
 #
-# It installs what is missing (git, Python, the Claude Code CLI), creates the
+# It installs what is missing (git, Python, your chosen model CLI), creates the
 # virtualenv, and hands over to the setup wizard. It asks before it uses sudo,
 # and it says what each command is for, because "curl into bash" deserves at
 # least that much.
@@ -73,7 +73,7 @@ add_to_profile() {
   local line='export PATH="$HOME/.local/bin:$PATH"' rc
   case "${SHELL:-}" in */zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
   grep -qsF "$line" "$rc" && return 0
-  printf '\n# Added by the Herald installer, so `herald` and `claude` are found.\n%s\n' "$line" >> "$rc"
+  printf '\n# Added by the Herald installer, so `herald` and your model CLI are found.\n%s\n' "$line" >> "$rc"
   dim "Added ~/.local/bin to your PATH in $rc"
 }
 
@@ -124,7 +124,6 @@ install_macos_deps() {
   fi
   local wanted=()
   have git || wanted+=(git)
-  have tmux || wanted+=(tmux)
   python_ok python3 || wanted+=(python@3.13)
   if [ ${#wanted[@]} -gt 0 ]; then
     bold "Installing: ${wanted[*]}"
@@ -135,7 +134,6 @@ install_macos_deps() {
 install_linux_deps() {
   local wanted=() py
   have git || wanted+=(git)
-  have tmux || wanted+=(tmux)
   if py="$(pick_python)"; then
     # The venv package for the interpreter that will actually be used.
     venv_ok "$py" || wanted+=("$(venv_package "$py")")
@@ -166,6 +164,49 @@ install_claude() {
   curl -fsSL https://claude.ai/install.sh | bash
   export PATH="$HOME/.local/bin:$PATH"
   have claude || warn "Claude Code is installed but this terminal cannot see it yet. Open a new terminal window and run this again."
+}
+
+install_codex() {
+  have_native codex && return 0
+  bold "Installing the Codex CLI"
+  dim "Herald runs it on your ChatGPT subscription."
+  curl -fsSL https://chatgpt.com/codex/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+  have_native codex || warn "Open a new terminal window if codex is not found yet."
+}
+
+choose_providers() {
+  # With no terminal or explicit choice, defer to the browser/CLI wizard.
+  # Neither an unattended installer nor a blank answer picks a provider.
+  local selected="${HERALD_ENGINES:-}" reply
+  if [ -z "$selected" ] && [ "${HERALD_CONTAINER:-}" != 1 ] \
+      && [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
+    printf 'Model providers: [1] Claude only, [2] Codex only, [3] Both, [Enter] choose in setup: ' >/dev/tty
+    read -r reply </dev/tty || reply=""
+    case "$reply" in 1) selected=claude ;; 2) selected=codex ;; 3) selected=both ;; "") ;; *) die "Choose 1, 2, 3 or press Enter." ;; esac
+  fi
+  case "$selected" in
+    claude) install_claude ;;
+    codex) install_codex ;;
+    both) install_claude; install_codex ;;
+    "") return 0 ;;
+    *) die "HERALD_ENGINES must be claude, codex, or both." ;;
+  esac
+  # Save only an explicit selection. The wizard asks for a default if both.
+  ./venv/bin/python - "$selected" <<'PROVIDERS'
+import json, os, pathlib, sys
+p = pathlib.Path(os.environ.get("HERALD_HOME", "~/.herald")).expanduser() / "config.json"
+p.parent.mkdir(parents=True, exist_ok=True)
+d = json.loads(p.read_text()) if p.exists() else {}
+enabled = ["claude", "codex"] if sys.argv[1] == "both" else [sys.argv[1]]
+e = d.setdefault("engines", {})
+e["enabled"] = enabled
+if len(enabled) == 1:
+    e["default_engine"] = enabled[0]
+elif e.get("default_engine") not in enabled:
+    e["default_engine"] = None
+p.write_text(json.dumps(d, indent=2) + "\n")
+PROVIDERS
 }
 
 main() {
@@ -240,7 +281,7 @@ main() {
   ./venv/bin/pip install --quiet --upgrade pip
   ./venv/bin/pip install --quiet -r requirements.txt
 
-  install_claude
+  choose_providers
 
   # `herald` on PATH, without needing a package manager or a sudo write.
   mkdir -p "$HOME/.local/bin"
@@ -283,31 +324,8 @@ main() {
   # command there is typed on the host with `docker exec` in front of it.
   [ "${HERALD_CONTAINER:-}" = 1 ] && exit 0
 
-  # Signed in? Asked of the CLI, which is right on macOS too, where the login
-  # lives in the Keychain and no credentials file exists. If not, that is the
-  # only next step, and this script ends on it rather than listing setup
-  # commands underneath as if the sign-in were optional.
-  if ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
-    warn "Herald needs Claude Code to be signed in to your Claude account."
-    if [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
-      if ask "Sign in now? (it opens a link)"; then
-        claude auth login --claudeai </dev/tty >/dev/tty 2>&1 || true
-      fi
-    fi
-    if ! claude auth status 2>/dev/null | grep -q '"loggedIn": *true'; then
-      echo
-      bold "Not signed in yet. When you are ready, run these two commands:"
-      echo
-      echo "    claude auth login       sign in to your Claude account"
-      echo "    herald setup --web      then set Herald up"
-      echo
-      exit 0
-    fi
-    echo
-    bold "Signed in."
-    echo
-  fi
-
+  dim "Setup checks the CLI and subscription login for the providers you choose."
+  echo
   dim "Now set Herald up. Either of these does the same thing:"
   echo
   echo "    herald setup --web      a page in your browser (easier)"

@@ -8,7 +8,7 @@ not system units — everything Herald touches belongs to the user's account, an
     herald-cycle@.service                templated; one instance per cycle
     herald-cycle-dawn.timer              06:30
     herald-cycle-scout.timer             08:15 and 16:45
-    herald-brain.service                 the persistent Remote Control session
+    herald-brain.service                 optional Claude Remote Control
     herald-telegram.service              the Telegram bridge
     herald-health-webhook.service        inbound Apple Health data
     herald-watchdog.service / .timer     health probes, every 5 min

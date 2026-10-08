@@ -8,8 +8,8 @@ fresh agent session with no memory of how any of it came to be.
 An always-on personal agent that runs on one person's own machine. It ingests
 whatever they connect (mail, calendars, tasks, contacts, feeds, and whatever
 their extensions add), keeps a durable record of what it concludes, briefs them
-each morning, and answers them on Telegram, in a terminal, or through the Claude
-app.
+each morning, and answers them on Telegram or in a terminal using their chosen
+provider. An optional Claude Remote Control surface supports the Claude app.
 
 ## Two directories
 
@@ -37,24 +37,23 @@ personal is tracked in the program's repository.
 ## The one rule that cannot be broken
 
 **Herald orchestrates processes, never inference.** It runs the official
-`claude` CLI as a subprocess and never calls a model HTTP API.
+`claude` or `codex` CLI as a subprocess and never calls a model HTTP API.
 
-The rule comes from Anthropic's terms. Anthropic authorises subscription OAuth for
-Claude Code and Claude.ai only; using it from any other caller, including the
-Agent SDK, violates the consumer terms. `claude -p` is a documented,
-first-party, subscription-billed path. `lib/herald/think.py` is the only module
+Subscription authentication stays inside the vendor's first-party CLI.
+Herald uses Claude Code or the Codex CLI on the user's existing subscription,
+with the same provider selected for the entire run. `lib/herald/think.py` is the only module
 that launches an engine, and it must stay that way.
 
 It follows that `--bare` is never used, because bare mode does not read the
-subscription login. `config.agent_env()` also strips `ANTHROPIC_API_KEY` before
+subscription login. `config.agent_env()` also strips both vendors' API keys before
 every launch, because an API key exported anywhere would silently move Herald
 onto metered billing while appearing to work perfectly.
 
 ## The layers
 
 ```
-L4  surfaces     Telegram (herald-telegram) · the Claude app and
-                 claude.ai/code (herald-brain, Remote Control) · a terminal
+L4  surfaces     Telegram (herald-telegram) · optional Claude app/web
+                 (herald-brain, Remote Control) · a terminal
                  (herald attach) · ntfy, only when Telegram is unreachable
 
 L3  brain        herald-brain      persistent session server, one session per
@@ -80,7 +79,7 @@ L0  substrate    Linux (systemd user units) or macOS (launchd) · a private
 
 **1. Processes, not SDKs.** Described above.
 
-**2. Python collects, Claude judges.** Ingestion runs on a timer and must cost
+**2. Python collects, the selected model judges.** Ingestion runs on a timer and must cost
 nothing. Judgment happens once per cycle, batched. Never spend a token on work a
 loop can do.
 
@@ -247,7 +246,7 @@ effective uid switched to the user's. Linux with systemd only.
 
 Anything about one person's life rather than about Herald lives in
 `$HERALD_HOME/extensions/`: a manifest plus any of collectors, cycles, a snapshot
-section, a lib, a bin, systemd units, skills, Claude Code hooks and tests.
+section, a lib, a bin, systemd units, skills, hooks for both CLIs and tests.
 They are discovered automatically and need no registration, and they run on the
 same timer under the same contract and the same invariants.
 `herald check` holds them to those invariants because a personal
@@ -275,6 +274,13 @@ modes that only ever ran when Herald was already in trouble. What came back on
 22 September 2026 is a different thing: the engine is chosen before the run and
 is never switched during it. `/codex` and `/claude` set it per Telegram
 topic, `herald think --engine` per call, and `engines.default_engine` for the
+cycles and new conversations. `herald setup --step providers` selects Claude
+only, Codex only, or both; both requires an explicit default choice.
+`engines.claude` and `engines.codex` have equal status, and model/effort null
+leave the choice to each CLI. `engines.primary` is accepted as a legacy Claude
+alias. Upgrades preserve previously effective choices through migration 0003.
+`herald attach` launches the chosen first-party terminal CLI; `--engine` can
+override it. Remote Control jobs are opt-in and never needed for Telegram or
 cycles. A session id belongs to the engine that made it; switching engines in a
 topic starts a fresh session from the ledger, and says so.
 

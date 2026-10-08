@@ -18,6 +18,8 @@ import shutil
 import subprocess
 import sys
 
+from herald import config
+
 from .engine import BLOCKED, DONE, Field, Outcome, Prompt, State, Step
 
 MIN_PYTHON = (3, 11)
@@ -46,10 +48,11 @@ def claude_auth() -> dict:
     from herald import config  # noqa: PLC0415
     if _auth_cache and time.monotonic() - _auth_cache["at"] < 60:
         return dict(_auth_cache["value"])
-    if not shutil.which("claude"):
+    cmd = config.engine_settings("claude").get("cmd") or "claude"
+    if not shutil.which(cmd, path=config.agent_env()["PATH"]):
         return {}
     try:
-        r = subprocess.run(["claude", "auth", "status"], capture_output=True,
+        r = subprocess.run([cmd, "auth", "status"], capture_output=True,
                            text=True, timeout=30, env=config.agent_env())
     except (OSError, subprocess.TimeoutExpired):
         return {}
@@ -69,6 +72,51 @@ def _claude_logged_in() -> bool:
 
 def _subscription() -> str | None:
     return claude_auth().get("subscriptionType")
+
+
+INSTALL = {
+    "claude": "curl -fsSL https://claude.ai/install.sh | bash",
+    "codex": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+}
+LOGIN = {"claude": "claude auth login", "codex": "codex login"}
+
+
+def provider_checks() -> list[dict]:
+    """Only selected CLIs and their subscription logins are required.
+
+    Authentication metadata comes from the vendor commands, never files.
+    Returned details contain no raw command output or credential material.
+    """
+    out = []
+    if not config.get("engines.default_engine") and config.get("engines.enabled") is None:
+        return [dict(name="Model provider choice", ok=False, required=True,
+                     detail="not chosen", fix="Run `herald setup --step providers`.")]
+    for engine in config.enabled_engines():
+        name = "Claude Code" if engine == "claude" else "Codex CLI"
+        cmd = config.engine_settings(engine).get("cmd") or engine
+        installed = bool(shutil.which(cmd, path=config.agent_env()["PATH"]))
+        out.append(dict(name=name, ok=installed, required=True,
+                        detail="installed" if installed else "not installed", fix=INSTALL[engine]))
+        signed_in = subscription = False
+        if installed and engine == "claude":
+            auth = claude_auth()
+            signed_in = bool(auth.get("loggedIn"))
+            subscription = signed_in and auth.get("apiProvider") in (None, "firstParty") and bool(auth.get("subscriptionType"))
+        elif installed:
+            try:
+                r = subprocess.run([cmd, "login", "status"], capture_output=True,
+                                   text=True, timeout=15, env=config.agent_env())
+                text = (r.stdout + r.stderr).lower()
+                signed_in = r.returncode == 0 and "logged in" in text
+                subscription = signed_in and "chatgpt" in text and "api key" not in text
+            except (OSError, subprocess.SubprocessError):
+                pass
+        out.append(dict(name=f"{name} subscription login", ok=bool(subscription), required=True,
+                        detail="signed in on subscription" if subscription else
+                               "non-subscription login" if signed_in else "not signed in",
+                        fix=f"Run `{LOGIN[engine]}` and sign in with your "
+                            + ("Claude" if engine == "claude" else "ChatGPT") + " account."))
+    return out
 
 
 def memory_gb() -> float | None:
@@ -135,14 +183,15 @@ def _wsl_checks(root: pathlib.Path) -> list[dict]:
     """
     from herald import config  # noqa: PLC0415
     out = []
-    claude = shutil.which("claude") or ""
-    if claude.startswith("/mnt/"):
-        out.append({
-            "name": "Claude Code is the Linux one, not the Windows one",
-            "ok": False, "required": True, "detail": claude,
-            "fix": "curl -fsSL https://claude.ai/install.sh | bash\n      then "
-                   "open a new terminal window, so ~/.local/bin comes first.",
-        })
+    for engine in config.enabled_engines():
+        path = shutil.which(config.engine_settings(engine).get("cmd") or engine) or ""
+        if path.startswith("/mnt/"):
+            name = "Claude Code" if engine == "claude" else "Codex CLI"
+            out.append({
+                "name": f"{name} is the Linux one, not the Windows one",
+                "ok": False, "required": True, "detail": path,
+                "fix": INSTALL[engine] + "\n      then open a new terminal window.",
+            })
     on_windows_disk = [str(p) for p in (root, config.HOME)
                        if str(p.resolve()).startswith("/mnt/")]
     if on_windows_disk:
@@ -184,68 +233,14 @@ def checks() -> list[dict]:
         "fix": _brew_or_apt("git", "git"),
     })
 
-    claude = shutil.which("claude")
-    out.append({
-        "name": "Claude Code", "ok": bool(claude), "required": True,
-        "detail": "installed" if claude else "not installed",
-        "fix": "curl -fsSL https://claude.ai/install.sh | bash",
-    })
-
     if on_wsl():
         out += _wsl_checks(root)
-
-    auth = claude_auth() if claude else {}
-    sub = auth.get("subscriptionType")
-    out.append({
-        "name": "Claude Code signed in", "ok": bool(auth.get("loggedIn")),
-        "required": True,
-        "detail": (f"subscription: {sub}" if sub else
-                   "signed in" if auth.get("loggedIn") else "not signed in"),
-        "fix": "run `claude auth login` in this terminal and sign in with your "
-               "Claude account. Herald runs on your own subscription.",
-    })
-    if auth.get("loggedIn") and auth.get("apiProvider") not in (None, "firstParty"):
-        out.append({
-            "name": "Claude Code uses the subscription, not an API provider",
-            "ok": False, "required": False,
-            "detail": f"apiProvider: {auth.get('apiProvider')}",
-            "fix": "Claude Code is set up to bill through a cloud provider "
-                   "rather than your subscription. Herald would be charged "
-                   "there.",
-        })
-
-    # The second engine is optional: nothing runs on it unless asked to, so
-    # its absence is a note, not a failure. When it is installed, being
-    # signed out is the thing worth catching, because `/codex` would then
-    # fail on the first message rather than here.
-    codex = shutil.which("codex")
-    if codex:
-        try:
-            r = subprocess.run(["codex", "login", "status"], capture_output=True,
-                               text=True, timeout=15)
-            signed_in = r.returncode == 0 and "logged in" in (r.stdout + r.stderr).lower()
-            how = (r.stdout + r.stderr).strip().splitlines()[0] if (r.stdout + r.stderr).strip() else ""
-        except (OSError, subprocess.SubprocessError):
-            signed_in, how = False, ""
-        out.append({
-            "name": "Codex CLI (optional second engine) signed in", "ok": signed_in,
-            "required": False,
-            "detail": how if signed_in else "installed but not signed in",
-            "fix": "run `codex login` and sign in with your ChatGPT account, or "
-                   "ignore this: Herald only uses Codex when a topic says /codex "
-                   "or engines.default_engine is set to codex.",
-        })
-    else:
-        out.append({
-            "name": "Codex CLI (optional second engine)", "ok": True, "required": False,
-            "detail": "not installed; Herald runs on Claude Code alone",
-            "fix": "",
-        })
+    out += provider_checks()
 
     tmux = shutil.which("tmux")
     out.append({
-        "name": "tmux (keeps a conversation open in the background)",
-        "ok": bool(tmux), "required": True,
+        "name": "tmux (optional Remote Control terminal)",
+        "ok": bool(tmux), "required": config.remote_control_enabled(),
         "detail": "installed" if tmux else "not installed",
         "fix": _brew_or_apt("tmux", "tmux"),
     })
@@ -254,14 +249,14 @@ def checks() -> list[dict]:
     out.append({
         "name": "memory", "ok": ram is None or ram >= 3.5, "required": False,
         "detail": f"{ram:.1f} GB" if ram else "unknown",
-        "fix": "Claude Code needs about 4 GB to run reliably. With less, the "
+        "fix": "Allow about 4 GB for the model CLI. With less, the "
                "morning digest can be cut off part way through.",
     })
 
     out.append({
         "name": "no API key set in this terminal",
-        "ok": "ANTHROPIC_API_KEY" not in os.environ, "required": False,
-        "detail": "one is set" if "ANTHROPIC_API_KEY" in os.environ else "none",
+        "ok": not any(k in os.environ for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY")), "required": False,
+        "detail": "one is set" if any(k in os.environ for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY")) else "none",
         "fix": "Herald ignores it, so nothing here is billed by the token. It "
                "is only worth knowing that other tools in this terminal will be.",
     })

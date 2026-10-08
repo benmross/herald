@@ -1,7 +1,7 @@
 # Herald in a container.
 #
 # The image is the runtime only: an OS, Python, git, tmux. The program, its
-# virtualenv, the Claude Code CLI, the logins and everything Herald knows about
+# virtualenv, the chosen model CLI, the logins and everything Herald knows about
 # its person all live in one volume mounted at /home/herald. That is what lets
 # a containerised install update by fast-forward like any other, and what makes
 # "back it up" and "delete it" each mean one volume.

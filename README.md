@@ -1,12 +1,12 @@
 # Herald
 
-A personal agent that runs on your own machine, on your own Claude
+A personal agent that runs on your own machine, on your own Claude or ChatGPT
 subscription.
 
 Herald reads your mail, calendars and tasks, keeps a written record of what it
 concludes, sends you a digest each morning, and messages you when a deadline
-is about to close. You talk to it on Telegram, in a terminal or in the Claude
-app. Its memory is a folder of files on your disk, so it is the same agent
+is about to close. You talk to it on Telegram or in a terminal. An optional Claude Remote
+Control connection also supports the Claude app. Its memory is a folder of files on your disk, so it is the same agent
 everywhere.
 
 | | |
@@ -17,11 +17,11 @@ everywhere.
 | Reaches you | A digest at 06:30, and a message the hour it finds something closing tomorrow. |
 | Asks first | It never sends, posts, applies, spends or deletes without your tap on the exact text. |
 | Changes itself | "Read this feed too", "send the digest at seven", "stop telling me about X". It writes the setting or the extension. |
-| No API bill | It runs the official `claude` CLI (or `codex`) as a subprocess. No API key, no per-token cost. |
+| No API bill | It runs the official `claude` or `codex` CLI as a subprocess. No API key, no per-token cost. |
 
 ## Quick start
 
-You need a Claude subscription, a Google account, and a Mac or Linux machine
+You need a Claude or ChatGPT subscription, a Google account, and a Mac or Linux machine
 with 4 GB of RAM. Windows works through WSL2 or Docker.
 
 ```bash
@@ -29,8 +29,9 @@ curl -fsSL https://raw.githubusercontent.com/benmross/herald/main/install.sh | b
 herald setup --web
 ```
 
-The first line installs Herald and the Claude Code CLI and asks before it uses
-sudo. The second prints a link to a setup page in your browser. Setup takes
+The installer offers Claude only, Codex only, both, or choosing later in setup,
+and asks before using sudo. The second command opens setup in your browser.
+Setup checks only the providers you choose. Neither provider is preselected. Setup takes
 about half an hour, most of it you writing about yourself.
 [`docs/install.md`](docs/install.md) is the full walkthrough, written for
 someone who has not used a terminal.
@@ -40,7 +41,6 @@ someone who has not used a terminal.
 ```bash
 git clone https://github.com/benmross/herald herald-docker && cd herald-docker
 docker compose -f docker/compose.yml up -d --build
-docker exec -it herald claude auth login
 docker exec -it herald herald setup --web
 ```
 
@@ -54,22 +54,29 @@ the container does and does not protect.
 ```bash
 herald status       # what it has read, what it cost, what is failing
 herald attach       # a conversation in this terminal
-herald brain url    # a link that opens the same agent in the Claude app
+herald setup --step providers  # choose providers or change your default
 herald doctor       # find what is broken and how to fix it
 herald update       # install the newest release
 herald setup        # re-run any setup step
 ```
 
+New conversations and scheduled jobs use your chosen default provider.
+Model and thinking level follow that CLI's defaults unless you override them.
+`herald attach --engine claude` and `herald attach --engine codex` choose a
+provider for a terminal conversation. `herald brain url` is available only if
+you opt into Claude Remote Control in setup.
+
 In Telegram, each forum topic is its own conversation. `/new` starts a topic
 over, and replying to an older message picks that conversation back up.
-`/models` lists both CLIs' available models and lets you switch by tapping a
+`/models` lists your enabled CLIs' available models and lets you switch by tapping a
 button or sending `/models engine/model`. Switching models within an engine
 keeps the conversation; switching engines starts a fresh session.
 After choosing a model with `/models`, pick one of its supported thinking levels.
 Your choices appear in the original picker message, which removes the buttons
 when you finish.
 `/effort` reopens that picker; its CLI default button clears the override.
-`/opus`, `/sonnet` and `/codex` also choose the model for a topic, `/stop` cancels
+`/claude [model]` and `/codex [model]` choose a provider for a topic.
+`/opus` and `/sonnet` are Claude model shortcuts. `/stop` cancels
 a running turn, and `/obligations` lists what you owe.
 You can send follow-up messages while either engine is working in Telegram.
 Codex uses its first-party app-server interface with your existing login.
@@ -97,8 +104,8 @@ Delete the folder and Herald knows nothing about you.
 ## Where to run it
 
 Herald is most useful on a machine that stays on. A laptop asleep at 06:30
-sends that digest late, and a machine off for more than about a day comes back
-signed out of Claude. An old laptop or a Raspberry Pi works well.
+sends that digest late. If the selected CLI needs a new login, `herald doctor`
+shows the sign-in command. An old laptop or a Raspberry Pi works well.
 [`docs/hosting.md`](docs/hosting.md) compares the free options.
 
 ## Docs

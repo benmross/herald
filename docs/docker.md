@@ -7,7 +7,7 @@ window is closed.
 
 [`install.md`](install.md) is the ordinary install, straight onto a Mac or a
 Linux machine. Read "What you need first" there before starting here: the
-Claude subscription and the Google account are the same.
+Claude or ChatGPT subscription and the Google account requirements are the same.
 
 ## What the container changes, and what it does not
 
@@ -40,25 +40,25 @@ docker compose -f docker/compose.yml up -d --build
 ```
 
 That folder is only the recipe for the image. The first start downloads the
-newest release of Herald and the Claude Code CLI into the volume, which takes a
+newest release of Herald into the volume, which takes a
 few minutes. Watch it with:
 
 ```bash
 docker logs -f herald
 ```
 
-When it prints "Herald is installed", press `Ctrl-C` and run the two commands
-it shows:
+When it prints "Herald is installed", press `Ctrl-C` and start setup:
 
 ```bash
-docker exec -it herald claude auth login
 docker exec -it herald herald setup --web
 ```
 
-The first signs Claude Code in to your Claude account: open the link it
-prints, approve, paste the code back. The second prints a link to the setup
-page. Open it in your normal browser and follow [the wizard](install.md#step-3-the-wizard).
-The Google sign-in at step 5 opens in the same browser. Neither needs port
+Open the link in your normal browser and follow [the wizard](install.md#step-3-the-wizard).
+Choose Claude only, Codex only, or both. Setup prints the install and login
+commands for your choices. Run each in the container with
+`docker exec -it herald bash` to open its terminal first, then return to setup
+and check again. No model CLI is installed automatically without your choice.
+The Google sign-in opens in the same browser. Neither needs port
 forwarding: compose publishes both ports to this computer and to nothing
 else.
 
@@ -80,15 +80,14 @@ On Windows and on a Mac, switch on "Start Docker Desktop when you sign in to
 your computer" in Docker Desktop's settings. With that, Herald is running
 whenever you are logged in, with no window open. It still stops while the
 computer is asleep: a laptop asleep at 06:30 sends that digest late or not at
-all, and [`hosting.md`](hosting.md) explains why a machine asleep for more
-than about a day comes back signed out of Claude.
+all. Run `herald doctor` after downtime if the selected provider needs a new login.
 
 On a Linux server, Docker starts at boot and nothing more is needed.
 
 ## Where everything is
 
 One volume, `herald-home`, mounted at `/home/herald`. It holds the program
-(`~/herald`), the Claude Code CLI and its login, the Google credentials, and
+(`~/herald`), your selected model CLIs and their logins, the Google credentials, and
 `~/.herald`, which is everything Herald knows about you. The image holds an
 operating system and nothing else.
 
@@ -110,7 +109,7 @@ git pull && docker compose -f docker/compose.yml up -d --build
 
 A container has no systemd, so `bin/herald-supervisor` is the container's
 main process and does the units' work: it keeps the Telegram bridge and the
-brain running, collects every thirty minutes, and runs the cycles at their
+optional Remote Control surface running, collects every thirty minutes, and runs the cycles at their
 times of day in your configured timezone. It starts nothing until the
 wizard's "Start it running" step. `herald services status` shows what it is
 running, and `docker logs herald` shows when each job started and how it

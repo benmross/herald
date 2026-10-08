@@ -38,17 +38,10 @@ HAVE = "have" if WHO["plural_verb"] else "has"
 DO = "do" if WHO["plural_verb"] else "does"
 S = "" if WHO["plural_verb"] else "s"
 
-# The first pass cost $2.79 on Opus, which is the right price for reading thirty
-# unseen candidates and searching the web for their deadlines, and the wrong
-# price for re-reading the same twenty-eight of them twelve hours later. So the
-# model is chosen by how much is actually new: a pass with real new material
-# gets Opus, a quiet one gets Sonnet.
-#
-# "New material" stopped meaning "new candidates" on 9 September 2026, when the
-# mail filter came out and every message became a candidate. Twenty Target
-# receipts are not a reason to spend Opus. So the count is new postings plus
-# only the mail the keyword score still rates -- the score's last job, now that
-# it no longer decides what gets read.
+# Escalate on the selected provider only when there is substantial new
+# material. Re-reading standing conclusions never justifies escalation.
+# The count includes new postings and only mail the keyword score rates,
+# so a pile of receipts does not increase the reasoning level.
 ESCALATE_AT = 6
 ESCALATE_MAIL_SCORE = 2
 
@@ -536,7 +529,7 @@ def main() -> int:
                        "WebSearch", "WebFetch",
                        "Bash(herald db *)", "Bash(herald status *)",
                        "Bash(herald obligation *)", "Bash(herald deadline *)",
-                       "Bash(~/.claude/skills/google-workspace/scripts/grun *)",
+                       f"Bash({config.ROOT / 'skills' / 'google-workspace' / 'scripts' / 'grun'} *)",
                        *amber.CYCLE_TOOLS],
     )
 

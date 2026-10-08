@@ -122,7 +122,7 @@ SYSTEMD_UNITS = [
     ("herald-cycle-dawn.timer", "the morning digest", True),
     ("herald-cycle-scout.timer", "opportunities, twice a day", True),
     ("herald-telegram.service", "the Telegram bridge", None),      # if configured
-    ("herald-brain.service", "sessions from the Claude app and the web", True),
+    ("herald-brain.service", "optional Claude Remote Control", False),
     ("herald-watchdog.timer", "restarts anything that stops working", True),
 ]
 
@@ -210,6 +210,8 @@ def launchd_jobs() -> dict[str, dict]:
             [str(config.ROOT / "bin" / "herald-brain"), "ensure"],
             interval=300, run_at_load=True),
     }
+    if not config.remote_control_enabled():
+        jobs.pop(f"{LABEL_PREFIX}.brain", None)
     return jobs
 
 
@@ -318,7 +320,8 @@ def install(labels: list[str] | None = None, force: bool = False) -> dict:
 def wanted_units(telegram_configured: bool) -> list[str]:
     if platform_name() == "systemd":
         return [u for u, _, default in SYSTEMD_UNITS
-                if default or (default is None and telegram_configured)]
+                if default or (default is None and telegram_configured)
+                or (u == "herald-brain.service" and config.remote_control_enabled())]
     if platform_name() in ("launchd", "container"):
         return [label for label in launchd_jobs()
                 if telegram_configured or not label.endswith(".telegram")]
@@ -355,6 +358,8 @@ def restart(unit: str) -> tuple[bool, str]:
     post-restart go through here, which is what stops either from being a
     bare `systemctl` that fails on a Mac with "command not found".
     """
+    if unit == "herald-brain.service" and not config.remote_control_enabled():
+        return True, "Remote Control is disabled"
     kind = platform_name()
     if why := unavailable_reason():
         return False, why
@@ -397,3 +402,30 @@ def restart(unit: str) -> tuple[bool, str]:
 def available() -> bool:
     """Whether jobs can actually be scheduled here, not merely installed."""
     return not unavailable_reason()
+
+
+
+def disable_remote_control() -> list[str]:
+    """Stop a previously selected optional surface when its provider is removed."""
+    kind = platform_name()
+    commands = []
+    if kind == "systemd" and not unavailable_reason():
+        commands.append(["systemctl", "--user", "disable", "--now", "herald-brain.service"])
+    elif kind == "launchd":
+        target = LAUNCHD_DIR / f"{LABEL_PREFIX}.brain.plist"
+        if target.exists():
+            commands.append(["launchctl", "unload", str(target)])
+    # The tmux terminal can outlive the scheduler's oneshot process.
+    if shutil.which("tmux", path=config.agent_env()["PATH"]):
+        commands.append([str(config.ROOT / "bin" / "herald-brain"), "stop"])
+    warnings = []
+    env = config.agent_env()
+    env["HERALD_HOME"] = str(config.HOME)
+    for cmd in commands:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=20, env=env)
+            if result.returncode:
+                warnings.append("Remote Control could not be stopped; run `herald brain stop`.")
+        except (OSError, subprocess.SubprocessError):
+            warnings.append("Remote Control could not be stopped; run `herald brain stop`.")
+    return warnings

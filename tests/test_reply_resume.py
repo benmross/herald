@@ -69,6 +69,7 @@ class ReplyResume(unittest.TestCase):
                 session_id=sid, cost_usd=0.0, error=None)
 
         patches = [
+            mock.patch.object(self.tg.config, "default_engine", return_value="claude"),
             mock.patch.object(self.tg.db, "session", session),
             mock.patch.object(self.tg, "api", api),
             mock.patch.object(self.tg.think, "think", think_),

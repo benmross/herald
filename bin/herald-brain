@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Supervise the persistent conversational brain.
+# Supervise the optional Claude Remote Control surface.
 #
 # `claude remote-control` wants a PTY and is meant to sit in a terminal, so it
 # lives in a tmux session rather than being spawned bare by systemd. That also
 # means the real terminal is attachable, from this machine or over SSH:
 #
-#     herald attach
+#     herald-brain attach
 #
 # systemd owns liveness; tmux owns the terminal. The watchdog timer calls
 # `ensure` every few minutes so a crash heals without waiting for a reboot.
@@ -36,6 +36,19 @@ export PATH="$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 # An API key here would move the brain off the user's subscription onto metered
 # billing, silently and successfully. See lib/herald/config.py:agent_env.
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_PROFILE
+
+# A Codex-only install has no need for this optional service. Old enabled
+# units may still fire after changing providers; leave them harmless.
+case "${1:-status}" in
+  stop|attach) ;;
+  *) if ! "$HERALD_ROOT/venv/bin/python" -c 'import sys; sys.path.insert(0, sys.argv[1]+"/lib"); from herald import config; sys.exit(0 if config.remote_control_enabled() else 1)' "$HERALD_ROOT"; then
+       # Stop a previously opted-in server if the provider was disabled.
+       # It is this surface's tmux session, never a Telegram turn.
+       tmux has-session -t "$SESSION" 2>/dev/null && tmux kill-session -t "$SESSION" 2>/dev/null || true
+       echo "Claude Remote Control is disabled; use herald attach or Telegram."
+       exit 0
+     fi ;;
+esac
 
 mkdir -p "$HERALD_ROOT/logs"
 

@@ -79,7 +79,7 @@ GH_NOTE = ("The GitHub tool is installed but not signed in, so the backup to "
 
 def status(state: State) -> tuple[str, str]:
     home = config.HOME
-    if not (home / "config.json").exists():
+    if not (home / "config.json").exists() or not (home / ".gitignore").exists():
         return TODO, f"{home} does not exist yet"
     bits = [str(home)]
     if _repo_exists(home):

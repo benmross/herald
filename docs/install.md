@@ -10,23 +10,17 @@ search your calendar and one that can tell you which thing on it matters.
 ## What you need first
 
 **A computer that is on when you want Herald working.** A Mac or a Linux
-machine with 4 GB of RAM or more. A laptop is fine, but one that sleeps for more
-than about a day comes back logged out of Claude Code and stops doing anything
-model-driven until you sign in again, so something that stays on is worth it.
+machine with 4 GB of RAM or more. A laptop is fine, but scheduled jobs run only while it is awake. If a provider
+requires a fresh login after downtime, `herald doctor` gives its sign-in command.
 [`hosting.md`](hosting.md) compares the free options, including what to use if
 you do not have a spare machine. Windows works through WSL2 only; the section
 [On Windows](#on-windows-wsl2) below has the four things to know before you
 start.
 
-**A Claude subscription**, and the Claude Code app or CLI signed in to it.
-Herald works by running Claude Code for you. There is no separate bill, no API
-key, and no per-token cost beyond your existing subscription.
-
-Optionally, **a ChatGPT subscription with the Codex CLI signed in**
-(`codex login`). Herald can run any conversation or cycle on Codex instead of
-Claude when you tell it to (`/codex` in a chat, `engines.default_engine` in
-your config). Nothing uses it unless you ask, so skip this if you do not have
-one.
+**A Claude subscription or a ChatGPT subscription with Codex access.**
+Choose Claude only, Codex only, or both. Herald runs the selected first-party
+CLI on your subscription, within its usage limits, without a model API key.
+Neither provider is required when you choose the other.
 
 **A Google account.** Everything else is built on mail and calendar.
 
@@ -103,45 +97,49 @@ thing with the same questions.
 
 ## Step 3: the wizard
 
-There are eleven screens. Each one checks that what you just did worked before
+There are twelve screens. Each one checks that what you just did worked before
 offering the next, so you find out about a problem on the screen that caused it.
 
-1. **Before we start** checks this computer has what Herald needs.
-2. **Where your Herald lives** creates `~/.herald`, the private folder
+1. Your model providers offers Claude only, Codex only, or both, with no
+   provider preselected. If you choose both, pick the default for scheduled
+   jobs and new conversations. Claude Remote Control is a separate optional
+   surface and starts off.
+2. Before we start checks this computer has what Herald needs.
+3. Where your Herald lives creates `~/.herald`, the private folder
    holding everything it will know about you. It offers to keep a version
    history, and separately to back that up to a private GitHub repository. The
    second one is off by default; read what it says before saying yes.
-3. **You, briefly** asks your name, your pronouns, your timezone, and what to call
+4. You, briefly asks your name, your pronouns, your timezone, and what to call
    your agent.
-4. **Updates, or a program of your own** asks whether your copy receives new
+5. Updates, or a program of your own asks whether your copy receives new
    releases (the default, and the reversible choice) or owns its code and stops
    updating. [`updates.md`](updates.md) is the longer version; in short,
    following costs you almost nothing, because everything you would
    want to change lives outside the program.
-5. **Google** is the long one. Google will not let a program read your account
+6. Google is the long one. Google will not let a program read your account
    until you create a project that asks for permission, so the wizard walks you
    through it a click at a time, with the links. Two things people trip on, both
    called out on the page: you must add yourself as a **test user**, and Google
    will say that the app is **unverified**. It is, because you made it four
    minutes ago and nobody else will ever use it.
-6. **Telegram** is optional, and worth it. This is how your agent reaches you
+7. Telegram is optional, and worth it. This is how your agent reaches you
    when you are not at the machine, and how you answer. You make a bot by
    messaging Telegram's own bot; the wizard walks through it.
-7. **What else should it read?** offers GitHub activity, job postings, calendar
+8. What else should it read? offers GitHub activity, job postings, calendar
    feeds, and on a Mac your Messages database. All optional.
-8. **Tell it who you are** is the hour. Write about yourself: what you are
+9. Tell it who you are is the hour. Write about yourself: what you are
    trying to do, what a good week looks like, who matters, what you want to be
    interrupted for. There are prompts, and you can ignore them. You can dictate
    instead of typing, and it saves as you go, so you can stop and come back.
    Then it asks you eight to fifteen follow-up questions about what you
    wrote, and finally turns all of it into the files it reads every day.
-9. **Read what it wrote** shows everything it concluded about you, editable. Fix
+10. Read what it wrote shows everything it concluded about you, editable. Fix
    anything wrong now; a wrong fact here becomes a wrong assumption every
    morning.
-10. **Start it running** sets up the background jobs, reads everything once,
+11. Start it running sets up the background jobs, reads everything once,
    and builds a morning brief without spending anything so you can see what it
    has to work with.
-11. **Done** says what happens next, and how to stop it.
+12. Done says what happens next, and how to stop it.
 
 ## After that
 
@@ -153,7 +151,7 @@ Four commands to know:
 herald status      # what it has read, what it cost, what is failing
 herald setup       # re-run any single step: herald setup --step google
 herald attach      # a terminal conversation with it
-herald brain url   # a link that opens the same agent in the Claude app
+herald setup --step providers   # change providers or the default
 ```
 
 **Optional, Linux: let it ask before running things as root.** Herald's sessions
@@ -202,5 +200,15 @@ the machine you are sitting at, and leave it running until setup is done:
 ssh -N -L 127.0.0.1:8799:127.0.0.1:8799 -L 127.0.0.1:8765:127.0.0.1:8765 you@server
 ```
 
-Requires Python 3.11+, git, tmux, and a signed-in `claude`. `$HERALD_HOME` overrides
+Requires Python 3.11+, git, and your chosen CLI signed in on its subscription.
+Install Claude with `curl -fsSL https://claude.ai/install.sh | bash`, then
+`claude auth login`; install Codex with
+`curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then `codex login`.
+These are the first-party installers ([Codex CLI documentation](https://learn.chatgpt.com/docs/cli)).
+Only optional Claude Remote Control needs tmux.
+For unattended installs, `HERALD_ENGINES=claude`, `codex` or `both` explicitly
+chooses which CLIs the installer installs. With no choice it defers to setup.
+Models and effort use the CLI defaults; set `engines.claude.model` or
+`engines.codex.model` if you want an override. `engines.primary` remains a
+legacy alias for `engines.claude`. `$HERALD_HOME` overrides
 where your data goes. Everything the wizard does is re-runnable per step.

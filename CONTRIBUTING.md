@@ -29,7 +29,7 @@ If it is genuinely general, it belongs in the program.
 `tools/check.py` enforces these; if one fails, the fix is the code:
 
 1. **Only `lib/herald/think.py` launches an engine**, and it launches the
-   `claude` CLI. Never a model HTTP API, never an SDK, never `--bare`, never an
+   `claude` or `codex` CLI. Never a model HTTP API, never an SDK, never `--bare`, never an
    API key. This is a terms-of-service line, not a preference.
 2. **Only `lib/herald/gwrite.py` writes to Google**, so every outward write is
    logged and the digest can report it.

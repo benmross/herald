@@ -78,8 +78,9 @@ def cmd_status(args) -> int:
           f"{os.uname().nodename}  {config.ROOT}")
 
     _hdr("engines")
-    default_engine = config.get("engines.default_engine", "claude")
-    for engine, block in (("claude", "engines.primary"), ("codex", "engines.codex")):
+    default_engine = config.get("engines.default_engine")
+    for engine in config.enabled_engines():
+        block = f"engines.{engine}"
         cmd = config.get(f"{block}.cmd", engine)
         path = shutil.which(cmd, path=config.agent_env()["PATH"])
         tag = " (default)" if engine == default_engine else ""
@@ -90,12 +91,9 @@ def cmd_status(args) -> int:
             except Exception:
                 ver = "?"
             print(f"  {engine:9} {_c('ok', OK)}   {cmd:7} {ver}{tag}")
-        elif engine == default_engine:
-            print(f"  {engine:9} {_c('MISSING', BAD)}  {cmd}{tag}")
         else:
-            # The second engine is optional: nothing runs on it unless asked.
-            print(f"  {engine:9} {_c('absent', DIM)}  {cmd}  not installed; "
-                  f"/{engine} and --engine {engine} will fail until it is")
+            print(f"  {engine:9} {_c('MISSING', BAD)}  {cmd}{tag}; "
+                  "run `herald setup --step preflight` for install instructions")
 
     _hdr("spend  (client-side estimate, not your bill)")
     rows = db.query("""
@@ -217,48 +215,9 @@ def cmd_doctor(args) -> int:
           not any(k in env for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY")),
           "an API key would silently move Herald onto metered billing")
     sys.path.insert(0, str(config.ROOT))
-    from setup.preflight import claude_auth  # noqa: PLC0415
-    auth = claude_auth()
-    check("claude logged in", bool(auth.get("loggedIn")),
-          "" if auth.get("loggedIn") else "run `claude` and /login")
-    if shutil.which("codex", path=env["PATH"]):
-        try:
-            r = subprocess.run(["codex", "login", "status"], capture_output=True,
-                               text=True, timeout=15, env=env)
-            codex_in = r.returncode == 0 and "logged in" in (r.stdout + r.stderr).lower()
-        except (OSError, subprocess.SubprocessError):
-            codex_in = False
-        check("codex logged in (optional second engine)", codex_in,
-              "" if codex_in else "run `codex login`, or ignore if you never use /codex")
-    creds = pathlib.Path.home() / ".claude" / ".credentials.json"
-    if auth.get("loggedIn") and not creds.exists():
-        print(f"        {_c('subscription: ' + str(auth.get('subscriptionType')), DIM)}")
-    if creds.exists():
-        try:
-            oauth = json.loads(creds.read_text()).get("claudeAiOauth", {})
-            sub = oauth.get("subscriptionType")
-            print(f"        {_c('subscription: ' + str(sub), DIM)}")
-            # The refresh token is the deadline that matters, and it is short --
-            # about a day, extended every time Claude Code runs. An always-on
-            # Herald therefore never sees it, while a machine that sleeps for
-            # longer than that comes back logged out and silently stops doing
-            # anything model-driven until someone runs `claude` and /login.
-            # Worth reporting as a fact rather than a warning: on a healthy
-            # install this is always a few hours away and means nothing.
-            deadline = oauth.get("refreshTokenExpiresAt")
-            if deadline:
-                when = dt.datetime.fromtimestamp(deadline / 1000)
-                hours = (when - dt.datetime.now()).total_seconds() / 3600
-                if hours <= 0:
-                    check("the login can still be refreshed", False,
-                          f"it expired at {when:%Y-%m-%d %H:%M}. Run `claude` "
-                          f"and /login; nothing model-driven works until you do.")
-                else:
-                    print(f"        {_c(f'login refreshable for another '
-                                        f'{hours:.0f}h (renewed on every run)',
-                                        DIM)}")
-        except Exception:
-            pass
+    from setup.preflight import provider_checks  # noqa: PLC0415
+    for row in provider_checks():
+        check(row["name"], row["ok"], row["detail"] if row["ok"] else row["fix"])
     from herald import google as google_mod  # noqa: PLC0415
     check("google token", google_mod.available(),
           f"expected in {google_mod.credentials_dir()}. Run `herald setup --step google`")
@@ -636,8 +595,13 @@ def cmd_brain(args) -> int:
 
 
 def cmd_attach(args) -> int:
-    """Attach to the brain's real terminal. Ctrl-b d to detach."""
-    return subprocess.run([str(config.ROOT / "bin" / "herald-brain"), "attach"]).returncode
+    """Open the selected provider's terminal conversation."""
+    from herald import think as think_mod  # noqa: PLC0415
+    try:
+        return think_mod.interactive(args.engine)
+    except (ValueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 def cmd_collect(args) -> int:
@@ -1906,7 +1870,9 @@ def main() -> int:
                    choices=["start", "stop", "ensure", "status", "url"])
     b.set_defaults(fn=cmd_brain)
 
-    sub.add_parser("attach", help="attach to the brain's terminal").set_defaults(fn=cmd_attach)
+    a = sub.add_parser("attach", help="terminal conversation with your chosen provider")
+    a.add_argument("--engine", choices=list(config.ENGINE_NAMES))
+    a.set_defaults(fn=cmd_attach)
 
     c = sub.add_parser("collect", help="run collectors that are due")
     c.add_argument("names", nargs="*",

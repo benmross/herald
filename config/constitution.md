@@ -432,16 +432,16 @@ Every invocation is metered into the `runs` table. The habits that matter:
 - One agent session per cycle, never one per source. Batching saves more than
   anything else here.
 - Deterministic work belongs in Python. If a loop can do it, a loop should.
-- Sonnet for routine cycles; escalate to Opus when the reasoning is hard.
-  `herald think --escalate`.
-- A trivial `claude -p` call still loads ~14k tokens of context before it reads
-  your prompt. Treat every invocation as costing that much whether or not it
-  does anything.
+- Use the user's chosen provider and configured model for routine cycles.
+  `herald think --escalate` uses that same provider's escalation settings when
+  the reasoning is hard. Never choose a different provider on their behalf.
+- Both CLIs load project instructions and skills before the prompt. Each
+  invocation repeats that context, so batch related work into one session.
 
 ## Building things with them
 
 `projects/` is where their code lives. The brain serves sessions out of the
-repository root, so a session started from a phone or claude.ai/code can `cd`
+repository root, so a session started from a phone or terminal can `cd`
 into a project and work there with the full ledger still one directory up.
 
 **Match the surface to the work.** A chat thread is good for starting something,

@@ -11,32 +11,21 @@ costs you in ways other than money.
 
 | | |
 |---|---|
-| **RAM** | Anthropic gives Claude Code a floor of **4 GB**. Herald itself is small; the model CLI is what wants the memory. |
+| **RAM** | Allow **4 GB** for the model CLI. Claude Code documents that minimum; Codex workloads also need room for tools. Herald itself is small; the model CLI is what wants the memory. |
 | **CPU** | Anything. It is idle almost all the time and bursts for a couple of minutes a day. |
 | **Disk** | A few hundred MB to start. Mail metadata and message history grow slowly; the ledger here is ~80 MB after a fortnight of heavy use. |
-| **Architecture** | x64 or ARM64 both work: Claude Code ships native binaries for both, and no longer needs Node at runtime. |
+| **Architecture** | x64 or ARM64. Both model CLIs provide native installers; check the chosen CLI's supported platform. |
 | **OS** | Ubuntu 20.04+, Debian 10+, Alpine 3.19+, or macOS 13+. Windows through WSL2, or through Docker ([`docker.md`](docker.md)). |
 | **Network** | Outbound HTTPS. **No inbound ports**, ever: Telegram is long-polled, and the setup wizard binds to localhost. |
-| **Uptime** | See the login warning below. This is the constraint people do not expect. |
+| **Uptime** | Scheduled jobs run only while the machine is awake and your chosen CLI is signed in. |
 
-### The login constraint nobody expects
+### Provider logins after downtime
 
-Claude Code's stored login refreshes itself every time it runs, and the refresh
-window is roughly a day, not months. `herald doctor` reports it:
-
-```
-login refreshable for another 13h (renewed on every run)
-```
-
-An always-on Herald renews it constantly and never notices. **A machine that is
-off or asleep for much longer than a day comes back logged out**, and everything
-model-driven (the digest, the scout pass, answering you) stops until somebody
-runs `claude` and `/login` again. Collectors keep working, because they never
-touch a model.
-
-That single fact is the strongest argument for a machine that stays on, and the
-reason "I'll just leave it on my laptop when I remember" is the option that
-disappoints.
+Both providers keep their own login state and refresh it through their CLI.
+If scheduled jobs fail after downtime, run `herald doctor`: it checks the
+providers you selected and prints their sign-in commands. Use
+`claude auth login` for Claude or `codex login` for Codex. Collectors continue
+working independently of model authentication.
 
 ## The free options, ranked
 
@@ -65,24 +54,24 @@ display is off", or `caffeinate -s`. On a laptop, also disable lid-close sleep.
 ### 2. Oracle Cloud Always Free: the only cloud free tier that fits
 
 This is the only free VM with enough memory: 2 Ampere ARM cores and 12 GB
-of RAM, permanently, plus two tiny AMD instances. ARM is fine, because Claude
-Code has native `linux-arm64` binaries.
+of RAM, permanently, plus two tiny AMD instances. Both CLI providers support
+ARM64 Linux.
 
 It has four catches, and you should know all of them before choosing it:
 
-- **The allowance was halved in June 2026**, from 4 cores and 24 GB to 2 and 12,
+- The allowance was halved in June 2026, from 4 cores and 24 GB to 2 and 12,
   with no announcement: the documentation was edited and people found out when
   their instances were resized. What is free today is not a promise about next
   year.
-- **Idle instances get reclaimed.** Under 10% CPU *and* under 10% network over
+- Idle instances get reclaimed. Under 10% CPU *and* under 10% network over
   seven days and Oracle may stop yours. Herald is idle by design, so this is a
   live risk for it. The standard mitigation is a cron job
   that does something measurable; a nightly `herald collect --force` plus a
   regular SSH session is usually enough, and an instance that is stopped can
   simply be started again.
-- **ARM capacity is frequently exhausted** in popular regions, and your home
+- ARM capacity is frequently exhausted in popular regions, and your home
   region is fixed at signup. Expect to retry, possibly for days.
-- **A credit card is required**, and the account is easy to trip into paid
+- A credit card is required, and the account is easy to trip into paid
   resources if you provision anything beyond the free shapes.
 
 ### 3. Google Cloud's free e2-micro: free forever, and too small
@@ -97,17 +86,17 @@ It is fine for experimenting and not for the thing you rely on.
 
 ### 4. What does not work, and why
 
-- **AWS**: the 12-month free tier ended for accounts created after 15 July 2025;
+- AWS: the 12-month free tier ended for accounts created after 15 July 2025;
   new accounts get credits that expire. A home for something meant to run for
   years should not have a countdown.
-- **Azure**: 12 months of a B1S, then it stops being free.
-- **Render, Railway, and most "free app hosting"**: the instance spins down
+- Azure: 12 months of a B1S, then it stops being free.
+- Render, Railway, and most "free app hosting": the instance spins down
   after minutes of inactivity and the filesystem is ephemeral. Herald's memory
   *is* a filesystem, and a Herald that sleeps between requests cannot brief you
   at 06:30. A larger instance would not fix either problem.
-- **Fly.io**: no free tier since October 2024. An always-on machine is a couple
+- Fly.io: no free tier since October 2024. An always-on machine is a couple
   of dollars a month, which makes it a cheap paid option rather than a free one.
-- **GitHub Codespaces, Replit, Colab**: session-scoped by design.
+- GitHub Codespaces, Replit, Colab: session-scoped by design.
 
 If you would rather pay a little than manage hardware, a €4/month VPS from any
 of the usual providers clears the 4 GB bar without any of Oracle's caveats, and
@@ -118,7 +107,10 @@ that is a reasonable answer to this question.
 Three things differ from a machine you are sitting at, and the wizard handles
 all of them:
 
-**Logging in to Claude Code.** Run `claude`, press `c` to copy the login URL,
+**Logging in to your provider.** For Codex, run `codex login --device-auth`
+and complete the browser flow on your own computer
+([official authentication documentation](https://learn.chatgpt.com/docs/auth)).
+For Claude Code, run `claude`, press `c` to copy the login URL,
 open it in a browser anywhere, and paste the code back at the prompt. The docs
 call this out for SSH sessions specifically; it is not a workaround.
 
@@ -143,19 +135,21 @@ looks exactly like Herald having crashed.
 
 ## One machine, one subscription, one person
 
-Herald runs Claude Code on *your* subscription, as you. That is what makes it
+Herald runs your chosen first-party CLI on *your* subscription, as you. That is what makes it
 legitimate, and it means the obvious economy is not available: a Herald hosted
 for several people out of one account is a shared subscription, which the terms
 do not allow. Everyone who wants one needs their own machine and their own
 subscription.
 
-It also means the machine holds your Claude login, your Google token, and your
+It also means the machine holds your selected provider logins, your Google token, and your
 whole ledger. On a cloud host, that is your data on somebody else's disk, which
 is a good reason to prefer the old laptop in the cupboard, and a better reason to
 keep the ledger repository private if you give it one.
 
 ## Sources
 
+- [Codex CLI installation](https://learn.chatgpt.com/docs/cli): native installers and supported platforms
+- [Codex authentication](https://learn.chatgpt.com/docs/auth): ChatGPT sign-in and device authentication
 - [Claude Code system requirements](https://code.claude.com/docs/en/setup): 4 GB RAM, x64/ARM64, supported OSes
 - [Claude Code authentication](https://code.claude.com/docs/en/authentication): SSH login flow, credential storage, `setup-token` limits
 - [Oracle Cloud Infrastructure Free Tier](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm): Always Free resources and idle reclamation

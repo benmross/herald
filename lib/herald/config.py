@@ -103,7 +103,14 @@ def load() -> dict:
     if _cache is None:
         base = json.loads(DEFAULTS_PATH.read_text()) if DEFAULTS_PATH.exists() else {}
         user = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
+        # Keep legacy Claude settings working without assigning it priority.
+        engine_overrides = user.get("engines", {})
+        if isinstance(engine_overrides.get("primary"), dict):
+            user = copy.deepcopy(user)
+            user["engines"]["claude"] = _merge(
+                engine_overrides["primary"], engine_overrides.get("claude", {}))
         _cache = _merge(base, user)
+        _cache["engines"]["primary"] = copy.deepcopy(_cache["engines"]["claude"])
     return _cache
 
 
@@ -145,16 +152,26 @@ def set_user(path: str, value) -> dict:
     person running it. Anything written here therefore survives an update,
     and anything not written here follows one.
     """
+    return set_users({path: value})
+
+
+def set_users(values: dict) -> dict:
+    """Apply related settings in one atomic write, preserving other leaves."""
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     current = json.loads(CONFIG_PATH.read_text()) if CONFIG_PATH.exists() else {}
-    node = current
-    parts = path.split(".")
-    for part in parts[:-1]:
-        if not isinstance(node.get(part), dict):
-            node[part] = {}
-        node = node[part]
-    node[parts[-1]] = value
-    CONFIG_PATH.write_text(json.dumps(current, indent=2) + "\n")
+    for path, value in values.items():
+        if path == "engines.primary" or path.startswith("engines.primary."):
+            path = path.replace("engines.primary", "engines.claude", 1)
+        node = current
+        parts = path.split(".")
+        for part in parts[:-1]:
+            if not isinstance(node.get(part), dict):
+                node[part] = {}
+            node = node[part]
+        node[parts[-1]] = value
+    tmp = CONFIG_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(current, indent=2) + "\n")
+    tmp.replace(CONFIG_PATH)
     return reload()
 
 
@@ -290,3 +307,37 @@ def agent_env() -> dict:
     home = env.get("HOME", str(pathlib.Path.home()))
     env["PATH"] = os.pathsep.join([f"{home}/.local/bin", env.get("PATH", "/usr/bin:/bin")])
     return env
+
+
+ENGINE_NAMES = ("claude", "codex")
+
+
+def enabled_engines() -> tuple[str, ...]:
+    """Providers explicitly enabled, or both for legacy configurations."""
+    value = get("engines.enabled")
+    if value is None:
+        return ENGINE_NAMES
+    if not isinstance(value, list) or not value or any(e not in ENGINE_NAMES for e in value):
+        raise ValueError("engines.enabled must list claude, codex, or both")
+    return tuple(dict.fromkeys(value))
+
+
+def engine_settings(engine: str) -> dict:
+    if engine not in ENGINE_NAMES:
+        raise ValueError(f"unknown engine {engine!r}")
+    return dict(get(f"engines.{engine}") or {})
+
+
+def default_engine() -> str:
+    """Use the user's choice, or their sole enabled provider. Never rank them."""
+    enabled = enabled_engines()
+    engine = get("engines.default_engine")
+    if engine is None and len(enabled) == 1:
+        engine = enabled[0]
+    if engine not in enabled:
+        raise ValueError("Choose a default provider with `herald setup --step providers`")
+    return engine
+
+
+def remote_control_enabled() -> bool:
+    return "claude" in enabled_engines() and bool(get("surfaces.remote_control.enabled"))

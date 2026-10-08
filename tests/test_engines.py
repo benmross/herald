@@ -179,7 +179,8 @@ class EffortTests(unittest.TestCase):
         self.assertIsNone(think.normalize_effort("auto"))
 
     def test_the_default_engine_comes_from_config(self):
-        with mock.patch.object(think.config, "get", return_value="codex"):
+        with mock.patch.object(think.config, "get",
+                               side_effect=lambda k, d=None: "codex" if k == "engines.default_engine" else d):
             self.assertEqual(think.resolve_engine(None), "codex")
         self.assertEqual(think.resolve_engine("claude"), "claude")
 

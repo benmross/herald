@@ -118,9 +118,9 @@ A Telegram turn runs as a child of `herald-telegram`. `herald restart
 herald-telegram` from inside that turn kills the turn with it: the live
 message stops updating, the typing indicator goes, and nothing after the
 restart reaches the user. It happened on 23 Sep 2026 at the last step of a long
-build. From a Telegram turn, restart it detached and last, after everything is
-committed (`systemd-run --user --on-active=5 systemctl --user restart
-herald-telegram`), and say in the reply that it is about to happen.
+build. From a Telegram turn, request `herald restart herald-telegram.service --defer`
+after everything is committed. It checks first and waits until active turns
+finish. Say in the reply that the reload follows it.
 
 ## A new collector is live the moment the file exists
 
@@ -189,7 +189,7 @@ git -C ~/herald log --oneline     # every change has a commit explaining why
 ```
 
 **If the Telegram bridge is down**, the user cannot reach you there. Fix it from
-a session started through the Claude app or `herald attach`, or they can run
+a terminal session through `herald attach`, or they can run
 `systemctl --user restart herald-telegram` themselves.
 
 **If the brain is down**, the watchdog restarts it within five minutes.
@@ -218,15 +218,14 @@ session reads to understand a decision. When you fix a bug, say what the failure
 was and why it was not visible; when you make a judgment call, say what
 you traded away.
 
-End with:
-
-    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+If the active coding tool requires a co-author trailer, use its own attribution.
+Never attribute another provider's work to Claude or Codex.
 
 ## Where things are
 
 ```
 bin/herald            the CLI. Subcommands are cmd_* functions.
-bin/herald-brain      the Remote Control session server, in tmux
+bin/herald-brain      optional Claude Remote Control, in tmux
 bin/herald-telegram   the Telegram bridge; sessions keyed per topic
 lib/herald/think.py   the only place an engine is launched
 lib/herald/db.py      schema and helpers. Change the schema here.

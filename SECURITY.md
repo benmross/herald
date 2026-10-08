@@ -23,9 +23,10 @@ using a denylist derived from *your* config and secrets rather than a fixed list
 ## What leaves the machine
 
 - **Google**, for the account you connected — reads, and the writes you allowed.
-- **Anthropic**, as Claude Code prompts. A cycle sends a curated brief: recent
-  mail senders and snippets, upcoming events, your identity files. This is the
-  same path as using Claude Code yourself, billed to your subscription.
+- **Your selected model provider**, Anthropic through Claude Code or OpenAI
+  through the Codex CLI. A cycle sends a curated brief: recent mail senders
+  and snippets, upcoming events, your identity files. This uses your
+  subscription. An unused provider receives no prompts.
 - **Telegram**, if you set it up: your digests and your conversation.
 - **OpenStreetMap**, only if you enable something that geocodes, and only the
   address or coordinate being resolved.
@@ -64,7 +65,7 @@ and the mechanisms exist for the cases where a rule is not enough.
 
 ## What Herald deliberately does not do
 
-- No API keys. `config.agent_env()` strips `ANTHROPIC_API_KEY` before every
+- No API keys. `config.agent_env()` strips both vendors' API key variables before every
   launch, so a key in your shell cannot silently move you onto metered billing.
 - No `--bare`, which would bypass the subscription login.
 - No listening on a network interface. The setup wizard binds to 127.0.0.1 and

@@ -129,7 +129,7 @@ A cycle is the only place a model is invoked on a schedule. The shape:
 ```
 collect (already done, its own timer)
   → snapshot     deterministic Python, free
-  → ONE session  claude -p or codex exec via think.think()
+  → ONE session  chosen first-party CLI via think.think()
   → apply        deterministic Python
   → notify
 ```
@@ -147,7 +147,7 @@ result = think.think(prompt, label=f"cycle:{CYCLE}", cwd=config.ROOT,
 
 - `label` shows up in the `runs` table. Use `cycle:<name>` so spend is
   attributable.
-- `escalate=True` picks Opus. Decide it from how much is new, not by
+- `escalate=True` uses the chosen provider's configured escalation. Decide it from how much is new, not by
   default: scout's first bulk pass cost $2.79 and the same pass after the diff
   rewrite cost $0.14.
 - Let the session write the ledger itself; those are green actions and it has

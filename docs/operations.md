@@ -5,8 +5,8 @@
 ```bash
 herald status          # engines, spend by label, collector health, ledger
 herald doctor          # the things that break silently
-herald brain status    # the session server
-herald attach          # its terminal (ctrl-b d to detach)
+herald brain status    # optional Claude Remote Control
+herald attach          # terminal conversation on your chosen provider
 herald db --schema     # what is in the ledger and how to query it
 herald fact <id> ...   # facts whole, every column, in one call
 herald session         # a conversation's context size and where its time went
@@ -16,7 +16,7 @@ herald session         # a conversation's context size and where its time went
 
 | Unit | What it does |
 |---|---|
-| `herald-brain.service` | `claude remote-control` in tmux, with sessions on demand from the Claude app and claude.ai/code. |
+| `herald-brain.service` | Optional `claude remote-control` in tmux, enabled only when selected in setup, with sessions on demand from the Claude app and claude.ai/code. |
 | `herald-watchdog.timer` | every 5 min; probes fd pressure and heartbeats as well as liveness |
 | `herald-telegram.service` | the Telegram bridge, one session per forum topic |
 | `herald-collect.timer` | every 30 min; each collector runs on its own cadence |
@@ -73,11 +73,11 @@ roughly: dawn ~$0.35, two scout passes ~$0.15 each when quiet, plus Telegram
 turns, which comes to under a dollar a day.
 
 If it climbs, the cause is almost always something being re-derived rather than
-remembered. Check whether a cycle is escalating to Opus when it should not, and
+remembered. Check whether a cycle is escalating unnecessarily, and
 whether its snapshot is carrying standing state instead of diffs.
 
-A trivial `claude -p` still loads ~14k tokens of CLAUDE.md, skills and hooks
-before it reads the prompt. That is the floor, and the reason to batch.
+Both model CLIs load project instructions, skills and hooks before the prompt.
+Batch related work into one session to avoid repeating that context.
 
 ## When something breaks
 
@@ -130,8 +130,10 @@ herald-root -n 50` (system unit, not `--user`). After pulling an update that
 touched `bin/herald-rootd`, run `herald root update`; the installed copy does
 not change until you do.
 
-**Login expired.** `claude` on the server, `/login`. Everything model-driven
-stops until this is done. `herald doctor` shows the subscription tier.
+**Login expired.** `herald doctor` checks only your enabled providers and gives
+their sign-in commands: `claude auth login` or `codex login`. It asks the CLIs
+for authentication status and never reads their credential files. A failure
+affects that provider; it never switches to the other one.
 
 ## Credentials
 
@@ -141,6 +143,7 @@ Never printed, quoted, committed or transmitted:
   `~/.config/google-agent`): the OAuth client and token, shared with the
   `google-workspace` skill
 - `~/.claude/.credentials.json`: the Claude Code login
+- `~/.codex/auth.json`: the Codex login
 - `$HERALD_HOME/secrets.json`: every token and private feed URL. Mode 600,
   gitignored even inside the private ledger repo.
 

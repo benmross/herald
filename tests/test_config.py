@@ -106,7 +106,7 @@ class SettingsMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             cfg = self._home_with(td, {"engines": {"primary": {"model": "opus"}}})
             self.assertEqual(cfg.get("engines.primary.model"), "opus")
-            self.assertEqual(cfg.get("engines.primary.escalate_model"), "opus")
+            self.assertIsNone(cfg.get("engines.primary.escalate_model"))
             self.assertEqual(cfg.get("engines.primary.cmd"), "claude")
             self.assertEqual(cfg.get("engines.think_idle_timeout_seconds"), 900)
 

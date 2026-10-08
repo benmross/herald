@@ -339,13 +339,14 @@ def main() -> int:
     # The brain has its own supervisor and its own idea of healthy (a tmux
     # session with a live `claude remote-control` in it), so delegate rather
     # than reimplement.
-    brain = subprocess.run([str(ROOT / "bin" / "herald-brain"), "ensure"],
-                           capture_output=True, text=True)
-    out = (brain.stdout or "").strip()
-    if brain.returncode != 0:
-        log(f"brain: ensure failed: {(brain.stderr or '').strip()}")
-    elif out and "already running" not in out:
-        log(f"brain: {out}")
+    if config.remote_control_enabled():
+        brain = subprocess.run([str(ROOT / "bin" / "herald-brain"), "ensure"],
+                               capture_output=True, text=True)
+        out = (brain.stdout or "").strip()
+        if brain.returncode != 0:
+            log(f"brain: ensure failed: {(brain.stderr or '').strip()}")
+        elif out and "already running" not in out:
+            log(f"brain: {out}")
 
     check_daemon("herald-telegram.service", state, heartbeat="telegram")
     check_daemon("herald-health-webhook.service", state,

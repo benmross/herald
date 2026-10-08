@@ -104,20 +104,9 @@ MAX_REPLY = 3900
 INBOX = "documents/inbox"
 MAX_DOWNLOAD = 45 * 1024 * 1024      # Telegram's own bot download cap is 20 MB
 
-# Per-topic model override. None means "no command has set one yet in this
-# topic" -- the chat default (DEFAULT_MODEL) applies. All three commands set
-# an explicit model, /sonnet included: config's engines.primary.model is a
-# separate knob (what cycles run on, kept cheap on purpose -- see
-# CLAUDE.md's "Spending their subscription well"), so /sonnet has to name the
-# model itself rather than deferring to a value that is free to drift out
-# from under it.
-DEFAULT_MODEL = "opus"
+# Topic choices override the same provider/model settings used by cycles.
+# Provider-specific model shortcuts are explicit choices, never defaults.
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
-# Per-topic engine, the same way. The three model commands above are Claude
-# models, so each of them also puts the topic on claude; /codex [model] and
-# /claude [model] name the engine outright. Switching engines starts a fresh
-# session, because neither engine can resume the other's transcript.
-DEFAULT_ENGINE = "claude"
 ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex"}
 # Per-topic thinking level, for either engine: `/effort high`, or the level
 # as its own command. None means the engine's configured default.
@@ -533,10 +522,19 @@ def load_state() -> dict:
                           (NAME,)).fetchone()
     if row and row["cursor"]:
         try:
-            return json.loads(row["cursor"])
+            state = json.loads(row["cursor"])
+            if not state.get("provider_choices_version"):
+                # Older bridge versions used Claude/Opus for unset topic
+                # choices. Freeze those before adopting user-selected defaults.
+                for topic in state.get("threads", {}).values():
+                    topic["engine"] = topic.get("engine") or "claude"
+                    if topic["engine"] == "claude" and not topic.get("model"):
+                        topic["model"] = "opus"
+                state["provider_choices_version"] = 1
+            return state
         except json.JSONDecodeError:
             pass
-    return {"offset": 0, "threads": {}}
+    return {"offset": 0, "threads": {}, "provider_choices_version": 1}
 
 
 def save_state(state: dict) -> None:
@@ -740,7 +738,7 @@ def _remember_turn(chat_id: int, key: str, session_id: str | None, ts: dict,
             if turns is not None:
                 tgsessions.save(
                     con, session_id, key,
-                    engine=ts.get("engine") or DEFAULT_ENGINE, model=ts.get("model"),
+                    engine=ts.get("engine") or config.default_engine(), model=ts.get("model"),
                     turns=turns, orientation=ts.get("orientation"))
             tgsessions.record(con, chat_id, ids, session_id)
     except Exception as exc:  # noqa: BLE001
@@ -852,6 +850,7 @@ def handle(update: dict, state: dict) -> None:
         print(f"[{key}] cleared on request")
         return
 
+    config.reload()
     cmd = command_word(text)
     arg = text.strip().split(None, 1)[1].strip() if len(text.strip().split(None, 1)) > 1 else ""
     if cmd in MODEL_COMMANDS or cmd in ENGINE_COMMANDS:
@@ -859,7 +858,12 @@ def handle(update: dict, state: dict) -> None:
             engine, model = "claude", MODEL_COMMANDS[cmd]
         else:
             engine, model = ENGINE_COMMANDS[cmd], (arg or None)
-        switched = engine != (ts.get("engine") or DEFAULT_ENGINE)
+        try:
+            think.resolve_engine(engine)
+        except ValueError as exc:
+            send(chat_id, str(exc), thread_id)
+            return
+        switched = engine != (ts.get("engine") or config.default_engine())
         if ts.get("effort_caps") and (switched or model != ts.get("model")):
             ts.pop("effort_caps", None)
             ts["effort"] = "auto"
@@ -885,7 +889,7 @@ def handle(update: dict, state: dict) -> None:
     if cmd in EFFORT_COMMANDS:
         level = EFFORT_COMMANDS[cmd] or arg
         caps = ts.get("effort_caps") or {}
-        if caps.get("engine") != ts.get("engine", DEFAULT_ENGINE) or caps.get("model") != ts.get("model"):
+        if caps.get("engine") != (ts.get("engine") or config.default_engine()) or caps.get("model") != ts.get("model"):
             caps = {}
         if not level:
             if caps:
@@ -902,7 +906,7 @@ def handle(update: dict, state: dict) -> None:
             return
         try:
             level = "auto" if level == "auto" else think.normalize_effort(level)
-            if (ts.get("engine") or DEFAULT_ENGINE) == "claude" and level != "auto":
+            if (ts.get("engine") or config.default_engine()) == "claude" and level != "auto":
                 think.claude_effort(level)
         except ValueError:
             send(chat_id, f"Not a level I know. One of: {', '.join(think.EFFORTS)}.",
@@ -923,7 +927,7 @@ def handle(update: dict, state: dict) -> None:
         when = datetime.fromtimestamp(target["last_ts"] or 0, tz=EASTERN)
         ts["session_id"] = target["session_id"]
         ts["turns"] = target["turns"] or 0
-        ts["engine"] = target["engine"] or DEFAULT_ENGINE
+        ts["engine"] = target["engine"] or config.default_engine()
         ts["model"] = target["model"]
         caps = ts.get("effort_caps") or {}
         if caps and (caps["engine"] != ts["engine"] or caps["model"] != ts["model"]):
@@ -965,14 +969,18 @@ def handle(update: dict, state: dict) -> None:
         print(f"→ {text[:60]!r} [{key}] "
               f"({'new session' if reason else 'continuing'})")
 
-    # Marks this topic active for exactly as long as a `claude restart --defer`
+    # Marks this topic active for exactly as long as a `herald restart --defer`
     # issued from *inside* this turn needs to stay pending -- see
     # lib/herald/activity.py and cmd_restart in bin/herald.
     # per-topic overrides from /claude, /codex, /fable, /opus, /sonnet and
-    # /effort, else the chat defaults. A Codex topic with no model named runs
-    # on whatever Codex's own config says, so None is the right default there.
-    engine = ts.get("engine") or DEFAULT_ENGINE
-    model = ts.get("model") or (DEFAULT_MODEL if engine == "claude" else None)
+    # /effort, else the configured defaults for the chosen provider.
+    try:
+        engine = think.resolve_engine(ts.get("engine"))
+    except ValueError as exc:
+        send(chat_id, str(exc), thread_id)
+        return
+    ts["engine"] = engine
+    model = ts.get("model") or config.get(f"engines.{engine}.model")
     effort = ts.get("effort")
     with activity.Turn("telegram", key):
         posted: list[int] = [*(m.get("message_id") for m in parts), *notices]
@@ -1068,13 +1076,13 @@ def _lock_for(key: str) -> threading.Lock:
     """One lock per topic, created lazily. Two different topics get two
     different locks and never wait on each other; two messages landing in the
     *same* topic close together queue on this lock instead of running two
-    `claude -p` processes against the same --resume session id at once."""
+    engine processes against the same --resume session id at once."""
     with _topic_locks_guard:
         return _topic_locks.setdefault(key, threading.Lock())
 
 
 def _select_model(ts: dict, engine: str, model: str) -> str:
-    switched = engine != (ts.get("engine") or DEFAULT_ENGINE)
+    switched = engine != (ts.get("engine") or config.default_engine())
     ts.update(engine=engine, model=model)
     if switched:
         ts.update(session_id=None, turns=0, last_ts=time.time())
@@ -1140,6 +1148,7 @@ def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict,
 
 
 def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker: bool = False) -> None:
+    config.reload()
     # Old persisted menus predate effort metadata. Refresh the selected engine
     # without invalidating their stable model identifiers.
     if "efforts" not in choice:
@@ -1148,6 +1157,13 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
                            if r["model"] == choice["model"]), choice)
         except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
             pass
+    if choice["engine"] not in config.enabled_engines():
+        text = f"{choice['engine']} is disabled. Reopen /models to choose an enabled provider."
+        if edit_picker:
+            _replace_picker(msg, text)
+        else:
+            send((msg.get("chat") or {})["id"], text, msg.get("message_thread_id"))
+        return
     ts = thread_state(state, key)
     note = _select_model(ts, choice["engine"], choice["model"])
     if "efforts" in choice:
@@ -1162,11 +1178,11 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
 
 
 def _model_catalog() -> tuple[list[dict], list[str]]:
-    """Refresh both first-party catalogs in parallel, without inference."""
+    """Refresh the enabled first-party catalogs in parallel, without inference."""
     from concurrent.futures import ThreadPoolExecutor
     rows, errors = [], []
     with ThreadPoolExecutor(max_workers=2) as pool:
-        jobs = {engine: pool.submit(think.available_models, engine) for engine in think.ENGINES}
+        jobs = {engine: pool.submit(think.available_models, engine) for engine in config.enabled_engines()}
         for engine, job in jobs.items():
             try:
                 rows.extend(job.result())
@@ -1183,6 +1199,7 @@ def _handle_models(update: dict, state: dict) -> None:
     key = _topic_key(update)
     if not chat_id or not key:
         return
+    config.reload()
     rows, errors = _model_catalog()
     ts = thread_state(state, key)
     arg = (msg.get("text") or "").strip().split(None, 1)
@@ -1194,10 +1211,10 @@ def _handle_models(update: dict, state: dict) -> None:
                 _choose_model(state, key, msg, matches[0])
             return
         send(chat_id, "Choose a model below, or use /models engine/model.", msg.get("message_thread_id"))
-    engine = ts.get("engine") or DEFAULT_ENGINE
-    current = ts.get("model") or (DEFAULT_MODEL if engine == "claude" else "CLI default")
+    engine = ts.get("engine") or config.default_engine()
+    current = ts.get("model") or (config.get(f"engines.{engine}.model") or "CLI default")
     lines = [f"This topic uses {engine}/{current}.", "Tap a model to switch, or use /models engine/model."]
-    for vendor in think.ENGINES:
+    for vendor in config.enabled_engines():
         vendor_rows = [r for r in rows if r["engine"] == vendor]
         if vendor_rows:
             lines += ["", vendor.capitalize()]
@@ -1431,10 +1448,10 @@ def _handle_debug(update: dict, key: str, state: dict) -> None:
                 "step": think.current_progress(key)} if live else None)
     try:
         with db.session() as con:
-            engine = ts.get("engine") or DEFAULT_ENGINE
+            engine = ts.get("engine") or config.default_engine()
             text = sessioninfo.report(
                 con, ts.get("session_id"), running=running, engine=engine,
-                model=ts.get("model") or (DEFAULT_MODEL if engine == "claude" else None),
+                model=ts.get("model") or config.get(f"engines.{engine}.model"),
                 effort=ts.get("effort"))
     except Exception as exc:  # noqa: BLE001 -- a report, never worth a crash
         text = f"report failed: {type(exc).__name__}: {exc}"
@@ -1754,7 +1771,7 @@ def _study_text(update: dict, state: dict) -> bool:
 
 
 def _dispatch(update: dict, state: dict) -> None:
-    """Runs in its own thread per update so one slow topic (a `claude -p` call
+    """Runs in its own thread per update so one slow topic (an engine call
     can take minutes) never delays a reply in a different one."""
     key = _topic_key(update) or f"unkeyed:{update.get('update_id')}"
     handed_off = False
