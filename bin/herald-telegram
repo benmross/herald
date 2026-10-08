@@ -979,7 +979,7 @@ def handle(update: dict, state: dict) -> None:
         with Working(chat_id, thread_id) as working:
             result = think.think(
                 prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
-                engine=engine, effort=effort,
+                engine=engine, effort=effort, codex_transport="app-server",
                 # None: think() takes it from safety.engine_mode for the
                 # "telegram" surface, so the setting applies here too.
                 permission_mode=None,
@@ -1006,7 +1006,7 @@ def handle(update: dict, state: dict) -> None:
             with Working(chat_id, thread_id) as working:
                 result = think.think(
                     prompt, label=label, model=model, cwd=config.ROOT, resume=None,
-                    engine=engine, effort=effort,
+                    engine=engine, effort=effort, codex_transport="app-server",
                     permission_mode=None,
                     allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                    "WebSearch", "WebFetch", "Bash"],

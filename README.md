@@ -71,6 +71,8 @@ when you finish.
 `/effort` reopens that picker; its CLI default button clears the override.
 `/opus`, `/sonnet` and `/codex` also choose the model for a topic, `/stop` cancels
 a running turn, and `/obligations` lists what you owe.
+You can send follow-up messages while either engine is working in Telegram.
+Codex uses its first-party app-server interface with your existing login.
 
 ## What it does without asking
 

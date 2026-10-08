@@ -248,6 +248,8 @@ def cancel(key: str) -> bool:
     if entry is None or entry["proc"].poll() is not None:
         return False
     entry["cancelled"].set()
+    if entry.get("protocol_cancel"):
+        return True  # The app-server loop sends turn/interrupt, with a kill backstop.
     try:
         if entry.get("process_group"):
             os.killpg(entry["proc"].pid, signal.SIGTERM)
@@ -272,8 +274,8 @@ def steer(key: str, text: str) -> bool:
     would otherwise land in a queue nobody reads again, silently dropped --
     worse than the caller falling back to a normal new turn.
 
-    A Codex run never accepts steers: `codex exec` reads its prompt from stdin
-    once and closes it, so there is no channel to fold a second message into.
+    Codex exec reads its prompt once and closes stdin. The app-server adapter
+    accepts steers while its turn is active and confirms them over JSON-RPC.
     The caller gets False and starts a fresh turn, which is the same path a
     Claude run takes once it has committed to finalizing.
     """
@@ -891,6 +893,303 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
             schema_file.unlink(missing_ok=True)
 
 
+def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
+                          timeout: int, idle_timeout: int,
+                          append_system_prompt: str | None, json_schema: dict | None,
+                          resume: str | None, permission_mode: str,
+                          add_dirs: list[str] | None, on_progress=None,
+                          cancel_key: str | None = None, submitted: list[str] | None = None,
+                          timing: dict | None = None) -> tuple:
+    """One local first-party app-server per invocation, resuming persisted threads.
+
+    Only Telegram opts in. No socket listener, token handling or SDK is needed.
+    Requests and notifications share a reader queue so buffered stdout lines
+    cannot stall behind select(). Accepted follow-ups are never discarded at
+    a turn boundary: a rejected late steer starts a subsequent turn on the
+    same thread. Transport failures are reported, never replayed blindly.
+    """
+    overrides = {"project_doc_fallback_filenames": ["CLAUDE.md"],
+                 "sandbox_mode": "read-only" if permission_mode == "plan" else
+                                 config.get("engines.codex.sandbox", "danger-full-access"),
+                 "approval_policy": "never" if permission_mode == "plan" else
+                                    config.get("engines.codex.approval_policy", "never")}
+    if add_dirs:
+        overrides["sandbox_workspace_write.writable_roots"] = add_dirs
+    if model:
+        overrides["model"] = model
+    if effort:
+        overrides["model_reasoning_effort"] = effort
+    if append_system_prompt:
+        overrides["developer_instructions"] = append_system_prompt
+    cmd = ["codex", "--dangerously-bypass-hook-trust", "app-server", "--listen", "stdio://"]
+    for key, value in overrides.items():
+        cmd += ["-c", key + "=" + json.dumps(value)]
+    state = {"payload": None, "t0": time.monotonic(), "mark": None, "saw_init": False,
+             "phases": [], "pending_tools": {}, "round_trips": 0}
+    events, steers = queue.Queue(), queue.Queue()
+    cancelled = threading.Event()
+    out, err, deferred, requests = [], [], [], {}
+    proc = None
+    readers = []
+    thread_id, turn_id, completed = resume, None, False
+    next_id, interrupted_at = 0, None
+    usage, previous_usage, context_tokens = {}, None, None
+    code = 1
+
+    def active(accepting: bool) -> None:
+        if cancel_key:
+            with _active_lock:
+                entry = _active.get(cancel_key)
+                if entry and entry["proc"] is proc:
+                    entry["accepting_steers"] = accepting and not cancelled.is_set()
+
+    def send(value: dict) -> None:
+        proc.stdin.write(json.dumps(value) + "\n")
+        proc.stdin.flush()
+
+    def request(method: str, params: dict, texts: list[str] | None = None) -> None:
+        nonlocal next_id
+        next_id += 1
+        requests[next_id] = (method, texts)
+        send({"id": next_id, "method": method, "params": params})
+
+    def start_turn(texts: list[str]) -> None:
+        nonlocal completed, turn_id
+        completed, turn_id = False, None
+        state["payload"], state["last_text"] = None, ""
+        params = {"threadId": thread_id, "input": [{"type": "text", "text": t} for t in texts]}
+        if model:
+            params["model"] = model
+        if effort:
+            params["effort"] = effort
+        if json_schema:
+            params["outputSchema"] = _strict_schema(json_schema)
+        request("turn/start", params, texts)
+
+    def fail(message: str) -> None:
+        nonlocal completed
+        active(False)
+        state["payload"] = {"is_error": True, "result": message, "session_id": thread_id}
+        completed = True
+
+    def feed(kind: str, **fields) -> None:
+        _handle_codex_line(json.dumps({"type": kind, **fields}), state, on_progress, cancel_key)
+
+    try:
+        proc = subprocess.Popen(cmd, cwd=str(cwd), env=config.agent_env(), stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                bufsize=1, start_new_session=True)
+        if cancel_key:
+            with _active_lock:
+                _active[cancel_key] = {"proc": proc, "cancelled": cancelled, "steer_queue": steers,
+                    "accepting_steers": False, "progress": "", "process_group": True,
+                    "protocol_cancel": True}
+
+        def read_stdout() -> None:
+            try:
+                for line in proc.stdout:
+                    events.put(line)
+            finally:
+                events.put(None)
+
+        def read_stderr() -> None:
+            for line in proc.stderr:
+                err.append(line)
+
+        for read in (read_stdout, read_stderr):
+            reader = threading.Thread(target=read, daemon=True)
+            reader.start()
+            readers.append(reader)
+        request("initialize", {"clientInfo": {"name": "herald", "version": "1"}})
+        hard = time.monotonic() + timeout if timeout else float("inf")
+        idle = time.monotonic() + idle_timeout
+        while True:
+            now = time.monotonic()
+            if cancelled.is_set() and interrupted_at is None:
+                active(False)
+                interrupted_at = now
+                if thread_id and turn_id and not completed:
+                    request("turn/interrupt", {"threadId": thread_id, "turnId": turn_id})
+                else:
+                    break
+            if interrupted_at is not None and now - interrupted_at >= 5:
+                break
+            if now >= hard or now >= idle:
+                fail("Codex app-server " + (f"hit its {timeout}s ceiling" if now >= hard else
+                                            f"went silent for {idle_timeout}s"))
+                break
+            while not steers.empty():
+                text = steers.get_nowait()
+                if completed or cancelled.is_set():
+                    deferred.append(text)
+                else:
+                    request("turn/steer", {"threadId": thread_id, "expectedTurnId": turn_id,
+                            "input": [{"type": "text", "text": text}]}, [text])
+            if completed and not any(method == "turn/steer" for method, texts in requests.values()):
+                if deferred and not state["payload"].get("is_error") and not cancelled.is_set():
+                    _offer_interim(state, on_progress)
+                    texts, deferred = deferred, []
+                    start_turn(texts)
+                else:
+                    code = 0 if not state["payload"].get("is_error") else 1
+                    break
+            try:
+                line = events.get(timeout=.1)
+            except queue.Empty:
+                continue
+            if line is None:
+                fail("Codex app-server disconnected before confirming completion")
+                break
+            idle = time.monotonic() + idle_timeout
+            out.append(line)
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            method, params = event.get("method"), event.get("params") or {}
+            if method and "id" in event:
+                # An unattended surface never approves a server request.
+                if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+                    send({"id": event["id"], "result": {"decision": "decline"}})
+                else:
+                    send({"id": event["id"], "error": {"code": -32601,
+                          "message": "Interactive input unavailable here; ask the user in your reply."}})
+                continue
+            if "id" in event:
+                pending = requests.pop(event["id"], None)
+                if not pending:
+                    continue
+                operation, texts = pending
+                if "error" in event:
+                    if operation == "turn/steer":
+                        deferred.extend(texts or [])
+                    elif operation != "turn/interrupt":
+                        fail((event["error"] or {}).get("message") or f"{operation} failed")
+                    continue
+                result = event.get("result") or {}
+                if operation == "initialize":
+                    send({"method": "initialized"})
+                    opts = {"cwd": str(cwd), "sandbox": overrides["sandbox_mode"],
+                            "approvalPolicy": overrides["approval_policy"]}
+                    if model:
+                        opts["model"] = model
+                    if append_system_prompt:
+                        opts["developerInstructions"] = append_system_prompt
+                    if resume:
+                        opts.update(threadId=resume, excludeTurns=True)
+                    request("thread/resume" if resume else "thread/start", opts)
+                elif operation in ("thread/start", "thread/resume"):
+                    thread_id = (result.get("thread") or {}).get("id")
+                    if not thread_id:
+                        fail("Codex app-server did not return a thread ID")
+                        continue
+                    feed("thread.started", thread_id=thread_id)
+                    start_turn([prompt])
+                elif operation == "turn/start":
+                    turn_id = (result.get("turn") or {}).get("id") or turn_id
+                    if submitted is not None:
+                        submitted.extend(texts or [])
+                    if not completed:
+                        active(True)
+                elif operation == "turn/steer" and submitted is not None:
+                    submitted.extend(texts or [])
+                continue
+            if params.get("threadId") and params["threadId"] != thread_id:
+                continue
+            if method == "turn/started":
+                turn_id = (params.get("turn") or {}).get("id")
+                active(True)
+            elif method == "thread/tokenUsage/updated" and params.get("turnId") == turn_id:
+                tokens = params.get("tokenUsage") or {}
+                total, last = tokens.get("total") or {}, tokens.get("last") or {}
+                for name in ("inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteInputTokens"):
+                    delta = max(0, total.get(name, 0) - previous_usage.get(name, 0)) if previous_usage else last.get(name, 0)
+                    usage[name] = usage.get(name, 0) + delta
+                previous_usage = total
+                context_tokens = last.get("inputTokens")
+            elif method in ("item/started", "item/completed"):
+                item = dict(params.get("item") or {})
+                if params.get("turnId") != turn_id:
+                    continue
+                kind = item.get("type")
+                if kind == "userMessage":
+                    continue
+                if kind == "agentMessage" and item.get("phase") == "commentary":
+                    if method == "item/completed" and item.get("text"):
+                        temporary = state.get("payload")
+                        state["payload"] = {"result": item["text"]}
+                        _offer_interim(state, on_progress)
+                        state["payload"] = temporary
+                    continue
+                if kind == "reasoning":
+                    item["text"] = "\n".join(item.get("summary") or [])
+                item["type"] = {"agentMessage": "agent_message", "commandExecution": "command_execution",
+                                "fileChange": "file_change", "mcpToolCall": "mcp_tool_call",
+                                "webSearch": "web_search", "plan": "agent_message"}.get(kind, kind)
+                feed("item.started" if method == "item/started" else "item.completed", item=item)
+            elif method == "turn/completed" and (params.get("turn") or {}).get("id") == turn_id:
+                # Atomic with steer(): messages accepted before this point
+                # are drained below; later arrivals queue as ordinary turns.
+                active(False)
+                while not steers.empty():
+                    deferred.append(steers.get_nowait())
+                turn = params["turn"]
+                feed("turn.failed" if turn.get("status") != "completed" else "turn.completed",
+                     error=turn.get("error"), usage={"input_tokens": usage.get("inputTokens"),
+                     "output_tokens": usage.get("outputTokens"), "cached_input_tokens": usage.get("cachedInputTokens"),
+                     "cache_write_input_tokens": usage.get("cacheWriteInputTokens")})
+                completed = True
+    except (OSError, ValueError) as exc:
+        fail(f"Codex app-server transport failed: {exc}")
+    finally:
+        active(False)
+        if proc:
+            if not proc.stdin.closed:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    proc.wait(timeout=3)
+            for reader in readers:
+                reader.join(timeout=1)
+            proc.stdout.close()
+            proc.stderr.close()
+        if cancel_key:
+            with _active_lock:
+                if _active.get(cancel_key, {}).get("proc") is proc:
+                    _active.pop(cancel_key, None)
+        if timing is not None:
+            timing.update(phases=state["phases"], round_trips=state["round_trips"])
+    pending_inputs = deferred + [t for method, texts in requests.values()
+                                  if method == "turn/steer" for t in texts or []]
+    while not steers.empty():
+        pending_inputs.append(steers.get_nowait())
+    if pending_inputs and not cancelled.is_set():
+        fail(((state.get("payload") or {}).get("result") or "Codex stopped before confirming input") +
+             f"\nDelivery of {len(pending_inputs)} follow-up message(s) wasn't confirmed; please resend them.")
+        code = 1
+    _fold_interim(state)
+    payload = state.get("payload")
+    if json_schema and payload and not payload.get("is_error"):
+        try:
+            payload["structured_output"] = json.loads(payload.get("result") or "")
+        except ValueError:
+            pass
+    return code, payload, context_tokens, "".join(out), "" if payload else "".join(err), cancelled.is_set()
+
+
 def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: bool,
                  handler, finish, cwd: Path, timeout: int, idle_timeout: int,
                  on_progress=None, cancel_key: str | None = None,
@@ -1210,6 +1509,12 @@ def _session_from_stream(stream: str) -> str | None:
             continue
         if isinstance(event, dict) and (event.get("session_id") or event.get("thread_id")):
             return event.get("session_id") or event.get("thread_id")
+        if isinstance(event, dict):
+            params = event.get("params") or {}
+            if params.get("threadId"):
+                return params["threadId"]
+            if event.get("method") == "thread/started":
+                return (params.get("thread") or {}).get("id")
     return None
 
 
@@ -1266,7 +1571,8 @@ def think(prompt: str, *, label: str, escalate: bool = False,
           add_dirs: list[str] | None = None,
           cancel_key: str | None = None,
           on_progress=None,
-          engine: str | None = None, effort: str | None = None) -> Result:
+          engine: str | None = None, effort: str | None = None,
+          codex_transport: str = "exec") -> Result:
     """Run one metered agent invocation.
 
     `label` is what shows up in the runs table — use `cycle:dawn`,
@@ -1290,6 +1596,9 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     model's own narration as it writes it, and each tool call as it makes
     it. Both come from the event stream that is already flowing.
 
+    `codex_transport` defaults to exec for batch jobs. Telegram opts into
+    app-server for native mid-turn steering with the same subscription login.
+
     `cancel_key`, if given, registers the underlying subprocess with
     `cancel()` under that key for exactly as long as this call is running --
     pass the same key to `cancel()` from another thread to interrupt this
@@ -1303,6 +1612,8 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     """
     cwd = Path(cwd) if cwd else config.ROOT
     engine = resolve_engine(engine)
+    if codex_transport not in ("exec", "app-server"):
+        raise ValueError(f"unknown Codex transport {codex_transport!r}")
     # `timeout` is an absolute ceiling on the run; `idle_timeout` is how long
     # it may produce nothing at all before being treated as hung. The second
     # is the one that normally fires -- see the comment in _run_process.
@@ -1353,7 +1664,8 @@ def think(prompt: str, *, label: str, escalate: bool = False,
 
     def _launch(text: str, resume_id: str | None, timing: dict):
         if engine == "codex":
-            return _run_codex(
+            runner = _run_codex_app_server if codex_transport == "app-server" else _run_codex
+            return runner(
                 text, model=model, effort=codex_effort(effort), cwd=cwd,
                 timeout=timeout, idle_timeout=idle_timeout,
                 append_system_prompt=append_system_prompt, json_schema=json_schema,
@@ -1488,5 +1800,5 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     # there, and this is what lets the next turn resume into it instead
     # of starting over on top of half-finished files.
     return Result(ok=False, engine=engine, model=model, duration_ms=elapsed,
-                  session_id=_session_from_stream(out) or resume,
+                  session_id=(payload or {}).get("session_id") or _session_from_stream(out) or resume,
                   rate_limited=limited, error=engine_error)

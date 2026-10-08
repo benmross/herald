@@ -345,13 +345,21 @@ thinking-level buttons. Choosing a level edits that same message again and
 removes the buttons. Consumed menus reject subsequent taps, including after
 a bridge restart. `/effort` opens a new picker for the current model.
 
-Codex itself supports mid-turn input through app-server's
+Telegram's Codex turns use the first-party `codex app-server` subprocess and
 [`turn/steer`](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn).
-That requires the thread ID and active turn ID and does not start a new turn.
-Herald currently runs inference through `codex exec`, so its Codex messages
-queue for the next turn. Using native steering would require an app-server
-adapter in `think.py` that preserves the existing guard, session resumption,
-progress, cancellation and metering behavior.
+Each invocation starts its own local process over stdin/stdout and resumes
+the topic's persisted thread ID. It uses Codex's existing subscription login,
+configuration and trusted guard hooks. No credentials are read by Herald and
+no network listener is opened. Scheduled jobs keep using `codex exec`.
+
+The adapter confirms requests while reading asynchronous events. User messages
+go to the active thread and turn; a steer rejected at completion runs as a
+subsequent turn on that same thread. The preceding reply is delivered before
+continuing. A disconnect or timeout returns an error with the saved thread ID,
+and unconfirmed follow-ups are reported rather than replayed. `/stop` requests
+native interruption and terminates the process group if it does not finish.
+Unattended approval requests are declined. Commentary, final replies, tool
+progress, usage and phase timing feed the existing Telegram display and ledger.
 
 ## The ledger
 
