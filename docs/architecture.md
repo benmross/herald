@@ -301,29 +301,31 @@ The two are made to look identical above `think.py`: one `Result`, one
 `Progress` stream, one `runs` row, one `Progress` display in Telegram. The
 differences that could not be hidden are all documented on `think._run_codex`:
 
-- **Instructions.** Codex reads `AGENTS.md`, so every Codex run is launched
+- Codex reads `AGENTS.md`, so every Codex run is launched
   with `project_doc_fallback_filenames=["CLAUDE.md"]` and picks up the same
   generated constitution. The orientation card, which Claude gets as
   `--append-system-prompt`, goes to Codex as `developer_instructions`.
-- **Skills and hooks.** `herald ext sync` writes the same skill links into
+- `herald ext sync` writes the same skill links into
   `.agents/skills/` as into `.claude/skills/`, and the same hooks into
   `.codex/hooks.json` as into `.claude/settings.json`, so `tools/guard.py`
   runs before every Bash call on either engine. Codex will not run a hook it
   has not been asked to trust interactively, so runs pass
   `--dangerously-bypass-hook-trust` for the hooks in that generated file:
   Herald's own guard and the enabled extensions' hooks, nothing else.
-- **Structured output.** OpenAI's strict mode wants `additionalProperties:
+- OpenAI's strict mode wants `additionalProperties:
   false` on every object and every property listed as required; Anthropic
   wants neither. Cycles write one schema in the Anthropic dialect and
   `think._strict_schema` derives the other, making optional properties
   nullable so the model can still leave them out.
-- **Effort.** Both engines take a thinking level from Herald's one vocabulary
-  (`low`, `medium`, `high`, `xhigh`, `max`): Claude's `--effort` directly,
-  Codex's `model_reasoning_effort` with `max` mapped to `xhigh`.
-- **What Codex cannot give.** No mid-turn steering (its prompt goes in on
-  stdin once), no per-tool allowlist (the sandbox and approval policy in
-  `engines.codex` stand in), no dollar cost, and no context size (its usage
-  is summed over the turn, so `context_tokens` stays null on Codex rows).
+- The CLIs advertise each model's supported thinking levels.
+  Telegram offers those levels after model selection and passes them directly
+  to Claude's `--effort` or Codex's `model_reasoning_effort`, including native
+  `max` and, where supported, `ultra`. The CLI default choice clears Herald's
+  effort override.
+- The Codex exec adapter takes its prompt once on stdin, so it cannot accept
+  mid-turn steering. It also has no per-tool allowlist (the sandbox and approval
+  policy in `engines.codex` stand in), dollar cost or context size. Its usage
+  is summed over the turn, so `context_tokens` stays null on Codex rows.
 
 Telegram's `/models` asks both first-party CLIs for their model catalogs
 without sending a user prompt or starting a model turn. Claude's stream
@@ -338,6 +340,18 @@ catalog changes and bridge restarts cannot make a tap choose a different model.
 Selections wait for the topic's current turn before changing its engine or
 model. A model change within one engine preserves its transcript; changing
 engines clears the session pointer. The existing engine commands still work.
+Choosing a model edits the original picker to show the selection and its
+thinking-level buttons. Choosing a level edits that same message again and
+removes the buttons. Consumed menus reject subsequent taps, including after
+a bridge restart. `/effort` opens a new picker for the current model.
+
+Codex itself supports mid-turn input through app-server's
+[`turn/steer`](https://learn.chatgpt.com/docs/app-server#steer-an-active-turn).
+That requires the thread ID and active turn ID and does not start a new turn.
+Herald currently runs inference through `codex exec`, so its Codex messages
+queue for the next turn. Using native steering would require an app-server
+adapter in `think.py` that preserves the existing guard, session resumption,
+progress, cancellation and metering behavior.
 
 ## The ledger
 

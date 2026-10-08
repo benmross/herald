@@ -1088,14 +1088,30 @@ def _effort_note(level: str) -> str:
              f"Thinking at {level} in this topic.") + " Your conversation continues.")
 
 
-def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict) -> None:
+def _replace_picker(msg: dict, text: str, keyboard: list | None = None) -> dict | None:
+    """Update the bot's original picker, explicitly replacing its keyboard."""
+    return api("editMessageText", chat_id=(msg.get("chat") or {})["id"],
+               message_id=msg["message_id"], text=text,
+               reply_markup={"inline_keyboard": keyboard or []})
+
+
+def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict,
+                        *, selection_note: str | None = None) -> None:
     chat_id = (msg.get("chat") or {})["id"]
     thread_id = msg.get("message_thread_id")
     if "efforts" not in choice:
-        send(chat_id, "Thinking levels unavailable. Run /models again for a fresh list.", thread_id)
+        text = "Thinking levels unavailable. Run /models again for a fresh list."
+        if selection_note is not None:
+            _replace_picker(msg, selection_note + "\n\n" + text)
+        else:
+            send(chat_id, text, thread_id)
         return
     if not choice["efforts"]:
-        send(chat_id, "This model has no adjustable thinking level.", thread_id)
+        text = "This model has no adjustable thinking level."
+        if selection_note is not None:
+            _replace_picker(msg, selection_note + "\n\n" + text)
+        else:
+            send(chat_id, text, thread_id)
         return
     ts = thread_state(state, key)
     current = "CLI default" if ts.get("effort") == "auto" else ts.get("effort") or "configured default"
@@ -1107,18 +1123,23 @@ def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict) -> None:
     token = secrets.token_hex(8)
     buttons = [{"text": "CLI default" if level == "auto" else level,
                 "callback_data": f"effort:{token}:{i}"} for i, level in enumerate(levels)]
-    response = api("sendMessage", chat_id=chat_id,
-                   text=f"Choose a thinking level for {choice['engine']}/{choice['model']}. Current: {current}.",
-                   reply_markup={"inline_keyboard": [buttons[i:i + 3] for i in range(0, len(buttons), 3)]},
-                   **({"message_thread_id": thread_id} if thread_id else {}))
+    text = f"Choose a thinking level for {choice['engine']}/{choice['model']}. Current: {current}."
+    keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
+    if selection_note is not None:
+        response = _replace_picker(msg, selection_note + "\n\n" + text, keyboard)
+    else:
+        response = api("sendMessage", chat_id=chat_id, text=text,
+                       reply_markup={"inline_keyboard": keyboard},
+                       **({"message_thread_id": thread_id} if thread_id else {}))
     if response and response.get("ok"):
-        menus[token] = {"key": key, "message_id": response["result"]["message_id"], "created": time.time(),
+        menus[token] = {"key": key, "message_id": (msg["message_id"] if selection_note is not None else
+                                                   response["result"]["message_id"]), "created": time.time(),
                         "engine": choice["engine"], "model": choice["model"], "choices": levels}
     while len(menus) > 50:
         menus.pop(min(menus, key=lambda token: menus[token]["created"]))
 
 
-def _choose_model(state: dict, key: str, msg: dict, choice: dict) -> None:
+def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker: bool = False) -> None:
     # Old persisted menus predate effort metadata. Refresh the selected engine
     # without invalidating their stable model identifiers.
     if "efforts" not in choice:
@@ -1135,8 +1156,9 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict) -> None:
             ts["effort"] = "auto"
     else:
         ts.pop("effort_caps", None)
-    send((msg.get("chat") or {})["id"], note, msg.get("message_thread_id"))
-    _show_effort_picker(state, key, msg, choice)
+    if not edit_picker:
+        send((msg.get("chat") or {})["id"], note, msg.get("message_thread_id"))
+    _show_effort_picker(state, key, msg, choice, selection_note=note if edit_picker else None)
 
 
 def _model_catalog() -> tuple[list[dict], list[str]]:
@@ -1213,7 +1235,7 @@ def _handle_model_callback(update: dict, state: dict) -> None:
     menu = (state.get("model_menus") or {}).get(match[1]) if match else None
     msg = cq.get("message") or {}
     key = _topic_key({"message": msg})
-    if (not menu or menu.get("key") != key or menu.get("message_id") != msg.get("message_id") or
+    if (not menu or menu.get("selected") or menu.get("key") != key or menu.get("message_id") != msg.get("message_id") or
             time.time() - menu.get("created", 0) > 86400 or int(match[2]) >= len(menu["choices"])):
         api("answerCallbackQuery", callback_query_id=cq["id"], text="Run /models again for a fresh list.")
         return
@@ -1221,8 +1243,11 @@ def _handle_model_callback(update: dict, state: dict) -> None:
     # its model must not race the turn writing back its session pointer.
     api("answerCallbackQuery", callback_query_id=cq["id"], text="Switching after the current turn.")
     with _lock_for(key):
+        if menu.get("selected"):
+            return  # Another tap on this message already won the topic lock.
+        menu["selected"] = True
         choice = menu["choices"][int(match[2])]
-        _choose_model(state, key, msg, choice)
+        _choose_model(state, key, msg, choice, edit_picker=True)
 
 
 def _handle_effort_callback(update: dict, state: dict) -> None:
@@ -1234,20 +1259,22 @@ def _handle_effort_callback(update: dict, state: dict) -> None:
     menu = (state.get("effort_menus") or {}).get(match[1]) if match else None
     msg = cq.get("message") or {}
     key = _topic_key({"message": msg})
-    if (not menu or menu.get("key") != key or menu.get("message_id") != msg.get("message_id") or
+    if (not menu or menu.get("selected") or menu.get("key") != key or menu.get("message_id") != msg.get("message_id") or
             time.time() - menu.get("created", 0) > 86400 or int(match[2]) >= len(menu["choices"])):
         api("answerCallbackQuery", callback_query_id=cq["id"], text="Run /effort for a fresh picker.")
         return
     api("answerCallbackQuery", callback_query_id=cq["id"], text="Updating after the current turn.")
     with _lock_for(key):
+        if menu.get("selected"):
+            return
+        menu["selected"] = True
         ts = thread_state(state, key)
         if ts.get("engine") != menu["engine"] or ts.get("model") != menu["model"]:
-            send((msg.get("chat") or {})["id"], "Your model changed. Use /effort for its current choices.",
-                 msg.get("message_thread_id"))
+            _replace_picker(msg, "Your model changed. Use /effort for its current choices.")
             return
         level = menu["choices"][int(match[2])]
         ts["effort"] = level
-        send((msg.get("chat") or {})["id"], _effort_note(level), msg.get("message_thread_id"))
+        _replace_picker(msg, f"This topic uses {menu['engine']}/{menu['model']}.\n\n" + _effort_note(level))
 
 
 def _checkpoint(state: dict) -> None:

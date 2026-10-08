@@ -193,7 +193,7 @@ class TelegramModels(unittest.TestCase):
         self.assertEqual(ts['effort'],'ultra')
         self.assertEqual(ts['session_id'],'codex-session');self.assertEqual(ts['turns'],3)
         buttons=next(kw['reply_markup']['inline_keyboard']
-               for method,kw in reversed(self.calls) if method=='sendMessage')
+               for method,kw in reversed(self.calls) if kw.get('reply_markup',{}).get('inline_keyboard'))
         labels=[b['text'] for row in buttons for b in row]
         self.assertEqual(labels,['CLI default','low','high','max','ultra'])
         self.assertTrue(all(len(b['callback_data'].encode())<=64 for row in buttons for b in row))
@@ -233,6 +233,7 @@ class TelegramModels(unittest.TestCase):
             ts['model']='gpt-probe';ts['effort']='auto'
             token=update['callback_query']['data'].split(':')[1]
             self.state['effort_menus'][token]['created']=time.time()
+            self.state['effort_menus'][token].pop('selected',None)
             if change=='sender':update['callback_query']['from']['id']=7
             if change=='topic':update['callback_query']['message']['message_thread_id']=10
             if change=='message':update['callback_query']['message']['message_id']=88
@@ -284,6 +285,54 @@ class TelegramModels(unittest.TestCase):
         self.tg.handle({'message':self.msg},self.state)
         self.assertEqual(self.state['threads'][self.key]['effort'],'auto')
         self.assertNotIn('effort_caps',self.state['threads'][self.key])
+
+    def test_model_and_effort_choices_edit_the_same_message_without_new_messages(self):
+        update=self.menu()
+        update['callback_query']['data']=update['callback_query']['data'].rsplit(':',1)[0]+':2'
+        sends=len(self.sent);calls=len(self.calls)
+        self.tg._handle_model_callback(update,self.state)
+        model_calls=self.calls[calls:]
+        self.assertEqual(len(self.sent),sends)
+        self.assertFalse(any(method=='sendMessage' for method,kw in model_calls))
+        edit=next(kw for method,kw in model_calls if method=='editMessageText')
+        self.assertEqual(edit['message_id'],77);self.assertIn('codex/gpt-probe',edit['text'])
+        self.assertTrue(all(b['callback_data'].startswith('effort:')
+                            for row in edit['reply_markup']['inline_keyboard'] for b in row))
+        token=next(iter(self.state['effort_menus']))
+        self.assertEqual(self.state['effort_menus'][token]['message_id'],77)
+        update['callback_query']['data']=f'effort:{token}:3'
+        calls=len(self.calls)
+        self.tg._handle_effort_callback(update,self.state)
+        effort_calls=self.calls[calls:]
+        self.assertEqual(len(self.sent),sends)
+        self.assertFalse(any(method=='sendMessage' for method,kw in effort_calls))
+        edit=next(kw for method,kw in effort_calls if method=='editMessageText')
+        self.assertEqual(edit['message_id'],77);self.assertIn('codex/gpt-probe',edit['text'])
+        self.assertIn('Thinking at max',edit['text'])
+        self.assertEqual(edit['reply_markup'],{'inline_keyboard':[]})
+
+    def test_model_without_effort_updates_original_and_removes_all_buttons(self):
+        update=self.menu();sends=len(self.sent);calls=len(self.calls)
+        self.tg._handle_model_callback(update,self.state)
+        self.assertEqual(len(self.sent),sends)
+        edit=next(kw for method,kw in self.calls[calls:] if method=='editMessageText')
+        self.assertIn('claude/haiku',edit['text']);self.assertIn('no adjustable',edit['text'])
+        self.assertEqual(edit['reply_markup'],{'inline_keyboard':[]})
+        self.assertNotIn('effort_menus',self.state)
+
+    def test_repeated_taps_cannot_apply_another_choice_from_consumed_picker(self):
+        import json
+        update=self.effort_menu()
+        model_token=next(iter(self.state['model_menus']))
+        replay={'callback_query':{'id':'replay','from':{'id':42},'data':f'model:{model_token}:1',
+                'message':self.msg | {'message_id':77}}}
+        self.tg._handle_model_callback(replay,self.state)
+        self.assertEqual(self.state['threads'][self.key]['model'],'gpt-probe')
+        self.tg._handle_effort_callback(update,self.state)
+        restored=json.loads(json.dumps(self.state))
+        update['callback_query']['data']=update['callback_query']['data'].rsplit(':',1)[0]+':1'
+        self.tg._handle_effort_callback(update,restored)
+        self.assertEqual(restored['threads'][self.key]['effort'],'ultra')
 
 
 if __name__=='__main__':unittest.main()
