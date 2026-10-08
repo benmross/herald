@@ -36,17 +36,35 @@ bridge checks by user id.
 
 `tools/check.py` holds every other file in the program to this: no `.send(`, no
 permission changes, no permanent deletes anywhere but here.
+
+**An extension can add a kind, and it gets the same door.** A service only one
+person uses (a learning-management system, a self-hosted app) has red actions
+of its own, and without a way in here the choice would be between naming that
+service in the program and letting its extension act with no tap at all. So an
+enabled extension may ship `red.py` beside its manifest, exporting
+`KINDS = {"<extension>.<verb>": (render, perform)}`. The prefix is enforced and
+a built-in kind cannot be replaced, so an extension can never change what
+"mail.send" does. Its performer runs only inside `execute`, after the claim,
+and `acting()` lets the code underneath it refuse to run anywhere else.
 """
 
 from __future__ import annotations
 
 import base64
+import contextvars
+import importlib.util
 import json
+import sys
 from email.message import EmailMessage
 
 from . import approvals, db, google, mailfmt, notify
 
 TAP_TIMEOUT = 600
+
+#: The approval being carried out right now, set only for the duration of a
+#: performer inside `execute`. Read it through `acting()`.
+_ACTING: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "herald_red_acting", default=None)
 
 
 # --------------------------------------------------------------------------
@@ -129,21 +147,81 @@ KINDS = {
 }
 
 
+_EXTENSION_KINDS: dict | None = None
+
+
+def _extension_kinds() -> dict:
+    """Kinds shipped by enabled extensions, loaded once per process.
+
+    This is the one place the manifest-is-read-never-imported rule gives way,
+    and only when a red action is actually being rendered or carried out. A
+    `red.py` that fails to import contributes nothing and says so on stderr:
+    a broken extension must not take `mail.send` down with it.
+    """
+    global _EXTENSION_KINDS
+    if _EXTENSION_KINDS is not None:
+        return _EXTENSION_KINDS
+    from . import extensions  # noqa: PLC0415
+    found: dict = {}
+    for ext in extensions.enabled():
+        path = ext.path / "red.py"
+        if not path.exists():
+            continue
+        lib = str(ext.path / "lib")
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
+        try:
+            spec = importlib.util.spec_from_file_location(
+                f"herald_ext_red_{ext.path.name}", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            declared = dict(getattr(module, "KINDS", {}))
+        except Exception as exc:  # noqa: BLE001
+            print(f"red: extension {ext.name} red.py did not load: {exc}",
+                  file=sys.stderr)
+            continue
+        for kind, pair in declared.items():
+            if not kind.startswith(f"{ext.name}.") or kind in KINDS:
+                print(f"red: ignoring kind {kind!r} from extension {ext.name}: "
+                      f"a kind must be named '{ext.name}.<verb>'", file=sys.stderr)
+                continue
+            found[kind] = pair
+    _EXTENSION_KINDS = found
+    return found
+
+
+def kinds() -> dict:
+    """Every kind this install can carry out. Built-ins always win."""
+    return {**_extension_kinds(), **KINDS}
+
+
+def acting() -> int | None:
+    """The approval id being carried out in this call stack, or None.
+
+    For the layer underneath a performer. A function that writes to a service
+    can call this and refuse when it is None, which turns "always go through
+    red.py" from a convention the caller keeps into one the callee checks.
+    """
+    return _ACTING.get()
+
+
 # --------------------------------------------------------------------------
 # The flow
 # --------------------------------------------------------------------------
 
 def render(kind: str, payload: dict) -> str:
-    if kind not in KINDS:
-        raise ValueError(f"unknown red action {kind!r}; known: {sorted(KINDS)}")
-    return KINDS[kind][0](payload)
+    known = kinds()
+    if kind not in known:
+        raise ValueError(f"unknown red action {kind!r}; known: {sorted(known)}")
+    return known[kind][0](payload)
 
 
 def request(kind: str, payload: dict, *, actor: str,
             thread_id: int | None = None) -> int:
     """File the approval and put it on the user's phone. Returns its id."""
     text = render(kind, payload)
-    target = payload.get("to") if kind == "mail.send" else None
+    target = payload.get("to") if kind == "mail.send" else (
+        payload.get("target") if kind not in KINDS else None)
     approval_id = approvals.request(actor=actor, kind=kind, target=target,
                                     summary=text.splitlines()[0], payload=payload)
     if not notify.ask(approval_id, text, yes="Yes, do it", no="No",
@@ -164,7 +242,8 @@ def execute(approval_id: int, *, actor: str = "red") -> dict:
     if row is None:
         raise PermissionError(f"approval {approval_id} does not exist")
     kind = row["kind"]
-    if kind not in KINDS:
+    known = kinds()
+    if kind not in known:
         raise PermissionError(f"approval {approval_id} is for unknown kind {kind!r}")
 
     # Claim it. Only one process can move approved -> done, and only a row the
@@ -180,7 +259,11 @@ def execute(approval_id: int, *, actor: str = "red") -> dict:
             f"approval {approval_id} is {state}, not approved; nothing done")
 
     payload = json.loads(row["payload"] or "{}")
-    summary, ref = KINDS[kind][1](payload)
+    token = _ACTING.set(approval_id)
+    try:
+        summary, ref = known[kind][1](payload)
+    finally:
+        _ACTING.reset(token)
     with db.session() as con:
         db.record_action(con, actor=actor, tier="red", kind=kind,
                          target=row["target"], summary=summary, ref=ref,

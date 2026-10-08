@@ -24,6 +24,7 @@ $HERALD_HOME/extensions/<name>/
   systemd/                 unit templates, installed with Herald's
   skills/<name>/SKILL.md   symlinked where sessions load them
   hooks/hooks.json         Claude Code hooks, merged into .claude/settings.json
+  red.py                   red actions of its own, behind the same tap
   tests/                   run by `herald test`
 ```
 
@@ -107,6 +108,29 @@ holds extension code to them exactly as it holds Herald's own: no model calls in
 a collector, no engine launched outside `think.py`, no write to Google outside
 `gwrite.py`. Those are the failures that are silent, and a personal collector is
 as able to cause them as a built-in one.
+
+## A red action of its own
+
+Anything another person sees, that costs money or that cannot be undone goes
+through `lib/herald/red.py`, and an extension is held to that too. Ship a
+`red.py` beside the manifest:
+
+```python
+def _render(p: dict) -> str:      # what the user is asked, built from the payload
+    return f"Post this to the board?\n\n{p['text']}"
+
+def _perform(p: dict) -> tuple[str, str]:   # runs once, only after their tap
+    post_id = board.post(p["text"])
+    return (f"posted to the board", f"board:{post_id}")
+
+KINDS = {"tides.post": (_render, _perform)}
+```
+
+A kind must be named `<extension>.<verb>` and cannot replace a built-in one.
+`herald act run tides.post --payload-file p.json` asks and then acts, and
+`--show` prints what would be asked. The function that does the writing can
+call `red.acting()` and refuse when it returns None, so that nothing reaches
+it except through an approval.
 
 ## Appearing in the morning brief
 

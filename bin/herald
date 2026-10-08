@@ -1329,6 +1329,24 @@ def cmd_act(args) -> int:
     elif args.kind == "drill":
         result = red.run("drill", {}, actor=args.actor, timeout=args.timeout,
                          thread_id=args.telegram_thread)
+    elif args.kind == "run":
+        # A kind an extension ships. The payload comes from a file because it
+        # is the exact thing the user is shown and the exact thing done.
+        extension_kinds = sorted(set(red.kinds()) - set(red.KINDS))
+        if args.red_kind not in extension_kinds:
+            print(f"{args.red_kind!r} is not an extension's red kind; "
+                  f"known: {extension_kinds}", file=sys.stderr)
+            return 1
+        try:
+            payload = json.loads(pathlib.Path(args.payload_file).expanduser().read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"cannot read payload: {exc}", file=sys.stderr)
+            return 1
+        if args.show:
+            print(red.render(args.red_kind, payload))
+            return 0
+        result = red.run(args.red_kind, payload, actor=args.actor,
+                         timeout=args.timeout, thread_id=args.telegram_thread)
     else:
         print(f"unknown kind {args.kind}", file=sys.stderr)
         return 1
@@ -1669,6 +1687,13 @@ def main() -> int:
     ms.add_argument("--in-reply-to", help="Message-ID header being replied to")
     act_sub.add_parser("drill", parents=[common],
                        help="red, no effect: exercise the approval path end to end")
+    rk = act_sub.add_parser("run", parents=[common],
+                            help="red: a kind an extension ships, only after a tap")
+    rk.add_argument("red_kind", help="<extension>.<verb>")
+    rk.add_argument("--payload-file", required=True,
+                    help="JSON: exactly what will be done")
+    rk.add_argument("--show", action="store_true",
+                    help="print what the user would be asked, and ask nothing")
     act.set_defaults(fn=cmd_act)
 
     sf = sub.add_parser("safety", help="Herald's own safety rules, the same on every engine")

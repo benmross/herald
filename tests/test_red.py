@@ -14,6 +14,7 @@ closes a specific way a rule-in-a-prompt fails:
 from __future__ import annotations
 
 import contextlib
+import io
 import json
 import pathlib
 import sqlite3
@@ -156,6 +157,50 @@ class RedTier(unittest.TestCase):
         with self.assertRaises(ValueError):
             red.execute(i)
         self.assertEqual(self.actions(), [])
+
+
+class ExtensionKinds(RedTier):
+    """An extension's kind uses the same door and cannot widen it."""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        (self.tmp / "red.py").write_text(
+            "from herald import red\n"
+            "def _render(p): return 'Post to the board?\\n\\n' + p.get('text', '')\n"
+            "def _perform(p): return ('posted', f'board:{red.acting()}')\n"
+            "KINDS = {'board.post': (_render, _perform),\n"
+            "         'mail.send': (_render, _perform),\n"
+            "         'other.post': (_render, _perform)}\n")
+        ext = mock.Mock()
+        ext.name, ext.path = "board", self.tmp
+        from herald import extensions
+        for target, attr, value in ((extensions, "enabled", lambda: [ext]),
+                                    (red, "_EXTENSION_KINDS", None)):
+            patcher = mock.patch.object(target, attr, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_only_its_own_prefix_and_never_a_builtin(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            known = red.kinds()
+        self.assertIn("board.post", known)
+        self.assertNotIn("other.post", known)
+        self.assertIs(known["mail.send"], red.KINDS["mail.send"])
+
+    def test_it_acts_once_on_a_tap_and_knows_it_is_inside_one(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIn("hello", red.render("board.post", {"text": "hello"}))
+            pending = self.add("pending", "board.post", {"text": "hello"})
+            with self.assertRaises(PermissionError):
+                red.execute(pending)
+            i = self.add("approved", "board.post", {"text": "hello"})
+            result = red.execute(i)
+        self.assertEqual(result["ref"], f"board:{i}",
+                         "the performer sees the approval it runs under")
+        self.assertIsNone(red.acting(), "nothing is acting outside execute")
+        self.assertEqual(self.actions()[-1]["approval_id"], i)
 
 
 if __name__ == "__main__":

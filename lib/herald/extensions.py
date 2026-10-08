@@ -19,6 +19,7 @@ So they moved out, into the same private directory as the ledger:
       systemd/                 units, installed with the built-in ones
       skills/                  symlinked where sessions will load them
       hooks/hooks.json         hooks, merged into .claude/settings.json and .codex/hooks.json
+      red.py                   red actions of its own, carried out only by lib/herald/red.py
       tests/                   run with the rest of the suite
 
 The manifest is **read, never imported**. Asking an extension what it provides
