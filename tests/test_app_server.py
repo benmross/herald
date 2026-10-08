@@ -153,7 +153,9 @@ class AppServerTests(unittest.TestCase):
 
     def test_native_interrupt_cancels_without_a_fresh_turn(self):
         def progress(event):
-            if event.kind=='tool':self.assertTrue(think.cancel('app-test'))
+            if event.kind=='tool':
+                self.assertTrue(think.cancel('app-test'))
+                self.assertFalse(think.steer('app-test','Message after stop.'))
         result=self.run_server('cancel',on_progress=progress)
         self.assertTrue(result[5])
         self.assertTrue(any(r.get('method')=='turn/interrupt' for r in self.requests()))

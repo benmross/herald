@@ -247,7 +247,9 @@ def cancel(key: str) -> bool:
         entry = _active.get(key)
     if entry is None or entry["proc"].poll() is not None:
         return False
-    entry["cancelled"].set()
+    with _active_lock:
+        entry["cancelled"].set()
+        entry["accepting_steers"] = False
     if entry.get("protocol_cancel"):
         return True  # The app-server loop sends turn/interrupt, with a kill backstop.
     try:
