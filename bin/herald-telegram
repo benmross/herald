@@ -860,6 +860,9 @@ def handle(update: dict, state: dict) -> None:
         else:
             engine, model = ENGINE_COMMANDS[cmd], (arg or None)
         switched = engine != (ts.get("engine") or DEFAULT_ENGINE)
+        if ts.get("effort_caps") and (switched or model != ts.get("model")):
+            ts.pop("effort_caps", None)
+            ts["effort"] = "auto"
         ts["engine"] = engine
         ts["model"] = model
         if switched:
@@ -881,21 +884,32 @@ def handle(update: dict, state: dict) -> None:
 
     if cmd in EFFORT_COMMANDS:
         level = EFFORT_COMMANDS[cmd] or arg
+        caps = ts.get("effort_caps") or {}
+        if caps.get("engine") != ts.get("engine", DEFAULT_ENGINE) or caps.get("model") != ts.get("model"):
+            caps = {}
         if not level:
+            if caps:
+                _show_effort_picker(state, key, msg, caps)
+                return
             current = ts.get("effort") or "the engine's default"
             send(chat_id, f"Effort here is {current}. Say /effort followed by "
                           f"one of {', '.join(think.EFFORTS)}, or the level as "
-                          f"its own command.", thread_id)
+                          f"its own command. Use /models to pick from this model's supported levels.", thread_id)
+            return
+        level = level.strip().lower()
+        if caps and level != "auto" and level not in caps["efforts"]:
+            send(chat_id, "That model doesn't support this level. Use /effort to see its choices.", thread_id)
             return
         try:
-            level = think.normalize_effort(level)
+            level = "auto" if level == "auto" else think.normalize_effort(level)
+            if (ts.get("engine") or DEFAULT_ENGINE) == "claude" and level != "auto":
+                think.claude_effort(level)
         except ValueError:
             send(chat_id, f"Not a level I know. One of: {', '.join(think.EFFORTS)}.",
                  thread_id)
             return
         ts["effort"] = level
-        send(chat_id, f"Thinking at {level} in this topic from here on. Same "
-                      f"conversation, nothing else changed.", thread_id)
+        send(chat_id, _effort_note(level), thread_id)
         print(f"[{key}] effort set to {level}")
         return
 
@@ -911,6 +925,10 @@ def handle(update: dict, state: dict) -> None:
         ts["turns"] = target["turns"] or 0
         ts["engine"] = target["engine"] or DEFAULT_ENGINE
         ts["model"] = target["model"]
+        caps = ts.get("effort_caps") or {}
+        if caps and (caps["engine"] != ts["engine"] or caps["model"] != ts["model"]):
+            ts.pop("effort_caps", None)
+            ts["effort"] = "auto"
         # Its own card, not the one the topic was last on: the system prompt
         # has to match what that session was started with.
         ts["orientation"] = target["orientation"]
@@ -1065,6 +1083,62 @@ def _select_model(ts: dict, engine: str, model: str) -> str:
              if switched else "Your conversation continues."))
 
 
+def _effort_note(level: str) -> str:
+    return (("Using the CLI's default thinking level." if level == "auto" else
+             f"Thinking at {level} in this topic.") + " Your conversation continues.")
+
+
+def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict) -> None:
+    chat_id = (msg.get("chat") or {})["id"]
+    thread_id = msg.get("message_thread_id")
+    if "efforts" not in choice:
+        send(chat_id, "Thinking levels unavailable. Run /models again for a fresh list.", thread_id)
+        return
+    if not choice["efforts"]:
+        send(chat_id, "This model has no adjustable thinking level.", thread_id)
+        return
+    ts = thread_state(state, key)
+    current = "CLI default" if ts.get("effort") == "auto" else ts.get("effort") or "configured default"
+    levels = ["auto", *dict.fromkeys(choice["efforts"])]
+    menus = state.setdefault("effort_menus", {})
+    for token, menu in list(menus.items()):
+        if time.time() - menu.get("created", 0) > 86400:
+            menus.pop(token, None)
+    token = secrets.token_hex(8)
+    buttons = [{"text": "CLI default" if level == "auto" else level,
+                "callback_data": f"effort:{token}:{i}"} for i, level in enumerate(levels)]
+    response = api("sendMessage", chat_id=chat_id,
+                   text=f"Choose a thinking level for {choice['engine']}/{choice['model']}. Current: {current}.",
+                   reply_markup={"inline_keyboard": [buttons[i:i + 3] for i in range(0, len(buttons), 3)]},
+                   **({"message_thread_id": thread_id} if thread_id else {}))
+    if response and response.get("ok"):
+        menus[token] = {"key": key, "message_id": response["result"]["message_id"], "created": time.time(),
+                        "engine": choice["engine"], "model": choice["model"], "choices": levels}
+    while len(menus) > 50:
+        menus.pop(min(menus, key=lambda token: menus[token]["created"]))
+
+
+def _choose_model(state: dict, key: str, msg: dict, choice: dict) -> None:
+    # Old persisted menus predate effort metadata. Refresh the selected engine
+    # without invalidating their stable model identifiers.
+    if "efforts" not in choice:
+        try:
+            choice = next((r for r in think.available_models(choice["engine"])
+                           if r["model"] == choice["model"]), choice)
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            pass
+    ts = thread_state(state, key)
+    note = _select_model(ts, choice["engine"], choice["model"])
+    if "efforts" in choice:
+        ts["effort_caps"] = choice
+        if ts.get("effort") not in choice["efforts"]:
+            ts["effort"] = "auto"
+    else:
+        ts.pop("effort_caps", None)
+    send((msg.get("chat") or {})["id"], note, msg.get("message_thread_id"))
+    _show_effort_picker(state, key, msg, choice)
+
+
 def _model_catalog() -> tuple[list[dict], list[str]]:
     """Refresh both first-party catalogs in parallel, without inference."""
     from concurrent.futures import ThreadPoolExecutor
@@ -1095,8 +1169,7 @@ def _handle_models(update: dict, state: dict) -> None:
         matches = [r for r in rows if selector in (r["model"], r["engine"] + "/" + r["model"])]
         if len(matches) == 1:
             with _lock_for(key):
-                note = _select_model(ts, matches[0]["engine"], matches[0]["model"])
-            send(chat_id, note, msg.get("message_thread_id"))
+                _choose_model(state, key, msg, matches[0])
             return
         send(chat_id, "Choose a model below, or use /models engine/model.", msg.get("message_thread_id"))
     engine = ts.get("engine") or DEFAULT_ENGINE
@@ -1149,8 +1222,32 @@ def _handle_model_callback(update: dict, state: dict) -> None:
     api("answerCallbackQuery", callback_query_id=cq["id"], text="Switching after the current turn.")
     with _lock_for(key):
         choice = menu["choices"][int(match[2])]
-        note = _select_model(thread_state(state, key), choice["engine"], choice["model"])
-    send((msg.get("chat") or {})["id"], note, msg.get("message_thread_id"))
+        _choose_model(state, key, msg, choice)
+
+
+def _handle_effort_callback(update: dict, state: dict) -> None:
+    cq = update["callback_query"]
+    if (cq.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Not your Herald.")
+        return
+    match = re.fullmatch(r"effort:([0-9a-f]{16}):(\d+)", cq.get("data") or "")
+    menu = (state.get("effort_menus") or {}).get(match[1]) if match else None
+    msg = cq.get("message") or {}
+    key = _topic_key({"message": msg})
+    if (not menu or menu.get("key") != key or menu.get("message_id") != msg.get("message_id") or
+            time.time() - menu.get("created", 0) > 86400 or int(match[2]) >= len(menu["choices"])):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Run /effort for a fresh picker.")
+        return
+    api("answerCallbackQuery", callback_query_id=cq["id"], text="Updating after the current turn.")
+    with _lock_for(key):
+        ts = thread_state(state, key)
+        if ts.get("engine") != menu["engine"] or ts.get("model") != menu["model"]:
+            send((msg.get("chat") or {})["id"], "Your model changed. Use /effort for its current choices.",
+                 msg.get("message_thread_id"))
+            return
+        level = menu["choices"][int(match[2])]
+        ts["effort"] = level
+        send((msg.get("chat") or {})["id"], _effort_note(level), msg.get("message_thread_id"))
 
 
 def _checkpoint(state: dict) -> None:
@@ -1638,6 +1735,8 @@ def _dispatch(update: dict, state: dict) -> None:
         if update.get("callback_query"):
             if (update["callback_query"].get("data") or "").startswith("model:"):
                 _handle_model_callback(update, state)
+            elif (update["callback_query"].get("data") or "").startswith("effort:"):
+                _handle_effort_callback(update, state)
             elif (update["callback_query"].get("data") or "").startswith("study:"):
                 _handle_study_callback(update, state)
             elif (update["callback_query"].get("data") or "").startswith(

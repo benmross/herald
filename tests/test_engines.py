@@ -146,20 +146,37 @@ class StrictSchemaTests(unittest.TestCase):
 
 
 class EffortTests(unittest.TestCase):
+    def test_default_bypasses_config_and_explicit_levels_reach_the_engine(self):
+        for level, expected in ((None, "high"), ("auto", None), ("max", "max"), ("ultra", "ultra")):
+            with self.subTest(level=level), \
+                    mock.patch.object(think.config, "get", side_effect=lambda k, d=None:
+                                      "high" if k == "engines.codex.effort" else d), \
+                    mock.patch.object(think, "_record"), \
+                    mock.patch.object(think, "_run_codex", return_value=(0,
+                            {"result":"ok", "usage":{}, "session_id":"kept"}, None, "", "", False)) as run:
+                result = think.think("hello", label="test", engine="codex", model="gpt-probe", effort=level,
+                                     permission_mode="auto", timeout=1)
+                self.assertTrue(result.ok)
+                self.assertEqual(run.call_args.kwargs["effort"], expected)
+
     def test_the_vocabulary_maps_onto_both_engines(self):
-        self.assertEqual(think.codex_effort("max"), "xhigh")
+        self.assertEqual(think.codex_effort("max"), "max")
+        self.assertEqual(think.codex_effort("ultra"), "ultra")
         self.assertEqual(think.codex_effort("low"), "low")
         self.assertEqual(think.claude_effort("minimal"), "low")
         self.assertEqual(think.claude_effort("max"), "max")
+        with self.assertRaises(ValueError):
+            think.claude_effort("ultra")
         self.assertIsNone(think.codex_effort(None))
 
     def test_unknown_levels_and_engines_are_refused_not_guessed(self):
         with self.assertRaises(ValueError):
-            think.normalize_effort("ultra")
+            think.normalize_effort("unknown")
         with self.assertRaises(ValueError):
             think.resolve_engine("gemini")
         self.assertEqual(think.normalize_effort(" High "), "high")
         self.assertIsNone(think.normalize_effort(""))
+        self.assertIsNone(think.normalize_effort("auto"))
 
     def test_the_default_engine_comes_from_config(self):
         with mock.patch.object(think.config, "get", return_value="codex"):

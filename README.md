@@ -65,6 +65,8 @@ over, and replying to an older message picks that conversation back up.
 `/models` lists both CLIs' available models and lets you switch by tapping a
 button or sending `/models engine/model`. Switching models within an engine
 keeps the conversation; switching engines starts a fresh session.
+After choosing a model with `/models`, pick one of its supported thinking levels.
+`/effort` reopens that picker; its CLI default button clears the override.
 `/opus`, `/sonnet` and `/codex` also choose the model for a topic, `/stop` cancels
 a running turn, and `/obligations` lists what you owe.
 

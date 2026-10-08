@@ -13,11 +13,25 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
 from herald import think
 
-ROWS = [{'engine':'claude','model':'opus','name':'Opus'},
-        {'engine':'claude','model':'haiku','name':'Haiku'},
-        {'engine':'codex','model':'gpt-probe','name':'GPT Probe'}]
+ROWS = [{'engine':'claude','model':'opus','name':'Opus','efforts':['low','medium','high','max']},
+        {'engine':'claude','model':'haiku','name':'Haiku','efforts':[]},
+        {'engine':'codex','model':'gpt-probe','name':'GPT Probe',
+         'efforts':['low','high','max','ultra'],'default_effort':'low'}]
 
 class CatalogTests(unittest.TestCase):
+    def test_catalog_keeps_model_specific_effort_capabilities(self):
+        @contextmanager
+        def process(cmd):
+            def ask(messages, matches):
+                return {'type':'control_response','response':{'subtype':'success',
+                        'request_id':'herald-models','response':{'models':[
+                        {'value':'opus','displayName':'Opus','supportsEffort':True,
+                         'supportedEffortLevels':['low','medium','high','max']},
+                        {'value':'haiku','displayName':'Haiku'}]}}}
+            yield ask
+        with patch.object(think,'_catalog_process',process):
+            self.assertEqual(think.available_models('claude'),ROWS[:2])
+
     def test_claude_uses_only_an_initialize_request(self):
         captured=[]
         @contextmanager
@@ -46,11 +60,16 @@ class CatalogTests(unittest.TestCase):
                 request=messages[-1]
                 value={'id':request['id'],'result':({} if request['method']=='initialize' else
                      {'data':[{'model':'one','displayName':'One'}], 'nextCursor':'page2'} if request['id']==2 else
-                     {'data':[{'model':'two','displayName':'Two'}], 'nextCursor':None})}
+                     {'data':[{'model':'two','displayName':'Two',
+                               'supportedReasoningEfforts':[{'reasoningEffort':'max'},{'reasoningEffort':'ultra'}],
+                               'defaultReasoningEffort':'max'}], 'nextCursor':None})}
                 self.assertTrue(matches(value)); return value
             yield ask
         with patch.object(think,'_catalog_process',process):
-            self.assertEqual([r['model'] for r in think.available_models('codex')],['one','two'])
+            rows=think.available_models('codex')
+            self.assertEqual([r['model'] for r in rows],['one','two'])
+            self.assertEqual(rows[1]['efforts'],['max','ultra'])
+            self.assertEqual(rows[1]['default_effort'],'max')
         listing=[r for r in captured if r.get('method')=='model/list']
         self.assertTrue(all(r['params']['includeHidden'] for r in listing))
         self.assertEqual(listing[1]['params']['cursor'],'page2')
@@ -157,6 +176,114 @@ class TelegramModels(unittest.TestCase):
                           ROWS[:2] if e=='claude' else (_ for _ in ()).throw(TimeoutError())):
             rows, errors=self.catalog_helper()
         self.assertEqual(rows,ROWS[:2]); self.assertEqual(len(errors),1)
+
+    def effort_menu(self, index=2):
+        update=self.menu()
+        update['callback_query']['data']=update['callback_query']['data'].rsplit(':',1)[0]+f':{index}'
+        self.tg._handle_model_callback(update,self.state)
+        token=next(iter(self.state['effort_menus']))
+        return {'callback_query':{'id':'effort-tap','from':{'id':42},'data':f'effort:{token}:4',
+                 'message':self.msg | {'message_id':77}}}
+
+    def test_model_tap_then_effort_tap_uses_native_ultra_and_preserves_session(self):
+        update=self.effort_menu()
+        ts=self.state['threads'][self.key]
+        ts['session_id']='codex-session';ts['turns']=3
+        self.tg._handle_effort_callback(update,self.state)
+        self.assertEqual(ts['effort'],'ultra')
+        self.assertEqual(ts['session_id'],'codex-session');self.assertEqual(ts['turns'],3)
+        buttons=next(kw['reply_markup']['inline_keyboard']
+               for method,kw in reversed(self.calls) if method=='sendMessage')
+        labels=[b['text'] for row in buttons for b in row]
+        self.assertEqual(labels,['CLI default','low','high','max','ultra'])
+        self.assertTrue(all(len(b['callback_data'].encode())<=64 for row in buttons for b in row))
+
+    def test_typed_model_selection_also_opens_effort_picker(self):
+        self.msg['text']='/models codex/gpt-probe'
+        self.tg._handle_models({'message':self.msg},self.state)
+        menu=next(iter(self.state['effort_menus'].values()))
+        self.assertEqual(menu['choices'],['auto','low','high','max','ultra'])
+
+    def test_switching_clears_unsupported_effort_and_retains_supported_effort(self):
+        ts=self.state['threads'][self.key];ts['effort']='ultra'
+        self.tg._choose_model(self.state,self.key,self.msg,ROWS[0])
+        self.assertEqual(ts['effort'],'auto')
+        ts['effort']='high'
+        self.tg._choose_model(self.state,self.key,self.msg,ROWS[0])
+        self.assertEqual(ts['effort'],'high')
+        self.tg._choose_model(self.state,self.key,self.msg,ROWS[1])
+        self.assertEqual(ts['effort'],'auto')
+        self.assertIn('no adjustable thinking',' '.join(self.sent))
+
+    def test_default_tap_clears_override_and_saved_picker_survives_reload(self):
+        import json
+        update=self.effort_menu()
+        restored=json.loads(json.dumps(self.state))
+        restored['threads'][self.key]['effort']='ultra'
+        update['callback_query']['data']=update['callback_query']['data'].rsplit(':',1)[0]+':0'
+        self.tg._handle_effort_callback(update,restored)
+        self.assertEqual(restored['threads'][self.key]['effort'],'auto')
+
+    def test_effort_picker_rejects_forged_expired_and_stale_model_taps(self):
+        import copy
+        original=self.effort_menu()
+        ts=self.state['threads'][self.key]
+        for change in ('sender','topic','message','index','model','expiry'):
+            update=copy.deepcopy(original)
+            ts['model']='gpt-probe';ts['effort']='auto'
+            token=update['callback_query']['data'].split(':')[1]
+            self.state['effort_menus'][token]['created']=time.time()
+            if change=='sender':update['callback_query']['from']['id']=7
+            if change=='topic':update['callback_query']['message']['message_thread_id']=10
+            if change=='message':update['callback_query']['message']['message_id']=88
+            if change=='index':update['callback_query']['data']=f'effort:{token}:999'
+            if change=='model':ts['model']='another'
+            if change=='expiry':self.state['effort_menus'][token]['created']=time.time()-86401
+            self.tg._handle_effort_callback(update,self.state)
+            self.assertEqual(ts['effort'],'auto',change)
+
+    def test_effort_callback_waits_for_current_turn(self):
+        update=self.effort_menu();lock=self.tg._lock_for(self.key)
+        lock.acquire()
+        worker=threading.Thread(target=self.tg._handle_effort_callback,args=(update,self.state))
+        worker.start()
+        try:
+            worker.join(.02)
+            self.assertTrue(worker.is_alive())
+            self.assertEqual(self.state['threads'][self.key]['effort'],'auto')
+        finally:
+            lock.release();worker.join(timeout=2)
+        self.assertEqual(self.state['threads'][self.key]['effort'],'ultra')
+
+    def test_old_model_menu_refreshes_capabilities(self):
+        update=self.menu()
+        token=update['callback_query']['data'].split(':')[1]
+        self.state['model_menus'][token]['choices']=[{k:v for k,v in r.items() if k!='efforts'} for r in ROWS]
+        update['callback_query']['data']=f'model:{token}:0'
+        with patch.object(self.tg.think,'available_models',return_value=ROWS[:2]):
+            self.tg._handle_model_callback(update,self.state)
+        self.assertEqual(next(iter(self.state['effort_menus'].values()))['choices'],
+                         ['auto','low','medium','high','max'])
+
+    def test_effort_command_reopens_picker_and_refuses_unsupported_level(self):
+        self.effort_menu()
+        self.msg['text']='/effort'
+        self.tg.handle({'message':self.msg},self.state)
+        self.assertEqual(len(self.state['effort_menus']),2)
+        self.msg['text']='/effort xhigh'
+        self.tg.handle({'message':self.msg},self.state)
+        self.assertEqual(self.state['threads'][self.key]['effort'],'auto')
+        self.msg['text']='/effort max'
+        self.tg.handle({'message':self.msg},self.state)
+        self.assertEqual(self.state['threads'][self.key]['effort'],'max')
+
+    def test_model_shortcut_does_not_carry_an_incompatible_level(self):
+        self.effort_menu()
+        self.state['threads'][self.key]['effort']='ultra'
+        self.msg['text']='/opus'
+        self.tg.handle({'message':self.msg},self.state)
+        self.assertEqual(self.state['threads'][self.key]['effort'],'auto')
+        self.assertNotIn('effort_caps',self.state['threads'][self.key])
 
 
 if __name__=='__main__':unittest.main()

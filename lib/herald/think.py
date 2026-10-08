@@ -139,7 +139,9 @@ def available_models(engine: str) -> list[dict]:
                 raise RuntimeError("Claude could not list models")
             rows = (response.get("response") or {}).get("models", [])
             result = [{"engine": engine, "model": r["value"],
-                       "name": r.get("displayName") or r["value"]}
+                       "name": r.get("displayName") or r["value"],
+                       "efforts": [e for e in r.get("supportedEffortLevels", [])
+                                   if isinstance(e, str)] if r.get("supportsEffort") else []}
                       for r in rows if isinstance(r, dict) and isinstance(r.get("value"), str)]
     else:
         with _catalog_process(["codex", "app-server"]) as ask:
@@ -160,7 +162,10 @@ def available_models(engine: str) -> list[dict]:
                     raise RuntimeError("Codex could not list models")
                 page = value.get("result") or {}
                 result.extend({"engine": engine, "model": r["model"],
-                               "name": r.get("displayName") or r["model"]}
+                               "name": r.get("displayName") or r["model"],
+                               "efforts": [e["reasoningEffort"] for e in r.get("supportedReasoningEfforts", [])
+                                           if isinstance(e, dict) and isinstance(e.get("reasoningEffort"), str)],
+                               "default_effort": r.get("defaultReasoningEffort")}
                               for r in page.get("data", []) if isinstance(r, dict) and
                               isinstance(r.get("model"), str))
                 cursor = page.get("nextCursor")
@@ -180,12 +185,10 @@ def available_models(engine: str) -> list[dict]:
         raise RuntimeError(f"{engine.capitalize()} returned no selectable models")
     return list(unique.values())
 
-# Herald's own vocabulary for how hard the model should think, which is Claude
-# Code's `--effort` scale. Codex's `model_reasoning_effort` has no "max" and
-# adds "minimal" below "low"; `codex_effort()` maps between them.
-EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Catalogs determine which of these levels a particular model supports.
+EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 _CODEX_EFFORTS = {"minimal": "minimal", "low": "low", "medium": "medium",
-                  "high": "high", "xhigh": "xhigh", "max": "xhigh"}
+                  "none": "none", "high": "high", "xhigh": "xhigh", "max": "max", "ultra": "ultra"}
 
 
 def normalize_effort(level: str | None) -> str | None:
@@ -194,6 +197,8 @@ def normalize_effort(level: str | None) -> str | None:
     if level is None or level == "":
         return None
     level = level.strip().lower()
+    if level == "auto":
+        return None
     if level in EFFORTS or level in _CODEX_EFFORTS:
         return level
     raise ValueError(f"unknown effort {level!r}; one of {', '.join(EFFORTS)}")
@@ -205,6 +210,8 @@ def codex_effort(level: str | None) -> str | None:
 
 def claude_effort(level: str | None) -> str | None:
     # "minimal" is Codex-only; Claude's floor is "low".
+    if level in ("ultra", "none"):
+        raise ValueError(f"Claude does not support effort {level!r}")
     return "low" if level == "minimal" else level
 
 
@@ -1271,7 +1278,8 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     configured model (`engines.primary.model` for claude, `engines.codex.model`
     for codex, where null defers to Codex's own config.toml). `effort` is one
     of `EFFORTS`; None means `engines.<engine>.effort`, which itself defaults
-    to null -- the CLI's own default.
+    to null -- the CLI's own default. Explicit "auto" bypasses that configured
+    effort override and lets the CLI choose for the selected model.
 
     `escalate` picks the engine's `escalate_model`. For Codex, whose models
     are few and whose default is already the large one, an install that sets
@@ -1306,7 +1314,10 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     # The claude block is still called `primary` in config for the sake of
     # every config.json that already sets `engines.primary.model`.
     block = "engines.primary" if engine == "claude" else "engines.codex"
-    effort = normalize_effort(effort) or normalize_effort(config.get(f"{block}.effort"))
+    # Explicit auto bypasses Herald's configured override, letting the CLI
+    # choose its default for this model. None retains the configured default.
+    effort = (None if isinstance(effort, str) and effort.strip().lower() == "auto" else
+              normalize_effort(effort) or normalize_effort(config.get(f"{block}.effort")))
     if model is None:
         if escalate:
             model = config.get(f"{block}.escalate_model")
