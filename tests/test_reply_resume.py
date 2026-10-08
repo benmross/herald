@@ -185,6 +185,12 @@ class ReplyResume(unittest.TestCase):
         self.say("hello", reply_to=500)
         self.assertIsNone(self.calls[-1]["resume"])
 
+    def test_cli_resume_usage_errors_do_not_abandon_the_transcript(self):
+        self.assertFalse(self.tg.transcript_missing(
+            "error: unexpected argument '--add-dir' found\nUsage: codex exec resume"))
+        self.assertTrue(self.tg.transcript_missing("No conversation found with session ID abc"))
+        self.assertTrue(self.tg.transcript_missing("Session abc not found"))
+
 
 if __name__ == "__main__":
     unittest.main()

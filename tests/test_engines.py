@@ -185,7 +185,7 @@ class CommandBuildTests(unittest.TestCase):
                              cwd=pathlib.Path("/tmp"), timeout=1, idle_timeout=1,
                              append_system_prompt=kw.get("sys"), json_schema=kw.get("schema"),
                              resume=kw.get("resume"), permission_mode=kw.get("mode", "auto"),
-                             add_dirs=None)
+                             add_dirs=kw.get("add_dirs"))
         return calls
 
     def test_a_fresh_run_reads_the_prompt_from_stdin_and_the_constitution(self):
@@ -210,6 +210,11 @@ class CommandBuildTests(unittest.TestCase):
         self.assertIn('sandbox_mode="read-only"', cmd)
         self.assertNotIn("-m", cmd)
         self.assertFalse(any(a.startswith("approval_policy") for a in cmd))
+
+    def test_resume_keeps_extra_workspaces_before_the_subcommand(self):
+        cmd = self._capture(resume="abc", add_dirs=["/tmp/memory"])["cmd"]
+        self.assertEqual(cmd[:6], ["codex", "exec", "--add-dir", "/tmp/memory", "resume", "abc"])
+        self.assertNotIn("--add-dir", cmd[cmd.index("resume") + 1:])
 
     def test_the_schema_file_is_strict_and_cleaned_up(self):
         written = {}

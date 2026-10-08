@@ -692,6 +692,10 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
       a guard that silently does not run is the worse outcome.
     """
     sub = ["exec"]
+    # --add-dir belongs to exec, not its resume subcommand. Putting it
+    # after resume makes clap reject every continuing Telegram turn.
+    for d in add_dirs or []:
+        sub += ["--add-dir", d]
     if resume:
         sub += ["resume", resume]
     cmd = ["codex", *sub, "--json",
@@ -713,8 +717,6 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
         cmd += ["-c", "model_reasoning_effort=" + _toml_string(effort)]
     if append_system_prompt:
         cmd += ["-c", "developer_instructions=" + _toml_string(append_system_prompt)]
-    for d in add_dirs or []:
-        cmd += ["--add-dir", d]
 
     schema_file = None
     if json_schema:

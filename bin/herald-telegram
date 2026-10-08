@@ -623,6 +623,19 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
     return text
 
 
+def transcript_missing(error: str | None) -> bool:
+    """Only abandon context when the engine says its transcript is missing.
+
+    CLI usage errors mention `resume` too. They need fixing, not a fresh
+    conversation that hides the failure and loses the user's context.
+    """
+    return bool(re.search(
+        r"(?:no (?:conversation|session|thread) found|"
+        r"(?:session|conversation|thread|rollout)[^\n]*(?:not found|does not exist|missing)|"
+        r"(?:could not|cannot|unable to|failed to) (?:find|load) (?:session|conversation|thread|rollout))",
+        error or "", re.I))
+
+
 def should_rotate(ts: dict, is_general: bool = False) -> str | None:
     """Why this message should start a new session, or None to continue."""
     if not ts.get("session_id"):
@@ -968,7 +981,7 @@ def handle(update: dict, state: dict) -> None:
         # that no longer resumes. Losing the thread is survivable; losing their
         # message is not, so retry once without it rather than failing outright.
         if not result.ok and not result.cancelled and resume \
-                and "resume" in (result.error or "").lower():
+                and transcript_missing(result.error):
             print(f"[{key}] resume failed, retrying fresh")
             posted += working.message_ids
             with Working(chat_id, thread_id) as working:
