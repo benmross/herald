@@ -14,6 +14,7 @@ flight shows up as "running", not in the numbers.
 
 from __future__ import annotations
 
+import shlex
 import sqlite3
 
 TURNS_SHOWN = 8
@@ -35,10 +36,29 @@ def latest_session(con: sqlite3.Connection) -> str | None:
     return row[0] if row else None
 
 
+def resume_command(engine: str | None, session_id: str | None, cwd=None) -> str | None:
+    """The shell line that opens this conversation in the provider's own terminal UI.
+
+    Both CLIs file a session under the directory it ran in, so the `cd` is part
+    of the command: `claude --resume` from anywhere else does not find the id.
+    """
+    if not session_id:
+        return None
+    if engine == "claude":
+        cmd = f"claude --resume {shlex.quote(session_id)}"
+    elif engine == "codex":
+        cmd = f"codex resume {shlex.quote(session_id)}"
+    else:
+        return None
+    return f"cd {shlex.quote(str(cwd))} && {cmd}" if cwd else cmd
+
+
 def report(con: sqlite3.Connection, session_id: str | None, *,
            running: dict | None = None, model: str | None = None,
-           engine: str | None = None, effort: str | None = None) -> str:
-    """Plain text, a screenful. `running` is {'seconds': float, 'step': str}."""
+           engine: str | None = None, effort: str | None = None,
+           cwd=None) -> str:
+    """Plain text, a screenful. `running` is {'seconds': float, 'step': str}.
+    `cwd` is where the session runs, for the terminal resume line."""
     out: list[str] = []
     if engine or effort:
         out.append(f"engine {engine or '?'}" + (f", effort {effort}" if effort else ""))
@@ -58,9 +78,13 @@ def report(con: sqlite3.Connection, session_id: str | None, *,
                startup_ms, model_ms, tool_ms, round_trips, error
         FROM runs WHERE session_id = ? ORDER BY id
     """, (session_id,)).fetchall()
+    resume = resume_command(engine, session_id, cwd)
+    # Its own unindented line, so it can be copied whole out of the code block.
+    takeover = ["", "drive it from a terminal (wait for a running turn to finish):",
+                resume] if resume else []
     if not runs:
         out.append(f"session {session_id[:8]}: no finished turns recorded yet")
-        return "\n".join(out)
+        return "\n".join(out + takeover)
 
     last = runs[-1]
     total_ms = sum(r["duration_ms"] or 0 for r in runs)
@@ -117,4 +141,4 @@ def report(con: sqlite3.Connection, session_id: str | None, *,
                        f"{_n(r['context_tokens']):>8}")
         if len(runs) > TURNS_SHOWN:
             out.append(f"  ({len(runs) - TURNS_SHOWN} earlier not shown)")
-    return "\n".join(out)
+    return "\n".join(out + takeover)

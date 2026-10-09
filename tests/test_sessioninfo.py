@@ -43,6 +43,14 @@ class Report(unittest.TestCase):
         self.assertIn("13 round trips", out)
         self.assertIn("Bash  herald db", out)
 
+    def test_resume_line_names_the_directory_and_the_provider(self):
+        out = sessioninfo.report(_db(), "abcdef12-0000", engine="claude", cwd="/srv/h")
+        self.assertEqual(out.splitlines()[-1], "cd /srv/h && claude --resume abcdef12-0000")
+        self.assertEqual(sessioninfo.resume_command("codex", "t-1", "/a b"),
+                         "cd '/a b' && codex resume t-1")
+        self.assertNotIn("--resume", sessioninfo.report(_db(), "abcdef12-0000"))
+        self.assertIsNone(sessioninfo.resume_command("claude", None, "/srv/h"))
+
     def test_latest_session(self):
         self.assertEqual(sessioninfo.latest_session(_db()), "abcdef12-0000")
 

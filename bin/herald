@@ -498,7 +498,10 @@ def cmd_session(args) -> int:
             row = con.execute("SELECT session_id FROM runs WHERE session_id LIKE ? "
                               "ORDER BY id DESC LIMIT 1", (sid + "%",)).fetchone()
             sid = row[0] if row else sid
-        print(sessioninfo.report(con, sid))
+        row = con.execute("SELECT engine FROM runs WHERE session_id = ? "
+                          "ORDER BY id DESC LIMIT 1", (sid,)).fetchone() if sid else None
+        print(sessioninfo.report(con, sid, engine=row[0] if row else None,
+                                 cwd=config.ROOT))
     return 0
 
 

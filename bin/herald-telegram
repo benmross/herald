@@ -1452,7 +1452,7 @@ def _handle_debug(update: dict, key: str, state: dict) -> None:
             text = sessioninfo.report(
                 con, ts.get("session_id"), running=running, engine=engine,
                 model=ts.get("model") or config.get(f"engines.{engine}.model"),
-                effort=ts.get("effort"))
+                effort=ts.get("effort"), cwd=config.ROOT)
     except Exception as exc:  # noqa: BLE001 -- a report, never worth a crash
         text = f"report failed: {type(exc).__name__}: {exc}"
     send(chat_id, tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
