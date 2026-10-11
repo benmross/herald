@@ -219,9 +219,15 @@ class Working:
     earns a 429.
     """
 
-    def __init__(self, chat_id: int, thread_id: int | None = None):
+    def __init__(self, chat_id: int, thread_id: int | None = None,
+                 narration: str | None = None):
         self.chat_id = chat_id
         self.thread_id = thread_id
+        # "messages": what the model says between tool calls goes out as its own
+        # message, in order, the moment a tool call shows it was not the answer.
+        # "transcript": it accumulates in the one edited block (the old way).
+        self.narration = narration or config.get("telegram.narration", "messages")
+        self._pending: str | None = None     # a text block not yet known to be narration
         self.started = time.monotonic()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -267,15 +273,60 @@ class Working:
         if not text:
             return
         if kind == "interim":
+            self._drop_pending(text)
             return self._interim(text)
+        if self.narration == "messages" and kind == "text":
+            # The turn's last text block is its answer, which the caller sends
+            # itself, so a block is held until something follows it. A tool call
+            # or another block means it was narration: say it now, as a message.
+            self._flush_pending()
+            with self._lock:
+                self._pending = text
+            return
+        if kind == "tool":
+            self._flush_pending()
         with self._lock:
-            if kind == "text":
+            if kind in ("text", "reasoning"):
                 self._lines.append(text)
             else:
                 self._steps += 1
                 self._latest = text
                 self._lines.append(f"{TOOL_BULLET} {text}")
             self._dirty = True
+
+    def _flush_pending(self) -> None:
+        """The held text block turned out to be narration: send it as a message."""
+        with self._lock:
+            text, self._pending = self._pending, None
+        if text:
+            self._post(text)
+
+    def _drop_pending(self, reply: str) -> None:
+        """The held block is (part of) the reply that is about to be sent
+        another way, so it must not go out twice. Anything else is sent."""
+        with self._lock:
+            text = self._pending
+        if not text:
+            return
+        whole, held = self._key(reply), self._key(text)
+        if held and whole and (held in whole or whole in held or held[:40] == whole[:40]):
+            with self._lock:
+                self._pending = None
+        else:
+            self._flush_pending()
+
+    def _post(self, text: str) -> None:
+        """Send `text` as a message of its own and start a fresh transcript block
+        below it, so the chat reads in the order things happened."""
+        with self._lock:
+            shown = self._msg_id is not None or bool(self._lines)
+        if shown:
+            self._publish(done=True)
+        sent = send(self.chat_id, text, self.thread_id)
+        with self._lock:
+            self.message_ids += sent
+            self._lines, self._steps, self._latest = [], 0, ""
+            self._msg_id, self._sent_text, self._dirty = None, "", False
 
     def _interim(self, text: str) -> bool:
         """A reply given mid-turn, before the turn went back to waiting on
@@ -394,6 +445,9 @@ class Working:
         reply contains is removed, and a turn left with nothing but its header
         shows only that.
         """
+        if reply:
+            self._drop_pending(reply)
+        self._flush_pending()          # a turn that ended without a reply: keep what it said
         with self._lock:
             self._drop_tail(reply)
         self._settled = True

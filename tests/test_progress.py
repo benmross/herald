@@ -74,8 +74,10 @@ class NothingIsDropped(unittest.TestCase):
         self.assertEqual(seen, [])
 
 
-class TheTranscript(unittest.TestCase):
-    """The renderer, with Telegram's API stubbed out."""
+class _Bridge(unittest.TestCase):
+    """The bridge's renderer, with Telegram's API stubbed out."""
+
+    NARRATION = "transcript"
 
     def setUp(self):
         src = (ROOT / "bin" / "herald-telegram").read_text()
@@ -86,8 +88,10 @@ class TheTranscript(unittest.TestCase):
         self.sent = []
         self.mod.api = lambda method, **kw: (
             self.sent.append((method, kw)) or {"ok": True, "result": {"message_id": 7}})
-        self.w = self.mod.Working(chat_id=1)
+        self.w = self.mod.Working(chat_id=1, narration=self.NARRATION)
 
+
+class TheTranscript(_Bridge):
     def test_every_line_appears(self):
         for i in range(40):
             self.w.on_progress(think.Progress("text", f"thought number {i}"))
@@ -210,6 +214,91 @@ class TheBridgeSendsAnInterimReply(TheTranscript):
     def test_no_empty_block_is_posted_before_it(self):
         self.w.on_progress(think.Progress("interim", "Straight to the point."))
         self.assertEqual(len([m for m, _ in self.sent if m == "sendMessage"]), 1)
+
+
+class NarrationAsMessages(_Bridge):
+    """What the model says between tool calls is sent as messages of its own."""
+
+    NARRATION = "messages"
+
+    def texts(self):
+        return [kw["text"] for m, kw in self.sent if m == "sendMessage"]
+
+    def test_text_followed_by_a_tool_call_is_sent_as_a_message(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "Checking the collector first."))
+        self.assertEqual(self.texts(), [])                       # held: it might be the answer
+        w.on_progress(think.Progress("tool", "Read: a.py"))
+        self.assertTrue(any("Checking the collector first." in t for t in self.texts()))
+        self.assertNotIn("Checking the collector", w._render())   # not repeated in the block
+        self.assertIn("Read: a.py", w._render())
+
+    def test_messages_and_tool_blocks_alternate_in_order(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "One."))
+        w.on_progress(think.Progress("tool", "Bash: a"))
+        w.on_progress(think.Progress("text", "Two."))
+        w.on_progress(think.Progress("tool", "Bash: b"))
+        w._publish()
+        order = [("msg" if m == "sendMessage" and "Bash" not in kw["text"] else "block")
+                 for m, kw in self.sent if m in ("sendMessage", "editMessageText")]
+        sends = [kw["text"] for m, kw in self.sent if m == "sendMessage"]
+        self.assertTrue("One." in sends[0])
+        self.assertTrue(any("Bash: a" in t for t in sends))
+        self.assertLess(next(i for i, t in enumerate(sends) if "One." in t),
+                        next(i for i, t in enumerate(sends) if "Two." in t))
+
+    def test_the_final_answer_is_not_sent_by_the_transcript(self):
+        w = self.w
+        w.on_progress(think.Progress("tool", "Read: a.py"))
+        w.on_progress(think.Progress("text", "The answer is four."))
+        w.settle("The answer is four.")
+        self.assertFalse(any("answer is four" in t.lower() for t in self.texts()))
+        self.assertIsNone(w._pending)
+
+    def test_a_failed_turn_does_not_lose_what_it_last_said(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "I was about to try the second approach."))
+        w.settle("", stopped=True)
+        self.assertTrue(any("second approach" in t for t in self.texts()))
+
+    def test_a_block_that_is_not_the_answer_is_still_sent_at_the_end(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "Let me look into that."))
+        w.settle("Here is something quite different.")
+        self.assertTrue(any("Let me look into that." in t for t in self.texts()))
+
+    def test_two_blocks_in_a_row_send_the_first(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "First thing."))
+        w.on_progress(think.Progress("text", "Second thing."))
+        self.assertTrue(any("First thing." in t for t in self.texts()))
+        self.assertFalse(any("Second thing." in t for t in self.texts()))
+
+    def test_reasoning_stays_in_the_block(self):
+        w = self.w
+        w.on_progress(think.Progress("reasoning", "Weighing two options."))
+        self.assertEqual(self.texts(), [])
+        self.assertIn("Weighing two options.", w._render())
+
+    def test_an_interim_reply_is_not_sent_twice(self):
+        w = self.w
+        w.on_progress(think.Progress("tool", "Agent: x"))
+        w.on_progress(think.Progress("text", "First half, held."))
+        w.on_progress(think.Progress("interim", "First half, held."))
+        self.assertEqual(len([t for t in self.texts() if "First half, held." in t]), 1)
+
+    def test_the_setting_chooses_the_mode(self):
+        self.assertEqual(self.mod.Working(chat_id=1).narration, "messages")
+
+
+class CodexReasoningIsNotAMessage(unittest.TestCase):
+    def test_reasoning_items_have_their_own_kind(self):
+        seen = []
+        state: dict = {}
+        for item in ({"type": "reasoning", "text": "Thinking about it."}, {"type": "agent_message", "text": "Done."}):
+            think._handle_codex_line(json.dumps({"type": "item.completed", "item": {"id": "i", **item}}), state, seen.append)
+        self.assertEqual([(e.kind, e.text) for e in seen], [("reasoning", "Thinking about it."), ("text", "Done.")])
 
 
 if __name__ == "__main__":

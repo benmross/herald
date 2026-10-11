@@ -112,6 +112,18 @@ sends a notification; the snapshot is free and silent.
   If you change how turns end, test with a real `sleep 20` background job
   through `think.think()` rather than assuming it works.
 
+- **What a Claude turn says between tool calls reaches Telegram as its own
+  messages (since 11 Oct 2026).** Only the last message of a turn used to be
+  delivered as a reply: everything written before a later tool call lived in
+  the monospaced progress block, and a question asked there never read as one.
+  The bridge now holds each text block until something follows it. A tool call
+  or another block means it was narration and it is sent at once; the block
+  that ends the turn is the answer and goes out once, from the caller.
+  `telegram.narration` is `messages` (default) or `transcript` (the old
+  single edited block). Codex reasoning summaries stay in the block
+  (`Progress("reasoning")`); Codex commentary was already sent as interim
+  replies. Write mid-turn text as something a person should read.
+
 ## Never restart the bridge you are answering through
 
 A Telegram turn runs as a child of `herald-telegram`. `herald restart

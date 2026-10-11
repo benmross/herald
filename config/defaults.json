@@ -6,6 +6,10 @@
     "_name_comment": "What this install's agent calls itself. Set at setup; the personal constitution in ledger/identity/constitution.md is where it is stated to the agent."
   },
   "timezone": "UTC",
+  "telegram": {
+    "_comment": "narration: messages sends what the model says between tool calls as its own Telegram message, in order (the final answer still arrives last, once). transcript keeps it all inside the single edited progress block.",
+    "narration": "messages"
+  },
   "engines": {
     "_comment": "Choose claude, codex, or both during setup. enabled lists the providers you use (null keeps both available for existing installs). default_engine is your choice for cycles, terminal sessions and new Telegram topics; null requires a choice. Model and effort null use the selected CLI defaults. No provider is preferred and failures never switch providers. engines.primary remains a compatibility alias for engines.claude.",
     "default_engine": null,

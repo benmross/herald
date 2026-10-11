@@ -358,9 +358,10 @@ def _stage_prompt(prompt: str, workdir: Path) -> tuple[str, Path | None]:
 class Progress:
     """One thing that just happened inside a running turn.
 
-    `kind` is "text" for the model's own narration -- the sentences it writes
+    `kind` is "text" for something the model said -- the sentences it writes
     between tool calls, explaining what it is about to do and what it found --
-    and "tool" for a call it made. "interim" is a whole reply the turn gave
+    "reasoning" for a reasoning summary (Codex only; never meant as a message to
+    the user), and "tool" for a call it made. "interim" is a whole reply the turn gave
     before going back to wait on background work; a handler that delivers it
     returns True (see `_offer_interim`). Both of the first two come out of the stream-json output that
     is already flowing, so neither costs a token or a millisecond.
@@ -755,7 +756,7 @@ def _handle_codex_line(line: str, state: dict, on_progress,
             if item_kind == "agent_message":
                 state["last_text"] = item.get("text") or ""
             if text and on_progress:
-                on_progress(Progress("text", text))
+                on_progress(Progress("reasoning" if item_kind == "reasoning" else "text", text))
             return
         if kind_top == "item.started":
             name, summary = _codex_item_summary(item)
