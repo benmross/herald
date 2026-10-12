@@ -68,6 +68,12 @@ class UnloggedWritesAreBlocked(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("gwrite.doc_batch_update", why)
 
+    def test_a_sheets_write_names_its_door(self):
+        ok, why = bash("python3 - <<'PY'\n"
+                       "s.spreadsheets().batchUpdate(spreadsheetId=i, body={'requests': r}).execute()\nPY")
+        self.assertFalse(ok)
+        self.assertIn("gwrite.sheet_batch_update", why)
+
     def test_a_dash_c_one_liner(self):
         ok, _ = bash("python3 -c \"s.events().insert(calendarId='x', body=b).execute()\"")
         self.assertFalse(ok)

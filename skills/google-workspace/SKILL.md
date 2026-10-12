@@ -89,7 +89,8 @@ PY
 ```
 
 gwrite covers calendar events, tasks, Gmail labels, trash and drafts, Drive
-create, update and trash, and Docs create and batchUpdate. `herald act
+create, update and trash, Docs create and batchUpdate, and Sheets create and
+batchUpdate (`gwrite.sheet_create`, `gwrite.sheet_batch_update`). `herald act
 drive-upload <path> --folder <name>` does the common upload in one line.
 
 Sending mail, sharing anything, and permanent deletion are red and go through

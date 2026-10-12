@@ -104,6 +104,10 @@ GWRITE_FOR = {
     ("files", "update"): "gwrite.drive_update (content or name) or gwrite.drive_trash",
     ("documents", "create"): "gwrite.doc_create",
     ("documents", "batchUpdate"): "gwrite.doc_batch_update",
+    ("spreadsheets", "create"): "gwrite.sheet_create",
+    ("spreadsheets", "batchUpdate"): "gwrite.sheet_batch_update",
+    ("values", "update"): "gwrite.sheet_batch_update (updateCells)",
+    ("values", "append"): "gwrite.sheet_batch_update (appendCells)",
     ("people", "updateContact"): "gwrite.contact_set_address (addresses only)",
 }
 

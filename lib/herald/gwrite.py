@@ -613,6 +613,35 @@ def doc_batch_update(con, *, actor: str, doc_id: str, requests: list,
     return out
 
 
+def sheets_service():
+    return google.service("sheets", "v4")
+
+
+def sheet_create(con, *, actor: str, title: str, tier: str = "amber") -> dict:
+    """A new spreadsheet in the user's Drive, private to them."""
+    ss = sheets_service().spreadsheets().create(
+        body={"properties": {"title": title}},
+        fields="spreadsheetId,spreadsheetUrl,sheets.properties").execute()
+    _log(con, actor, tier, "sheets.create", title, f"created sheet '{title}'",
+         f"gsheet:{ss['spreadsheetId']}")
+    return ss
+
+
+def sheet_batch_update(con, *, actor: str, sheet_id: str, requests: list,
+                       summary: str, title: str = "", tier: str = "amber") -> dict:
+    """Apply Sheets API requests: cells, formatting, tables, validation.
+
+    One door for values and structure alike, because updateCells writes values
+    as a request, so `values().update` never needs its own. `summary` is the
+    one line the digest will show.
+    """
+    out = sheets_service().spreadsheets().batchUpdate(
+        spreadsheetId=sheet_id, body={"requests": requests}).execute()
+    _log(con, actor, tier, "sheets.update", title or sheet_id, summary[:200],
+         f"gsheet:{sheet_id}")
+    return out
+
+
 # --------------------------------------------------------------------------
 # Contacts
 #
