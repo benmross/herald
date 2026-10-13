@@ -81,6 +81,16 @@
     "due_block_minutes": 30,
     "test_minutes": 120
   },
+  "scout": {
+    "_comment": "The scout cycle reads every new message whole. mail_images saves each message's pictures where the session can look at them: `attachments` covers attached and inline images, fetched from the mailbox. `remote` covers images the message links to on the sender's server; fetching one tells the sender the message was opened, so it is off until the user turns it on. Only public addresses are ever fetched. per_message and per_pass bound how many pictures one pass looks at.",
+    "event_mail_labels": [],
+    "mail_images": {
+      "attachments": true,
+      "remote": false,
+      "per_message": 6,
+      "per_pass": 40
+    }
+  },
   "obligations": {
     "_comment": "Open loops (lib/herald/obligations.py). Every new row is shown to the user once with keep/done/drop buttons; an undated one nobody has confirmed in `stale_days` is asked about again.",
     "stale_days": 14

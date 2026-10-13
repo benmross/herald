@@ -105,8 +105,27 @@ run where nothing happened should be nearly free.
 | `collector_state.cursor` | a collector re-reading its whole window |
 | `CADENCE_MINUTES` per collector | scraping nine event sites 48 times a day |
 | scout's `seen` set | re-judging candidates it already rejected |
+| `scout-images/seen.json` | reading a sender's header banner again in every message they send |
 | `reported` table | the digest re-reporting the same exam three mornings running |
 | `db.clear()` before rewriting derived facts | a stale conclusion asserting itself forever |
+
+**Scout reads each message whole, pictures included.** A preview makes the
+session decide which messages deserve opening, on the same thin evidence a
+keyword filter has. On 13 October 2026 a hackathon notice was dismissed from a
+200-character snippet, 115 characters of which were the invisible padding
+marketing mail puts after its preheader. So the snapshot carries every new
+message's full text, passed through `mailtext.compact()`, which removes
+stylesheets, invisible characters, ruled lines and tracking tokens and leaves
+the words. `lib/herald/mailimages.py` saves each message's pictures under
+`raw/scout-images/` and the snapshot lists the files for the session to Read,
+because a flyer carries its date and room in pixels. Attached and inline images
+come from the mailbox. Linked images are fetched only if
+`scout.mail_images.remote` is on, since the request tells the sender the mail
+was opened, and only from public addresses on the standard web ports, with
+every redirect checked the same way: the URL was chosen by whoever wrote the
+mail and is requested from inside the user's network. Pixels, icons and
+dividers are dropped by size, and a picture seen in an earlier message is not
+read again.
 
 **5. The program knows shapes, not services.** The cycle brief queries by fact
 `kind` (an `assignment` is anything with a deadline, a `thread` is any

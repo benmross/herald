@@ -24,7 +24,9 @@ _BLOCK = {"p", "div", "br", "li", "tr", "table", "section", "article", "header",
 _SKIP = {"script", "style", "head", "title"}
 # Marketing mail pads its preview text with invisible characters so the inbox
 # snippet looks tidy; left in, they are hundreds of characters of nothing.
-_INVISIBLE = re.compile(r"[\u034f\u200b\u200c\u200d\u2060\ufeff\u00ad]+")
+_INVISIBLE = re.compile(
+    r"[\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b-\u200f\u202a-\u202e"
+    r"\u2060-\u2064\u2066-\u206f\u2800\u3164\ufe00-\ufe0f\ufeff\uffa0\u00ad]+")
 
 
 def _visible(text: str) -> str:
@@ -60,6 +62,10 @@ class _Text(HTMLParser):
         if tag == "a":
             self._href = dict(attrs).get("href")
             self._anchor = []
+        if tag == "img" and not self._skip:
+            alt = (dict(attrs).get("alt") or "").strip()
+            if len(alt) > 2:
+                self.out.append(f" [image: {alt}] ")
 
     def handle_endtag(self, tag):
         if tag in _SKIP:
@@ -133,4 +139,101 @@ def attachments(payload: dict) -> list[dict]:
                           "mime_type": part.get("mimeType"),
                           "size": b.get("size"),
                           "attachment_id": b.get("attachmentId")})
+    return found
+
+
+# --------------------------------------------------------------------------
+# For a model reading the whole message
+# --------------------------------------------------------------------------
+
+# A plain-text part is sometimes the HTML's stylesheet pasted in front of the
+# words: `table.button table td {`, three declarations, `}`. None of it is
+# content, and a mail that opens with forty lines of it buries what it says.
+_CSS_BLOCK = re.compile(r"(?ms)^[^\n{}]{1,200}\{[^{}]{0,2000}\}[ \t]*$")
+_CSS_LINE = re.compile(
+    r"(?m)^\s*(?:[a-z-]{2,30}\s*:\s*[^;\n]{1,120};\s*)+$|^\s*@(?:media|import|font-face)[^\n]*$")
+_URL = re.compile(r"https?://[^\s<>()\[\]\"']+")
+_RULE = re.compile(r"(?m)^[ \t]*[-=_*~\u2500-\u257f]{4,}[ \t]*$")
+URL_KEEP = 140
+
+
+def _short_url(match: re.Match) -> str:
+    url = match.group(0)
+    if len(url) <= URL_KEEP:
+        return url
+    # A redirect through a tracking host: three hundred characters of opaque
+    # token. The host says where it goes; the whole link is still on the fact.
+    host = url.split("/", 3)[2]
+    return f"https://{host}/…"
+
+
+def compact(text: str) -> str:
+    """The words of a message without what only a renderer needs.
+
+    Stored bodies stay whole. This is what a cycle puts in front of a model
+    when it hands it every message in full: stylesheets, invisible padding,
+    ruled lines and tracking tokens removed, so that reading everything costs
+    what the content costs.
+    """
+    text = _visible(text or "")
+    for _ in range(3):                       # nested and adjacent rule blocks
+        text, n = _CSS_BLOCK.subn("", text)
+        if not n:
+            break
+    text = _CSS_LINE.sub("", text)
+    text = _RULE.sub("", text)
+    text = _URL.sub(_short_url, text)
+    text = re.sub(r"<(https://[^\s>]+/…)>", r"\1", text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+class _Imgs(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.found: list[dict] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "img":
+            return
+        a = dict(attrs)
+        src = (a.get("src") or "").strip()
+        if not src:
+            return
+
+        def _px(v):
+            m = re.match(r"\s*(\d+)", v or "")
+            return int(m.group(1)) if m else None
+        self.found.append({"src": src, "alt": (a.get("alt") or "").strip(),
+                           "width": _px(a.get("width")), "height": _px(a.get("height"))})
+
+
+def images(payload: dict) -> list[dict]:
+    """Every picture a message carries, attached, inline or linked.
+
+    Each entry is one of:
+      {"kind": "part", "mime_type", "filename", "data" | "attachment_id", "size"}
+      {"kind": "remote", "url", "alt", "width", "height"}
+    Nothing is fetched here. `cid:` references resolve to parts that are
+    already listed, so they are dropped and not counted twice.
+    """
+    found: list[dict] = []
+    for part in _parts(payload or {}):
+        mime = (part.get("mimeType") or "").lower()
+        b = part.get("body") or {}
+        if mime.startswith("image/"):
+            found.append({"kind": "part", "mime_type": mime,
+                          "filename": part.get("filename") or "",
+                          "data": b.get("data"), "attachment_id": b.get("attachmentId"),
+                          "size": b.get("size")})
+        elif mime == "text/html" and b.get("data") and not part.get("filename"):
+            parser = _Imgs()
+            parser.feed(_decode(b["data"]))
+            parser.close()
+            for img in parser.found:
+                if img["src"].lower().startswith(("http://", "https://")):
+                    found.append({"kind": "remote", "url": img["src"], "alt": img["alt"],
+                                  "width": img["width"], "height": img["height"]})
     return found
