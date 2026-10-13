@@ -68,6 +68,9 @@ you opt into Claude Remote Control in setup.
 
 In Telegram, each forum topic is its own conversation. `/new` starts a topic
 over, and replying to an older message picks that conversation back up.
+`/private` makes the topic private until `/private off`: Herald can read
+everything and can save or change nothing, enforced by a read-only filesystem
+sandbox, and the conversation is deleted when it ends (Linux with bubblewrap).
 `/models` lists your enabled CLIs' available models and lets you switch by tapping a
 button or sending `/models engine/model`. Switching models within an engine
 keeps the conversation; switching engines starts a fresh session.

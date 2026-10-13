@@ -239,8 +239,41 @@ def decide_safety(event: dict) -> tuple[bool, str]:
     return False, safety.explain(block)
 
 
+def decide_private(event: dict) -> tuple[bool, str]:
+    """A private session reads and changes nothing. See lib/herald/private.py.
+
+    The sandbox that session runs in already refuses every local write. This
+    is for what a read-only mount cannot refuse: a connector, a Google call
+    from a script, a command on another machine. It also gives the file tools
+    one clear answer in place of an OS error."""
+    if os.environ.get("HERALD_PRIVATE") != "1":
+        return True, ""
+    tool = event.get("tool_name") or ""
+    tool_input = event.get("tool_input") or {}
+    found = []
+    if tool.startswith("mcp__") and policy.classify_mcp(tool) != policy.GREEN:
+        found.append(f"`{tool}` is not a known read")
+    if tool == "Bash":
+        cwd = event.get("cwd") or os.getcwd()
+        for label, src in python_sources(tool_input.get("command") or "", cwd):
+            found += [f"{call} in {label} writes to Google" for call in policy.writes(src)]
+    if safety is not None:
+        found += safety.check_private(tool, tool_input)
+    if not found:
+        return True, ""
+    return False, (
+        "Blocked: this is a private session, which can read and cannot save or "
+        "change anything (" + "; ".join(found[:4]) + "). Do not look for another "
+        "way to make the change. If the user asked for it, tell them it cannot "
+        "be done in a private session and that `/private off` ends it.")
+
+
 def decide(event: dict) -> tuple[bool, str]:
-    """(allowed, reason): the Google tiers first, then Herald's safety rules."""
+    """(allowed, reason): a private session's rule, the Google tiers, then
+    Herald's safety rules."""
+    allowed, reason = decide_private(event)
+    if not allowed:
+        return allowed, reason
     allowed, reason = decide_google(event)
     if not allowed:
         return allowed, reason

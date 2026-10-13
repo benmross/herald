@@ -57,6 +57,7 @@ from herald import (activity, capabilities, config,  # noqa: E402
                     migrations as migrations_mod, notify,
                     think as think_mod, upstream)
 from herald import factview, sessioninfo  # noqa: E402
+from herald import private as private_mod  # noqa: E402
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
 OK, WARN, BAD = "\033[32m", "\033[33m", "\033[31m"
@@ -336,10 +337,18 @@ def cmd_think(args) -> int:
         print("nothing to think about", file=sys.stderr)
         return 2
     try:
-        r = think_mod.think(prompt, label=args.label, escalate=args.escalate,
-                            model=args.model, cwd=args.cwd,
-                            engine=args.engine, effort=args.effort)
-    except ValueError as exc:  # an engine or effort level that does not exist
+        # One question, so the private session begins and ends here: its
+        # scratch directory is deleted whatever the run came to.
+        scratch = private_mod.new_scratch() if args.private else None
+        try:
+            r = think_mod.think(prompt, label=args.label, escalate=args.escalate,
+                                model=args.model, cwd=args.cwd,
+                                engine=args.engine, effort=args.effort,
+                                private=scratch)
+        finally:
+            if scratch is not None:
+                private_mod.destroy(scratch)
+    except (ValueError, private_mod.Refused) as exc:  # no such engine or level, or no sandbox
         print(str(exc), file=sys.stderr)
         return 2
     if not r.ok:
@@ -1620,6 +1629,22 @@ def cmd_amber(args) -> int:
 
 
 
+# What `herald` will run from inside a private session: the subcommands that
+# only read. An allowlist, so a subcommand added later is refused there until
+# someone decides it is a read.
+PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check"}
+PRIVATE_READ_OPS = {"obligation": ("op", {"list"}), "deadline": ("op", {"list"}),
+                    "safety": ("op", {"status", "test"}), "root": ("op", {"status"}),
+                    "config": ("action", {"get", "path"}), "ext": ("action", {"list"})}
+
+
+def _reads_only(args) -> bool:
+    if args.cmd in PRIVATE_READS:
+        return True
+    attr, allowed = PRIVATE_READ_OPS.get(args.cmd, (None, ()))
+    return bool(attr) and getattr(args, attr, None) in allowed
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1829,6 +1854,9 @@ def main() -> int:
                    help="how hard to think; default is the engine's own")
     t.add_argument("--escalate", action="store_true", help="use the escalate model")
     t.add_argument("--cwd")
+    t.add_argument("--private", action="store_true",
+                   help="read anything, save and change nothing: a read-only "
+                        "sandbox, no runs row, no transcript kept")
     t.add_argument("-v", "--verbose", action="store_true")
     t.set_defaults(fn=cmd_think)
 
@@ -1939,6 +1967,10 @@ def main() -> int:
     y.set_defaults(fn=cmd_cycle)
 
     args = p.parse_args()
+    if private_mod.active() and not _reads_only(args):
+        print(f"`herald {args.cmd}` is not available in a private session, which "
+              f"can read and cannot save or change anything.", file=sys.stderr)
+        return 2
     config.ensure_dirs()
     # Tracking is the default before anyone has chosen anything, and the
     # wizard's updates step can now be skipped -- so the guard that makes

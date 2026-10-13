@@ -55,6 +55,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, sessioninfo, study, tgsessions, tgtext, think  # noqa: E402
+from herald import private as private_mod  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -121,7 +122,7 @@ DEBUG_COMMANDS = ("/debug", "/session", "/context")
 OBLIGATION_COMMANDS = ("/obligations",)
 # Every command the bridge answers itself. Anything else that starts with a
 # slash is text for the model.
-SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop")
+SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private")
 COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
             *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, "/models")
 
@@ -153,6 +154,73 @@ use it. "Sent 11:58 PM" means everything is closed right now even if the user is
 asking in general terms; a question at 7am reads differently than the same
 one at midnight.
 """
+
+# What a private turn is told in place of PREAMBLE. The middle paragraph there
+# tells a session to write what it learns to the ledger, which is the one thing
+# a private session must not attempt.
+PRIVATE_PREAMBLE = """\
+This message arrived from the user over Telegram. The user is probably on their phone, and
+possibly walking, so answer like a person texting back: short, direct, no
+headers, no bullet lists unless the user asked for one. If the answer is genuinely
+long, lead with the answer and offer the detail.
+
+This is a private session. Read whatever helps. Save nothing and change
+nothing: no ledger, no journal, no memory, nothing on any other service.
+
+The line below "---" gives when the user actually sent this (America/New_York) --
+use it.
+"""
+
+PRIVATE_ON = (
+    "Private from here in this topic. I can read everything and can save or "
+    "change nothing: the filesystem is read-only for me, the ledger and journal "
+    "included, and no record of this conversation is kept. Its transcript is "
+    "held in memory and deleted when you send /private off, start a /new one, "
+    "or Herald restarts. Telegram keeps these messages on its side, as it does "
+    "any others.")
+
+# Topic -> the private session it is in, if it is in one. The dict takes the
+# place of that topic's entry in `state["threads"]` for as long as it exists,
+# with the same keys, so every command that reads or sets a topic's engine,
+# model, effort or session works on it unchanged. It is never in `state`,
+# which is what `save_state` writes: a private session's pointer exists only
+# in this process, and its transcript only in the scratch directory named here.
+_private: dict[str, dict] = {}
+
+
+def topic_state(state: dict, key: str) -> dict:
+    """What this topic is in now: its private session, or its own record."""
+    return _private.get(key) or thread_state(state, key)
+
+
+def _handle_private(chat_id: int, thread_id: int | None, key: str,
+                    arg: str, ts: dict) -> None:
+    pv = _private.get(key)
+    if arg.lower() in ("off", "end", "stop", "exit", "done"):
+        if pv is None:
+            send(chat_id, "This topic is not in a private session.", thread_id)
+            return
+        private_mod.destroy(pv["scratch"])
+        del _private[key]
+        send(chat_id, "Private session ended and its transcript deleted. This "
+                      "topic is back on the conversation it was in before.", thread_id)
+        print(f"[{key}] private session ended")
+        return
+    if pv is not None:
+        send(chat_id, "This topic is already private. /private off ends it.", thread_id)
+        return
+    reason = private_mod.unavailable()
+    if reason:
+        send(chat_id, reason, thread_id)
+        return
+    _private[key] = {"scratch": str(private_mod.new_scratch(NAME)), "session_id": None,
+                     "turns": 0, "last_ts": time.time(),
+                     # The topic's choices carry in. Changes made while private
+                     # stay in this dict and end with it.
+                     **{k: ts[k] for k in ("engine", "model", "effort", "effort_caps")
+                        if ts.get(k) is not None}}
+    send(chat_id, PRIVATE_ON, thread_id)
+    print(f"[{key}] private session started")
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -525,12 +593,16 @@ def send(chat_id: int, text: str, thread_id: int | None = None,
     return ids
 
 
-def download(file_id: str, suggested: str) -> pathlib.Path | None:
+def download(file_id: str, suggested: str,
+             folder: pathlib.Path | None = None) -> pathlib.Path | None:
     """Pull an attachment onto the box and keep it.
 
     Archived under ledger/documents/inbox with the date in the name, because the user
     does not delete things and a syllabus is worth having in its original form
     even after a session has read it and filed what it said.
+
+    `folder` is a private session's scratch directory. A file sent there is
+    not archived: it stays in memory and goes when the session does.
     """
     info = api("getFile", file_id=file_id)
     if not (info and info.get("ok")):
@@ -542,7 +614,7 @@ def download(file_id: str, suggested: str) -> pathlib.Path | None:
     token = config.secret("telegram.bot_token")
     url = f"https://api.telegram.org/file/bot{token}/{meta['file_path']}"
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", suggested).strip("-") or "attachment"
-    dest = config.LEDGER / INBOX / f"{time.strftime('%Y-%m-%d')}-{safe}"
+    dest = (folder or config.LEDGER / INBOX) / f"{time.strftime('%Y-%m-%d')}-{safe}"
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         with urllib.request.urlopen(url, timeout=180) as r, dest.open("wb") as fh:
@@ -663,6 +735,8 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
         print(f"orientation unavailable ({type(exc).__name__}: {exc})")
         return None
     ts["orientation"] = text
+    if ts.get("scratch"):
+        return text  # a private session writes nothing, this file included
     # Also on disk, because the Telegram bridge is not the only surface. A
     # session from claude.ai/code or a terminal is spawned by Claude Code
     # itself, where there is no flag to inject anything -- the constitution
@@ -847,7 +921,11 @@ def handle(update: dict, state: dict) -> None:
     # everything shares one thread, exactly as before.
     thread_id = msg.get("message_thread_id")
     key = _topic_key(update)
-    ts = thread_state(state, key)
+    # In a private session `ts` is that session's own dict, held in memory
+    # only, and the topic's stored record is left exactly as it was.
+    pv = _private.get(key)
+    ts = topic_state(state, key)
+    inbox = pathlib.Path(pv["scratch"]) / "inbox" if pv else None
 
     # General is the forum's default topic, which carries no thread id of its
     # own -- indistinguishable from a plain chat by thread id alone. Chat type
@@ -871,10 +949,10 @@ def handle(update: dict, state: dict) -> None:
         got = None
         if doc := m.get("document"):
             got = download(doc["file_id"],
-                           doc.get("file_name") or f"{doc['file_id']}.bin")
+                           doc.get("file_name") or f"{doc['file_id']}.bin", inbox)
         elif photos := m.get("photo"):
             largest = max(photos, key=lambda p: p.get("file_size") or 0)
-            got = download(largest["file_id"], f"{largest['file_id']}.jpg")
+            got = download(largest["file_id"], f"{largest['file_id']}.jpg", inbox)
         else:
             continue
         if got is None:
@@ -885,6 +963,21 @@ def handle(update: dict, state: dict) -> None:
     attachment = attachments[0] if attachments else None
 
     if not text and not attachment:
+        return
+
+    if command_word(text) == "/private":
+        _handle_private(chat_id, thread_id, key,
+                        (text.split(None, 1) + [""])[1].strip(), ts)
+        return
+
+    if pv is not None and command_word(text) in ("/new", "/clear", "/reset"):
+        private_mod.destroy(pv["scratch"])
+        pv.update(scratch=str(private_mod.new_scratch(NAME)), session_id=None, turns=0,
+                  last_ts=time.time())
+        pv.pop("orientation", None)
+        send(chat_id, "Fresh private session. The previous one is deleted. "
+                      "/private off leaves private mode.", thread_id)
+        print(f"[{key}] private session restarted")
         return
 
     if command_word(text) in ("/new", "/clear", "/reset"):
@@ -976,7 +1069,7 @@ def handle(update: dict, state: dict) -> None:
     # after this one continue it without having to be replies themselves, and
     # the conversation being left stays resumable the same way.
     notices: list[int] = []
-    target = _reply_target(msg, key, ts)
+    target = None if pv else _reply_target(msg, key, ts)
     if target:
         when = datetime.fromtimestamp(target["last_ts"] or 0, tz=EASTERN)
         ts["session_id"] = target["session_id"]
@@ -995,7 +1088,12 @@ def handle(update: dict, state: dict) -> None:
         print(f"[{key}] resumed {target['session_id'][:8]} by reply")
 
     # Asked for by name, so neither idleness nor the turn ceiling rotates it.
-    reason = None if target else should_rotate(ts, is_general)
+    # A private session is never rotated: a new one would have nothing to
+    # read the old one back from.
+    if pv is not None:
+        reason = None if ts.get("session_id") else "no session yet"
+    else:
+        reason = None if target else should_rotate(ts, is_general)
     resume = None if reason else ts.get("session_id")
 
     sent_at = sent_at_line(msg)
@@ -1012,15 +1110,21 @@ def handle(update: dict, state: dict) -> None:
             files = (f"{len(attachments)} files, sent together as one message -- "
                      "read all of them and treat them as one request:\n"
                      + "\n".join(f"- `{a}`" for a in attachments))
-        prompt = (f"{DOCUMENT_PREAMBLE}{moved}\n---\n\n{sent_at}{files}\n\n"
+        lead = (PRIVATE_PREAMBLE + "\nThe user sent a file with this message. It is "
+                "held in memory for this session and is not archived.\n"
+                if pv else DOCUMENT_PREAMBLE)
+        prompt = (f"{lead}{moved}\n---\n\n{sent_at}{files}\n\n"
                   + (f"What the user said with it: {text}" if text
                      else "The user sent it without a caption."))
         label = "telegram:document"
-        print(f"→ {len(attachments)} file(s) {attachment.name} [{key}]")
+        print(f"→ {len(attachments)} file(s) [{key}] (private)" if pv else
+              f"→ {len(attachments)} file(s) {attachment.name} [{key}]")
     else:
-        prompt = f"{PREAMBLE}{moved}\n---\n\n{sent_at}{text}"
+        prompt = f"{PRIVATE_PREAMBLE if pv else PREAMBLE}{moved}\n---\n\n{sent_at}{text}"
         label = "telegram"
-        print(f"→ {text[:60]!r} [{key}] "
+        # The unit's log is on disk, so a private message is not quoted in it.
+        print(f"→ a message [{key}] (private)" if pv else
+              f"→ {text[:60]!r} [{key}] "
               f"({'new session' if reason else 'continuing'})")
 
     # Marks this topic active for exactly as long as a `herald restart --defer`
@@ -1049,6 +1153,7 @@ def handle(update: dict, state: dict) -> None:
                                "WebSearch", "WebFetch", "Bash"],
                 append_system_prompt=orientation_for(ts, bool(reason)),
                 on_progress=working.on_progress, cancel_key=key,
+                private=pv["scratch"] if pv else None,
             )
             took = working.elapsed
             working.settle(result.text if result.ok else "",
@@ -1074,7 +1179,8 @@ def handle(update: dict, state: dict) -> None:
                                    "WebSearch", "WebFetch", "Bash"],
                     # This retry *is* a fresh session, so it earns a fresh card.
                     append_system_prompt=orientation_for(ts, True),
-                    on_progress=working.on_progress, cancel_key=key)
+                    on_progress=working.on_progress, cancel_key=key,
+                    private=pv["scratch"] if pv else None)
             if result.ok:
                 posted += send(chat_id, "*(lost this topic's earlier transcript, "
                                         "so I re-read the ledger instead)*", thread_id)
@@ -1108,8 +1214,10 @@ def handle(update: dict, state: dict) -> None:
         ts["last_ts"] = time.time()
         # Filed under the session the turn ran in, whatever became of the
         # topic's pointer: a cancelled or failed turn still left a transcript.
-        _remember_turn(chat_id, key, result.session_id or resume, ts, posted,
-                       turns=ts.get("turns", 0))
+        # A private turn is filed nowhere.
+        if pv is None:
+            _remember_turn(chat_id, key, result.session_id or resume, ts, posted,
+                           turns=ts.get("turns", 0))
 
 
 _state_lock = threading.Lock()          # guards save_state() itself
@@ -1175,7 +1283,7 @@ def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict,
         else:
             send(chat_id, text, thread_id)
         return
-    ts = thread_state(state, key)
+    ts = topic_state(state, key)
     current = "CLI default" if ts.get("effort") == "auto" else ts.get("effort") or "configured default"
     levels = ["auto", *dict.fromkeys(choice["efforts"])]
     menus = state.setdefault("effort_menus", {})
@@ -1218,7 +1326,7 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
         else:
             send((msg.get("chat") or {})["id"], text, msg.get("message_thread_id"))
         return
-    ts = thread_state(state, key)
+    ts = topic_state(state, key)
     note = _select_model(ts, choice["engine"], choice["model"])
     if "efforts" in choice:
         ts["effort_caps"] = choice
@@ -1255,7 +1363,7 @@ def _handle_models(update: dict, state: dict) -> None:
         return
     config.reload()
     rows, errors = _model_catalog()
-    ts = thread_state(state, key)
+    ts = topic_state(state, key)
     arg = (msg.get("text") or "").strip().split(None, 1)
     selector = arg[1].strip() if len(arg) > 1 else ""
     if selector:
@@ -1339,7 +1447,7 @@ def _handle_effort_callback(update: dict, state: dict) -> None:
         if menu.get("selected"):
             return
         menu["selected"] = True
-        ts = thread_state(state, key)
+        ts = topic_state(state, key)
         if ts.get("engine") != menu["engine"] or ts.get("model") != menu["model"]:
             _replace_picker(msg, "Your model changed. Use /effort for its current choices.")
             return
@@ -1583,7 +1691,8 @@ def _try_steer(update: dict, key: str, state: dict | None = None) -> bool:
     text = (msg.get("text") or msg.get("caption") or "").strip()
     if not text or command_word(text):
         return False  # commands always take the normal path, never steer
-    if state is not None and _reply_target(msg, key, thread_state(state, key)):
+    if state is not None and key not in _private \
+            and _reply_target(msg, key, thread_state(state, key)):
         return False  # meant for another conversation, not the one running
 
     if not think.steer(key, f"{sent_at_line(msg)}{text}"):
@@ -1876,6 +1985,12 @@ def main() -> int:
     if not config.secret("telegram.bot_token"):
         print("no telegram.bot_token in config/secrets.json", file=sys.stderr)
         return 1
+
+    # A private session's pointer was in the memory of the process this one
+    # replaces, so whatever it left behind can no longer be reached. Delete it.
+    swept = private_mod.sweep(NAME)
+    if swept:
+        print(f"deleted {swept} private session(s) left by the last run")
 
     state = load_state()
     threads = state.get("threads", {})

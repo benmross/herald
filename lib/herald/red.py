@@ -57,7 +57,7 @@ import json
 import sys
 from email.message import EmailMessage
 
-from . import approvals, db, google, mailfmt, notify
+from . import approvals, db, google, mailfmt, notify, private
 
 TAP_TIMEOUT = 600
 
@@ -219,6 +219,7 @@ def render(kind: str, payload: dict) -> str:
 def request(kind: str, payload: dict, *, actor: str,
             thread_id: int | None = None) -> int:
     """File the approval and put it on the user's phone. Returns its id."""
+    private.refuse("A red action")
     text = render(kind, payload)
     target = payload.get("to") if kind == "mail.send" else (
         payload.get("target") if kind not in KINDS else None)
@@ -238,6 +239,7 @@ def request(kind: str, payload: dict, *, actor: str,
 
 def execute(approval_id: int, *, actor: str = "red") -> dict:
     """Carry out an approved action, exactly once."""
+    private.refuse("A red action")
     row = approvals.get(approval_id)
     if row is None:
         raise PermissionError(f"approval {approval_id} does not exist")

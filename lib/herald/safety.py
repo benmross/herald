@@ -588,6 +588,56 @@ def check_bash(command: str, cwd: str, s: Settings) -> list[Finding]:
     return found
 
 
+# --------------------------------------------------------------------------
+# Private sessions (lib/herald/private.py). The sandbox mounts every local
+# file read-only, so nothing here is about the local disk. These are the
+# writes a mount cannot stop: the ones that land on another machine.
+# Not in RULES on purpose: there is no mode to set and no tap that lifts it.
+# A private session that needs to write is ended by the user, with
+# `/private off`.
+# --------------------------------------------------------------------------
+
+FILE_WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit", "apply_patch")
+REMOTE_SHELLS = {"ssh", "scp", "sftp", "rsync", "rclone", "mosh"}
+GH_READS = {"view", "list", "status", "diff", "checks", "search", "browse", "watch"}
+
+
+def check_private(tool: str, tool_input: dict) -> list[str]:
+    """What this call would change, in a session that may change nothing."""
+    if tool in FILE_WRITE_TOOLS:
+        return [f"`{tool}` writes a file"]
+    if tool not in ("Bash", "shell", "exec_command", "local_shell"):
+        return []
+    cmd = tool_input.get("command")
+    if isinstance(cmd, list):
+        cmd = " ".join(shlex.quote(c) for c in cmd)
+    out = []
+    for pipeline in all_commands(cmd or ""):
+        for w in pipeline:
+            p = prog(w)
+            if p in REMOTE_SHELLS:
+                out.append(f"`{p}` reaches another machine, where the read-only "
+                           f"mount does not apply")
+            elif p in NET_TOOLS and _curl_sends(w):
+                out.append(f"`{p}` sending data to a server")
+            elif p == "git":
+                args = list(w[1:])
+                while args and args[0].startswith("-"):
+                    args = args[2:] if args[0] in ("-C", "-c", "--git-dir", "--work-tree") else args[1:]
+                if args[:1] == ["push"]:
+                    out.append("`git push` changes a remote")
+            elif p == "gh":
+                args = [a for a in w[1:] if not a.startswith("-")]
+                if args[:1] == ["api"]:
+                    if any(a in ("-X", "--method", "-f", "-F", "--field", "--raw-field",
+                                 "--input") or a.startswith(("--method=", "-X"))
+                           for a in w[1:]):
+                        out.append("`gh api` with a method or a body")
+                elif args and not any(a in GH_READS for a in args[:3]):
+                    out.append(f"`gh {' '.join(args[:2])}` is not a known read")
+    return out
+
+
 PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.M)
 
 

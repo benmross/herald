@@ -23,7 +23,8 @@ The two are made to look the same from the outside -- one `Result`, one
 which one ran. The differences that could not be hidden are listed on
 `_run_codex`.
 
-Every invocation is metered into the `runs` table.
+Every invocation is metered into the `runs` table, except a private one
+(`think(private=...)`, see `private.py`), which is recorded nowhere.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, db
+from . import config, db, private as private_mod
 
 # Result text or API status that means "out of quota". Nothing acts on this any
 # more except the error message: a caller told "usage limit" knows to wait,
@@ -56,6 +57,31 @@ _RATE_LIMIT_HINTS = ("rate limit", "usage limit", "quota", "overloaded",
 _ARGV_PROMPT_LIMIT = 120_000
 
 ENGINES = config.ENGINE_NAMES
+
+# The scratch directory of the private session this thread is running, or
+# nothing. A thread-local rather than one more argument through every runner,
+# because what it changes is spread across them: how each process is launched,
+# where an oversized prompt is staged, and whether the run is booked at all.
+# `think()` runs each engine in the thread that called it, so the value set
+# there is the one every helper below sees.
+_private = threading.local()
+
+
+def _private_scratch() -> Path | None:
+    return getattr(_private, "scratch", None)
+
+
+def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
+    """Start an engine. In a private session it starts inside the read-only
+    sandbox, in its own process group so a cancel reaches the engine and not
+    only the sandbox in front of it."""
+    env = config.agent_env()
+    scratch = _private_scratch()
+    if scratch is not None:
+        cmd = private_mod.wrap(cmd, engine, scratch, env)
+        env[private_mod.ENV] = "1"
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(cmd, env=env, **kwargs)
 
 
 @contextlib.contextmanager
@@ -344,8 +370,9 @@ def _stage_prompt(prompt: str, workdir: Path) -> tuple[str, Path | None]:
     """Keep very large prompts off argv."""
     if len(prompt) <= _ARGV_PROMPT_LIMIT:
         return prompt, None
-    config.RAW.mkdir(parents=True, exist_ok=True)
-    fh = tempfile.NamedTemporaryFile("w", suffix=".prompt.md", dir=config.RAW,
+    folder = _private_scratch() or config.RAW
+    folder.mkdir(parents=True, exist_ok=True)
+    fh = tempfile.NamedTemporaryFile("w", suffix=".prompt.md", dir=folder,
                                      delete=False, encoding="utf-8")
     fh.write(prompt)
     fh.close()
@@ -856,8 +883,9 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
 
     schema_file = None
     if json_schema:
-        config.RAW.mkdir(parents=True, exist_ok=True)
-        fh = tempfile.NamedTemporaryFile("w", suffix=".schema.json", dir=config.RAW,
+        folder = _private_scratch() or config.RAW
+        folder.mkdir(parents=True, exist_ok=True)
+        fh = tempfile.NamedTemporaryFile("w", suffix=".schema.json", dir=folder,
                                          delete=False, encoding="utf-8")
         json.dump(_strict_schema(json_schema), fh)
         fh.close()
@@ -980,9 +1008,9 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
         _handle_codex_line(json.dumps({"type": kind, **fields}), state, on_progress, cancel_key)
 
     try:
-        proc = subprocess.Popen(cmd, cwd=str(cwd), env=config.agent_env(), stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                bufsize=1, start_new_session=True)
+        proc = _spawn("codex", cmd, cwd=str(cwd), stdin=subprocess.PIPE,
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                      bufsize=1, start_new_session=True)
         if cancel_key:
             with _active_lock:
                 _active[cancel_key] = {"proc": proc, "cancelled": cancelled, "steer_queue": steers,
@@ -1238,15 +1266,15 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
             submitted.append(text)
 
     try:
-        proc = subprocess.Popen(cmd, cwd=str(cwd), env=config.agent_env(),
-                                stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, bufsize=1)
+        proc = _spawn(engine, cmd, cwd=str(cwd), stdin=subprocess.PIPE,
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                      text=True, bufsize=1)
         if cancel_key:
             with _active_lock:
                 _active[cancel_key] = {"proc": proc, "cancelled": cancelled,
                                         "steer_queue": steer_queue,
-                                        "accepting_steers": steerable, "progress": ""}
+                                        "accepting_steers": steerable, "progress": "",
+                                        "process_group": _private_scratch() is not None}
 
         _write_user_message(prompt)
 
@@ -1468,6 +1496,8 @@ def _log_anomaly(stage: str, label: str, model: str, resume: str | None,
     existed -- this changes nothing about what runs, only what survives it.
     Best-effort: a logging failure must never be the reason a turn fails.
     """
+    if _private_scratch() is not None:
+        return
     try:
         config.LOGS.mkdir(parents=True, exist_ok=True)
         with _ANOMALY_LOG.open("a", encoding="utf-8") as fh:
@@ -1538,7 +1568,12 @@ def _record(**fields) -> None:
     checkpoint, took herald-telegram down seven times and cost two replies.
     Losing a `runs` row costs a line of spend attribution; losing the turn
     costs the user the answer the user is waiting on.
+
+    A private run is not booked: the row would say when the conversation
+    happened and how long it ran, and the user asked for no record of it.
     """
+    if _private_scratch() is not None:
+        return
     timing = fields.pop("timing", None) or {}
     phases = timing.get("phases") or []
     if phases:
@@ -1576,7 +1611,8 @@ def think(prompt: str, *, label: str, escalate: bool = False,
           cancel_key: str | None = None,
           on_progress=None,
           engine: str | None = None, effort: str | None = None,
-          codex_transport: str = "exec") -> Result:
+          codex_transport: str = "exec",
+          private: Path | str | None = None) -> Result:
     """Run one metered agent invocation.
 
     `label` is what shows up in the runs table — use `cycle:dawn`,
@@ -1602,6 +1638,13 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     `codex_transport` defaults to exec for batch jobs. Telegram opts into
     app-server for native mid-turn steering with the same subscription login.
 
+    `private` is the scratch directory of a private session, from
+    `private.new_scratch()`. The engine then runs inside a read-only sandbox
+    with its own state kept in that directory, the run is recorded nowhere,
+    and the caller deletes the directory when the session ends. Pass the same
+    directory for every turn of one session: the transcript a later turn
+    resumes is in it.
+
     `cancel_key`, if given, registers the underlying subprocess with
     `cancel()` under that key for exactly as long as this call is running --
     pass the same key to `cancel()` from another thread to interrupt this
@@ -1613,6 +1656,24 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     over on top of half-finished files -- on the same engine, since a
     session id means nothing to the other one.
     """
+    if private is not None:
+        reason = private_mod.unavailable()
+        if reason:
+            return Result(ok=False, engine=engine or "", model=model, error=reason)
+        _private.scratch = Path(private)
+        try:
+            return think(prompt, label=label, escalate=escalate, model=model, cwd=cwd,
+                         timeout=timeout, idle_timeout=idle_timeout,
+                         allowed_tools=allowed_tools,
+                         append_system_prompt="\n\n".join(
+                             t for t in (append_system_prompt, private_mod.PROMPT) if t),
+                         json_schema=json_schema, resume=resume,
+                         permission_mode=permission_mode, add_dirs=add_dirs,
+                         cancel_key=cancel_key, on_progress=on_progress,
+                         engine=engine, effort=effort,
+                         codex_transport=codex_transport)
+        finally:
+            _private.scratch = None
     cwd = Path(cwd) if cwd else config.ROOT
     engine = resolve_engine(engine)
     if codex_transport not in ("exec", "app-server"):

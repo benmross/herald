@@ -44,7 +44,10 @@ import hashlib
 import re
 from email.message import EmailMessage
 
-from . import config, db, google, mailfmt
+import functools
+import inspect
+
+from . import config, db, google, mailfmt, private
 
 TZ = "America/New_York"
 CANCEL_PREFIX = "CANCELLED - "
@@ -691,3 +694,26 @@ def same_start(a: str | None, b: str | None) -> bool:
     if len(a) == 10 or len(b) == 10:
         return a[:10] == b[:10]
     return a[:16] == b[:16]
+
+
+# --------------------------------------------------------------------------
+# Private sessions write nothing. Every write in this module takes `actor`,
+# because every write is logged under one, so that parameter is what marks a
+# function as a write. Wrapping by that rule, here at the bottom, covers a
+# function added later without anyone having to remember this exists. The
+# refusal comes before the Google call: the actions row a private session
+# could not write is not what stops it.
+# --------------------------------------------------------------------------
+
+def _refusing_in_private(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        private.refuse(f"gwrite.{fn.__name__}")
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+for _name, _fn in list(globals().items()):
+    if inspect.isfunction(_fn) and _fn.__module__ == __name__ \
+            and "actor" in inspect.signature(_fn).parameters:
+        globals()[_name] = _refusing_in_private(_fn)

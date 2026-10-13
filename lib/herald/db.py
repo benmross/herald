@@ -13,7 +13,7 @@ import json
 import sqlite3
 from typing import Any, Iterable
 
-from . import config
+from . import config, private
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -287,6 +287,29 @@ def now() -> str:
 
 
 def connect() -> sqlite3.Connection:
+    if private.active():
+        # A private session reads the ledger and can change none of it. The
+        # sandbox already mounts the file read-only; opening it that way as
+        # well turns every write in every caller into one plain error, and
+        # skips the schema and migration statements below, which are writes.
+        #
+        # A WAL database can be opened read-only where nothing can be created
+        # only while its -wal and -shm files exist, which is while some other
+        # process has it open. When none does, SQLite has checkpointed and
+        # removed them, the main file is the whole database, and `immutable`
+        # reads it as it stands.
+        for flags in ("mode=ro", "immutable=1"):
+            con = sqlite3.connect(f"file:{config.DB_PATH}?{flags}", uri=True, timeout=30)
+            try:
+                con.execute("SELECT 1 FROM sqlite_master LIMIT 1")
+            except sqlite3.OperationalError:
+                con.close()
+                continue
+            break
+        else:
+            raise sqlite3.OperationalError("facts.db could not be opened read-only")
+        con.row_factory = sqlite3.Row
+        return con
     config.ensure_dirs()
     con = sqlite3.connect(config.DB_PATH, timeout=30)
     con.row_factory = sqlite3.Row

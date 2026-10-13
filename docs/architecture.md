@@ -297,6 +297,45 @@ to any of them points the topic back at that session and continues it, on the
 engine and with the orientation card it started with. A message sent before
 7 October 2026 has no row and cannot be resumed this way.
 
+### Private sessions
+
+`/private` in a Telegram topic, or `herald think --private`, starts a session
+that can read everything and can save or change nothing. `lib/herald/private.py`
+is the whole of it and its docstring is the reference. In short:
+
+- The engine runs inside bubblewrap with the entire filesystem mounted
+  read-only. That covers the ledger, `facts.db`, the repository, the journal,
+  the guard's own log and anything a script the model wrote might try. `/tmp`
+  is an empty tmpfs that goes when the turn's process exits.
+- The transcript lives in RAM. A second message has to be able to continue
+  the first, so the engine's state directories are mounted from a scratch
+  directory under `$XDG_RUNTIME_DIR`, one per private session. `/private off`,
+  `/new` and a bridge restart delete it. The engine's login file is the one
+  thing left on the real disk, because a token refresh that could not be saved
+  would log the real install out.
+- Herald books nothing. No `runs` row, no anomaly log, no
+  `telegram_messages` or `telegram_sessions` row, no attachment archived, and
+  the message text is kept out of the unit's log. The bridge holds the session
+  pointer in a dict that is never part of the state it saves, so the topic's
+  ordinary conversation is untouched and resumes when the private one ends.
+- What a mount cannot stop is refused at the doors, each of which reads
+  `HERALD_PRIVATE`: `db.connect` opens read-only, `gwrite` and `red` raise
+  before reaching Google or the phone, `herald` runs only its reading
+  subcommands, and the guard blocks the file tools, any connector that is not
+  a known read, and shell commands that write to another machine (`ssh`,
+  `git push`, a `curl` with a body).
+
+Two limits are worth knowing. The last item reads command text, so like the
+rest of the guard it stops an accident and a misled session and cannot stop a
+determined one: a private session can still reach the network, because reading
+mail and the web needs it. And Telegram keeps the messages themselves, which
+Herald has no say over.
+
+Private mode needs `bwrap` and a RAM-backed directory. Where either is
+missing (macOS, some containers) it refuses to start and says why. It never
+falls back to an ordinary session, because the user would have been told
+it was private.
+
 The cost accepted in exchange is that **there is still no engine redundancy.**
 A usage limit or an engine timeout during a cycle is a failure with a clear
 error and a notification, and the run never finishes on the other engine. A

@@ -225,6 +225,14 @@ tripwire and cannot stop a determined one, because a script can assemble a
 method name at runtime. The tap cannot be forged, which is why red goes through
 it even when the request was explicit.
 
+**A private session reads and changes nothing.** The user starts one with
+`/private` or `herald think --private`, and you are told at its start that you
+are in one. The filesystem is mounted read-only for you, the ledger included,
+and no record of the conversation is kept. Everything in this file about
+writing things down before a conversation ends is suspended for its length.
+Do not look for a way to save something anyway. If the user asks for a write,
+say that it needs `/private off` first.
+
 **The machine has rules too, and they belong to Herald on every engine.** The
 same guard applies `lib/herald/safety.py` to every shell, file and connector
 call, on Claude and Codex alike: no sending data to hosts off the allowlist, no
