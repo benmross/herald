@@ -76,6 +76,12 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     sandbox, in its own process group so a cancel reaches the engine and not
     only the sandbox in front of it."""
     env = config.agent_env()
+    # Which Telegram topic this run answers, so `herald notify --file` and
+    # `herald quiz` can land in it exactly instead of guessing from whichever
+    # turn happens to be live. Only a bridge turn passes a "<chat>:<thread>" key.
+    topic = getattr(_private, "topic", None)
+    if topic:
+        env["HERALD_TELEGRAM_TOPIC"] = topic
     scratch = _private_scratch()
     if scratch is not None:
         cmd = private_mod.wrap(cmd, engine, scratch, env)
@@ -1674,6 +1680,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
                          codex_transport=codex_transport)
         finally:
             _private.scratch = None
+    _private.topic = cancel_key
     cwd = Path(cwd) if cwd else config.ROOT
     engine = resolve_engine(engine)
     if codex_transport not in ("exec", "app-server"):

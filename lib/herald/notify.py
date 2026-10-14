@@ -7,6 +7,7 @@ is and what device is awake) will grow here rather than in callers.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import urllib.error
 import urllib.request
@@ -220,7 +221,16 @@ def _live_topic_thread() -> int | None:
     Same source `herald quiz` uses to work out where a quiz should land.
     Ambiguous when two topics are mid-turn, so it says nothing rather than
     guessing.
+
+    A turn started by the Telegram bridge carries its own topic in
+    HERALD_TELEGRAM_TOPIC ("<chat>:<thread>"), set by think._spawn. That is
+    exact where the liveness guess is not: a file sent while a second topic is
+    mid-turn used to fall through to Updates.
     """
+    own = os.environ.get("HERALD_TELEGRAM_TOPIC", "")
+    if own:
+        _, _, thread = own.partition(":")
+        return int(thread) if thread.isdigit() else None
     try:
         from . import activity  # noqa: PLC0415
         live = [t["key"] for t in activity.active() if t.get("service") == "telegram"]
