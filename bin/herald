@@ -1450,6 +1450,56 @@ def cmd_root(args) -> int:
     return 3
 
 
+def cmd_secret(args) -> int:
+    """Take a secret from the user's phone without it passing through a model.
+
+    `request` sends them a one-time link to a page served by bin/herald-secrets;
+    what they paste goes straight into secrets.json. See lib/herald/secretintake.py.
+    """
+    from herald import notify, secretintake  # noqa: PLC0415
+
+    if args.op == "has":
+        ok = secretintake.has(args.path)
+        print("set" if ok else "not set")
+        return 0 if ok else 1
+    if args.op == "status":
+        rows = secretintake.all_requests()[:args.limit]
+        if not rows:
+            print(_c("  no requests", DIM))
+        for r in rows:
+            when = dt.datetime.fromtimestamp(r["created"]).strftime("%a %d %b %H:%M")
+            print(f"  {r['id']}  {r['state']:<8} {when}  {r['path']}")
+        if not secretintake.enabled():
+            print(_c("  no intake URL set: surfaces.secret_intake.url", WARN))
+        return 0
+    if args.op == "wait":
+        state = secretintake.wait(args.id)
+        print(state)
+        return 0 if state == "stored" else 1
+
+    try:
+        req, url = secretintake.request(
+            args.path, why=args.why or "", as_json=args.json, minutes=args.minutes,
+            actor=args.actor, thread_id=notify._live_topic_thread())
+    except (ValueError, LookupError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    replaces = " It replaces the value already there." if req["replaces"] else ""
+    sent = notify.telegram(
+        f"Paste `{req['path']}` here (works once, for {args.minutes} minutes):\n"
+        f"{url}\n\nWhy: {req['why']}{replaces}", thread_id=req["thread_id"])
+    if sent:
+        print(f"request {req['id']}: a link for {req['path']} is on the user's phone")
+    else:
+        # Nowhere to push, so this is someone at a terminal: the link is theirs.
+        print(f"request {req['id']}: Telegram did not take it. Open:\n  {url}")
+    if args.wait:
+        state = secretintake.wait(req["id"])
+        print(state)
+        return 0 if state == "stored" else 1
+    return 0
+
+
 def cmd_obligation(args) -> int:
     """Open loops: add, close, list. See lib/herald/obligations.py.
 
@@ -1635,6 +1685,7 @@ def cmd_amber(args) -> int:
 PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check"}
 PRIVATE_READ_OPS = {"obligation": ("op", {"list"}), "deadline": ("op", {"list"}),
                     "safety": ("op", {"status", "test"}), "root": ("op", {"status"}),
+                    "secret": ("op", {"has", "status"}),
                     "config": ("action", {"get", "path"}), "ext": ("action", {"list"})}
 
 
@@ -1719,6 +1770,23 @@ def main() -> int:
         rx = ro_sub.add_parser(op, help=text)
         rx.add_argument("--for-user", help=argparse.SUPPRESS)
     ro.set_defaults(fn=cmd_root)
+
+    se = sub.add_parser("secret", help="take a secret from the user's phone, never through a model")
+    se_sub = se.add_subparsers(dest="op", required=True)
+    sr = se_sub.add_parser("request", help="send them a one-time link to paste it into")
+    sr.add_argument("path", help="dotted path in secrets.json, e.g. openai.api_key")
+    sr.add_argument("--why", help="one line the user sees, labelled as your words")
+    sr.add_argument("--json", action="store_true", help="the value is JSON; store it parsed")
+    sr.add_argument("--minutes", type=int, default=15, help="how long the link works")
+    sr.add_argument("--wait", action="store_true", help="block until stored or expired")
+    sr.add_argument("--actor", default="session")
+    sh = se_sub.add_parser("has", help="whether a path is set (never its value)")
+    sh.add_argument("path")
+    ss = se_sub.add_parser("status", help="recent requests and their state")
+    ss.add_argument("--limit", type=int, default=10)
+    sw = se_sub.add_parser("wait", help="block until a request is stored or expired")
+    sw.add_argument("id")
+    se.set_defaults(fn=cmd_secret)
 
     ob = sub.add_parser("obligation", help="open loops: add, done, drop, list")
     ob_sub = ob.add_subparsers(dest="op", required=True)

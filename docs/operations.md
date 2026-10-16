@@ -151,6 +151,31 @@ Never printed, quoted, committed or transmitted:
 why `herald check` verifies that repository is private whenever it has a remote
 at all.
 
+### Taking a secret from the user's phone
+
+`herald secret request <path> --why '...'` sends the user a one-time link. The
+page behind it (`bin/herald-secrets`, unit `herald-secrets.service`) writes what
+they paste into `secrets.json` at `<path>`, logs a green `secret.store` action,
+and tells them on Telegram that the path is set. The value never reaches a
+session: no route returns it and the spool under `$HERALD_HOME/run/secrets/`
+holds only the path, the reason and a hash of the token. A link works once and
+expires after 15 minutes (`--minutes`). `herald secret status` lists recent
+requests; `herald secret wait <id>` blocks until one is stored.
+
+The server binds to `127.0.0.1:8792` (`surfaces.secret_intake.port`) and stays
+off until `surfaces.secret_intake.url` says where the phone reaches it. On a
+tailnet:
+
+```bash
+tailscale serve --bg --https=8448 http://127.0.0.1:8792
+herald config set surfaces.secret_intake.url https://<machine>.<tailnet>.ts.net:8448
+herald services enable
+```
+
+Do not use `tailscale funnel` or anything else that puts it on the public
+internet. The token is long enough that guessing is not the risk; the risk is a
+page that writes credentials being reachable by anyone who is sent the link.
+
 ## Backups
 
 There are two repositories. The program pushes to the public `herald` repo; the person

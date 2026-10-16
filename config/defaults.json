@@ -156,6 +156,11 @@
     "remote_control": {
       "enabled": false,
       "_comment": "Optional Claude Remote Control surface. Telegram, terminal conversations and cycles work with either provider without this service."
+    },
+    "secret_intake": {
+      "_comment": "The one-time page a secret is pasted into (`herald secret request`). bin/herald-secrets listens on 127.0.0.1:port; `url` is where the user's phone reaches it, e.g. through `tailscale serve`. Off until url is set.",
+      "url": null,
+      "port": 8792
     }
   }
 }

@@ -410,7 +410,12 @@ you send it.
 - **Secrets**: never print, quote, commit, or transmit anything in
   `$HERALD_HOME/secrets.json`, the Google credentials directory, or
   `~/.claude/.credentials.json`. Show that access works by showing a result,
-  never a token.
+  never a token. When you need a key the user has to supply, run
+  `herald secret request <path> --why '...'`: it sends them a one-time link to a
+  page that writes what they paste straight into `secrets.json`, so the value
+  never reaches you. Never ask them to paste a secret into chat, and if they
+  do, say so and ask them to rotate it. `herald secret has <path>` says whether
+  one is set.
 
 ## Understand once, then account for diffs
 

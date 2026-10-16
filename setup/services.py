@@ -31,7 +31,7 @@ import plistlib
 import shutil
 import subprocess
 
-from herald import config, extensions, google
+from herald import config, extensions, google, secretintake
 
 SYSTEMD_DIR = pathlib.Path.home() / ".config" / "systemd" / "user"
 LAUNCHD_DIR = pathlib.Path.home() / "Library" / "LaunchAgents"
@@ -124,6 +124,7 @@ SYSTEMD_UNITS = [
     ("herald-telegram.service", "the Telegram bridge", None),      # if configured
     ("herald-brain.service", "optional Claude Remote Control", False),
     ("herald-watchdog.timer", "restarts anything that stops working", True),
+    ("herald-secrets.service", "the page a secret is pasted into", False),  # if a URL is set
 ]
 
 
@@ -212,6 +213,10 @@ def launchd_jobs() -> dict[str, dict]:
     }
     if not config.remote_control_enabled():
         jobs.pop(f"{LABEL_PREFIX}.brain", None)
+    if secretintake.enabled():
+        jobs[f"{LABEL_PREFIX}.secrets"] = _plist(
+            f"{LABEL_PREFIX}.secrets",
+            [python, str(config.ROOT / "bin" / "herald-secrets")], keepalive=True)
     return jobs
 
 
@@ -321,7 +326,8 @@ def wanted_units(telegram_configured: bool) -> list[str]:
     if platform_name() == "systemd":
         return [u for u, _, default in SYSTEMD_UNITS
                 if default or (default is None and telegram_configured)
-                or (u == "herald-brain.service" and config.remote_control_enabled())]
+                or (u == "herald-brain.service" and config.remote_control_enabled())
+                or (u == "herald-secrets.service" and secretintake.enabled())]
     if platform_name() in ("launchd", "container"):
         return [label for label in launchd_jobs()
                 if telegram_configured or not label.endswith(".telegram")]
