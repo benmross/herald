@@ -437,7 +437,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
     """
     now = dt.datetime.now(config.tz())
     shown_ids: set[str] = set()
-    out = [f"# Scout snapshot — {now:%A %-d %B %Y, %H:%M}"]
+    out = [f"# Scout snapshot — {now:%A %-d %B %Y}, {config.clock(now)}"]
     reader = _MailReader(con, now)
 
     live = con.execute("""

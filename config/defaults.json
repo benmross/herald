@@ -6,6 +6,7 @@
     "_name_comment": "What this install's agent calls itself. Set at setup; the personal constitution in ledger/identity/constitution.md is where it is stated to the agent."
   },
   "timezone": "UTC",
+  "time_format": "24h",
   "telegram": {
     "_comment": "narration: messages sends what the model says between tool calls as its own Telegram message, in order (the final answer still arrives last, once). transcript keeps it all inside the single edited progress block.",
     "narration": "messages"

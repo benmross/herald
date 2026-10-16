@@ -249,6 +249,26 @@ def tz() -> ZoneInfo:
     return ZoneInfo(get("timezone", "America/New_York"))
 
 
+def clock(value) -> str:
+    """A time of day the way the user reads one: `time_format` is "24h" or "12h".
+
+    Takes a datetime or time, or a string that starts "HH:MM" (an ISO
+    timestamp's `[11:16]`). Anything else comes back unchanged. Everything that
+    prints a clock time for the user goes through here, because the model
+    copies whatever form the snapshot hands it.
+    """
+    if hasattr(value, "hour") and hasattr(value, "minute"):
+        h, m = value.hour, value.minute
+    else:
+        text = str(value or "")
+        if len(text) < 5 or text[2] != ":" or not (text[:2] + text[3:5]).isdigit():
+            return text
+        h, m = int(text[:2]), int(text[3:5])
+    if str(get("time_format", "24h")).lower() != "12h":
+        return f"{h:02d}:{m:02d}"
+    return f"{(h % 12) or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
 def link_ledger() -> str | None:
     """Make `ROOT/ledger` point at `HOME/ledger`. Returns what it did, or None.
 

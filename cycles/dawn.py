@@ -234,7 +234,7 @@ def main() -> int:
     # The digest is a document; keep it where they can go back to it.
     out_dir = config.LEDGER / "digests"
     out_dir.mkdir(parents=True, exist_ok=True)
-    body = [f"# {headline}", f"\n*{now:%A %-d %B %Y, %H:%M}*\n", digest]
+    body = [f"# {headline}", f"\n*{now:%A %-d %B %Y}, {config.clock(now)}*\n", digest]
     if questions:
         body.append("\n## Waiting on your answer\n")
         body.extend(f"- {q}" for q in questions)

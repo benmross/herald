@@ -176,7 +176,10 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
                 remaining.append((order, text))
         ext_sections[:] = remaining
 
-    out.append(f"# Snapshot — {cycle} cycle — {now:%A %-d %B %Y, %H:%M %Z}")
+    out.append(f"# Snapshot — {cycle} cycle — {now:%A %-d %B %Y}, {config.clock(now)} {now:%Z}")
+    if str(config.get("time_format", "24h")).lower() == "12h":
+        out.append("\nWrite every clock time in 12-hour form (2:30 PM), including "
+                   "times copied from mail or listings.")
     if since:
         out.append(f"\nLast {cycle} cycle: {since}")
     else:
@@ -213,7 +216,7 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         for (actor, kind, target), rows in groups.items():
             out.append(f"- {actor} · {kind} · {target}: {len(rows)}")
             for a in rows[:4]:
-                out.append(f"    - {a['ts'][11:16]} {a['summary']}")
+                out.append(f"    - {config.clock(a['ts'][11:16])} {a['summary']}")
             if len(rows) > 4:
                 out.append(f"    - …and {len(rows) - 4} more")
 
@@ -268,7 +271,7 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
             buckets.setdefault(_j(e, "role") or "feed", buckets["feed"]).append(e)
 
         def fmt(e):
-            when = e["ts"][11:16] if len(e["ts"] or "") > 11 else "all day"
+            when = config.clock(e["ts"][11:16]) if len(e["ts"] or "") > 11 else "all day"
             where = _j(e, "location") or ""
             cal = _j(e, "calendar") or ""
             return (f"- {when}  {e['title']}"
@@ -326,7 +329,7 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         out.append("nothing with a due date")
     for a in due:
         words = _when_words(a["ts"], today)
-        clock = a["ts"][11:16] if len(a["ts"] or "") > 11 else ""
+        clock = config.clock(a["ts"][11:16]) if len(a["ts"] or "") > 11 else ""
         tag = _j(a, "tag") or _j(a, "course") or a["source"]
         out.append(f"- {words}{' ' + clock if clock else ''}  [{tag}]  {a['title']}"
                    + flag(f"{a['source']}:{a['external_id']}"))
@@ -504,7 +507,7 @@ def orientation(con) -> str:
     now = dt.datetime.now(config.tz())
     name = WHO["first"]
     out: list[str] = [
-        f"# Orientation (generated {now:%A %-d %B %Y, %H:%M %Z})",
+        f"# Orientation (generated {now:%A %-d %B %Y}, {config.clock(now)} {now:%Z})",
         "",
         "Deterministically built at session start so you do not have to "
         "rediscover the world before answering. It is a starting point, not a "
@@ -551,7 +554,7 @@ def orientation(con) -> str:
     if sched or (feed_n and feed_n[0]["n"]):
         head("Today")
         for r in sched:
-            when = str(r["ts"])[11:16] or "all day"
+            when = config.clock(str(r["ts"])[11:16]) or "all day"
             out.append(f"- {when} {r['title']}  ({_j(r, 'role') or '?'})")
         if feed_n and feed_n[0]["n"]:
             out.append(

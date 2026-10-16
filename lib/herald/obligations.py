@@ -55,7 +55,7 @@ def _when(due: str | None) -> str:
     except ValueError:
         return due
     t = due[11:16] if len(due) > 10 else ""
-    return d.strftime("%a %-d %b") + (f" {t}" if t and t != "00:00" else "")
+    return d.strftime("%a %-d %b") + (f" {config.clock(t)}" if t and t != "00:00" else "")
 
 
 def _keyboard(oid: int) -> list[list[tuple[str, str]]]:
