@@ -20,7 +20,7 @@ $HERALD_HOME/extensions/<name>/
   cycles/*.py              runnable by `herald cycle`
   snapshot.py              a section in the cycle brief
   lib/                     importable by its own code
-  bin/                     long-running surfaces of its own
+  bin/                     its commands; each gets a launcher in ~/.local/bin
   systemd/                 unit templates, installed with Herald's; {{ROOT}} is
                            the checkout and {{HOME}} is $HERALD_HOME
   skills/<name>/SKILL.md   symlinked where sessions load them

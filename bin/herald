@@ -1148,6 +1148,10 @@ def _print_sync(report: dict) -> None:
         print(f"  linked skill {name}")
     for name in report.get("skills_removed", []):
         print(f"  unlinked skill {name}")
+    for name in report.get("commands_linked", []):
+        print(f"  command {name} now runs from any shell")
+    for name in report.get("commands_removed", []):
+        print(f"  removed command {name}")
     events = report.get("hook_events") or []
     print(_c(f"  .claude/settings.json written"
              f"{' (hooks: ' + ', '.join(events) + ')' if events else ' (no hooks)'}",

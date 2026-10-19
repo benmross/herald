@@ -15,7 +15,7 @@ So they moved out, into the same private directory as the ledger:
       collectors/*.py          discovered by `herald collect`, same contract
       cycles/*.py              runnable by `herald cycle`
       lib/                     importable by its own code
-      bin/                     long-running surfaces of its own
+      bin/                     its commands; each gets a launcher in ~/.local/bin
       systemd/                 units, installed with the built-in ones
       skills/                  symlinked where sessions will load them
       hooks/hooks.json         hooks, merged into .claude/settings.json and .codex/hooks.json
@@ -358,6 +358,66 @@ def _link_skills(link_dir: pathlib.Path, wanted: dict[str, pathlib.Path],
         report["skills_linked"].append(name)
 
 
+#: Marks a launcher Herald wrote, so sync never touches one a person made.
+LAUNCHER_MARKER = "# herald-extension-launcher"
+
+
+def _bin_dir() -> pathlib.Path:
+    return pathlib.Path(config.get("extensions.bin_dir") or "~/.local/bin").expanduser()
+
+
+def _launcher(script: pathlib.Path) -> str:
+    """A two-line wrapper that runs one extension command with Herald's venv,
+    so `herald-transit` works from any shell and any session."""
+    try:
+        first = script.read_text(errors="replace").splitlines()[0]
+    except (OSError, IndexError):
+        first = ""
+    run = (f'"{config.python()}" "{script}"' if "python" in first else f'"{script}"')
+    return f'#!/bin/sh\n{LAUNCHER_MARKER}\nexec {run} "$@"\n'
+
+
+def _link_commands(report: dict) -> None:
+    """Make the bin directory hold one launcher per enabled extension command.
+
+    Every executable in an enabled extension's bin/ gets one, named as the
+    script is. A file already there that Herald did not write is left alone
+    and reported, and launchers for a disabled extension are removed.
+    """
+    target = _bin_dir()
+    wanted: dict[str, pathlib.Path] = {}
+    for ext in enabled():
+        d = ext.dir("bin")
+        if not d:
+            continue
+        for script in sorted(d.iterdir()):
+            if script.is_file() and script.stat().st_mode & 0o111:
+                wanted[script.name] = script
+    if target.is_dir():
+        for path in target.iterdir():
+            if (path.is_file() and not path.is_symlink() and path.name not in wanted
+                    and LAUNCHER_MARKER in path.read_text(errors="replace")[:200]):
+                path.unlink()
+                report["commands_removed"].append(path.name)
+    if not wanted:
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for name, script in wanted.items():
+        path = target / name
+        text = _launcher(script)
+        if path.exists() or path.is_symlink():
+            mine = (path.is_file() and not path.is_symlink()
+                    and LAUNCHER_MARKER in path.read_text(errors="replace")[:200])
+            if not mine:
+                report["commands_skipped"].append(name)
+                continue
+            if path.read_text() == text:
+                continue
+        path.write_text(text)
+        path.chmod(0o755)
+        report["commands_linked"].append(name)
+
+
 def sync() -> dict:
     """Link skills, write settings, and report what changed.
 
@@ -373,7 +433,8 @@ def sync() -> dict:
     daemon-reload and where units live on this platform.
     """
     report = {"skills_linked": [], "skills_removed": [], "hook_events": [],
-              "skills_skipped": []}
+              "skills_skipped": [], "commands_linked": [], "commands_removed": [],
+              "commands_skipped": []}
 
     wanted: dict[str, pathlib.Path] = {}
     # Herald's own skills first, then the extensions'. A skill the user already
@@ -393,6 +454,7 @@ def sync() -> dict:
             wanted[skill.name] = skill
 
     _link_skills(SKILLS_DIR, wanted, report)
+    _link_commands(report)
     codex_report = {"skills_linked": [], "skills_removed": []}
     _link_skills(CODEX_SKILLS_DIR, wanted, codex_report)
 

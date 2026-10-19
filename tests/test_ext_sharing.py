@@ -152,6 +152,29 @@ class Sharing(unittest.TestCase):
         self.assertEqual(self.ext.apply_defaults(self.ext.find("demo")), [])
         self.assertEqual(self.cfg.get("demo.dir"), "/elsewhere")
 
+    def test_an_enabled_extension_command_gets_a_launcher(self):
+        src = _upstream(self.base / "up", {"name": "demo", "description": "d",
+                                           "version": "1"})
+        (src / "bin").mkdir()
+        (src / "bin" / "herald-demo").write_text("#!/usr/bin/env python\nprint(1)\n")
+        (src / "bin" / "herald-demo").chmod(0o755)
+        _git(src, "add", "-A")
+        _git(src, "commit", "-q", "-m", "cmd")
+        bindir = self.base / "bin"
+        bindir.mkdir()
+        (bindir / "herald-mine").write_text("#!/bin/sh\necho mine\n")
+        self.cfg.set_user("extensions.bin_dir", str(bindir))
+        self.ext.install(str(src), enable=True)
+        report = {"commands_linked": [], "commands_removed": [], "commands_skipped": []}
+        self.ext._link_commands(report)
+        self.assertEqual(report["commands_linked"], ["herald-demo"])
+        self.assertIn(self.ext.LAUNCHER_MARKER, (bindir / "herald-demo").read_text())
+        self.ext.set_enabled("demo", False)
+        report = {"commands_linked": [], "commands_removed": [], "commands_skipped": []}
+        self.ext._link_commands(report)
+        self.assertEqual(report["commands_removed"], ["herald-demo"])
+        self.assertTrue((bindir / "herald-mine").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
