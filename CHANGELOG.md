@@ -2,6 +2,30 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.0 — 18 October 2026
+
+- Ask an extension's settings at install, and say how from Telegram
+- Report a ledger backup that has stopped reaching its remote
+- Install, update and vet extensions published as their own repos
+- Drop fuzzy title matching; a model now owns near-duplicate decisions
+- Match event titles by shared words, so near-identical names stop duplicating
+- Print clock times in the user's format, set by time_format
+- Take secrets from the phone through a one-time page, never through a model
+- Route Telegram file sends to the topic that asked, and say that files can be sent
+- Scout reads every message whole, with its pictures
+- Add private sessions that can read everything and save or change nothing
+- Give Sheets writes a logged door in gwrite
+- Send what Claude says between tool calls as separate Telegram messages
+- Show the terminal resume command in /debug and herald session
+- Let each install choose its providers without a Claude dependency
+- Close steering immediately when a user stops an active turn
+- Let Telegram steer active Codex turns through the first-party app server
+- Keep model and thinking selections in their original Telegram picker
+- Offer model-specific thinking levels after Telegram model selection
+- Expose both CLI model catalogs and per-topic selection in Telegram
+- Keep Codex context when resuming with extra workspaces
+- An extension can add a red action, behind the same tap
+
 ## v0.3.2 — 7 October 2026
 
 - The README leads with a quick start and says each thing once
