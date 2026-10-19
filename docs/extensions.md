@@ -21,7 +21,8 @@ $HERALD_HOME/extensions/<name>/
   snapshot.py              a section in the cycle brief
   lib/                     importable by its own code
   bin/                     long-running surfaces of its own
-  systemd/                 unit templates, installed with Herald's
+  systemd/                 unit templates, installed with Herald's; {{ROOT}} is
+                           the checkout and {{HOME}} is $HERALD_HOME
   skills/<name>/SKILL.md   symlinked where sessions load them
   hooks/hooks.json         shared hooks, synced into both CLIs' hook settings
   red.py                   red actions of its own, behind the same tap
@@ -168,6 +169,7 @@ that is how one is shared. Somebody else installs it with
 
 ```bash
 herald ext install https://github.com/someone/herald-tides
+herald ext setup tides
 herald ext enable tides
 ```
 
@@ -197,6 +199,30 @@ status` can ask for them:
   "setup_hint": "herald config set shop.sizes.tops M"
 }]
 ```
+
+A manifest can also describe each value, so whoever installs it is asked a
+real question rather than shown a key:
+
+```json
+"setup": [
+  {"key": "canvas.base_url", "prompt": "Your school's Canvas address",
+   "example": "https://umd.instructure.com"},
+  {"key": "canvas.auth_dir", "prompt": "Where the session is kept",
+   "default": "{HOME}/canvas"},
+  {"key": "canvas.metadata_only_courses", "type": "list", "required": false,
+   "prompt": "Course codes to lock to dates and grades"}
+]
+```
+
+A `default` is written into the user's config.json at install (and after an
+update, for a setting a new version adds), with `{HOME}` and `{ROOT}`
+expanded; a value the user already set is never replaced. `herald ext setup
+<name>` asks the rest at a terminal. With `--json` it prints them, which is how
+a session installs an extension from Telegram: it asks the questions in chat
+and saves each answer with `herald config set`. A value marked `"secret":
+true` is collected with `herald secret request`, never in chat. An older
+manifest that only lists keys under a capability's `settings` is asked about
+too, by key.
 
 Code reads them with `config.get("shop.sizes")`, or straight from
 `$HERALD_HOME/config.json` if it runs outside Herald's venv. A skill tells the

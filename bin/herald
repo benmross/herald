@@ -996,6 +996,10 @@ def cmd_ext(args) -> int:
         print(f"  {ext.description}")
         _print_provides(ext)
         _print_needed(ext)
+        if ext.settings_needed():
+            print(_c(f"  answer them with: herald ext setup {ext.name}", DIM))
+        if (ext.path / "README.md").exists():
+            print(_c(f"  read first: {ext.path / 'README.md'}", DIM))
         if ext.enabled:
             _print_sync(extensions.sync())
         else:
@@ -1028,6 +1032,43 @@ def cmd_ext(args) -> int:
                 ext = extensions.find(name)
                 _print_needed(ext)
         return rc
+
+    if args.action == "setup":
+        ext = extensions.find(args.name or "")
+        if not ext:
+            print("usage: herald ext setup <name> [--json]", file=sys.stderr)
+            return 2
+        todo = [i for i in ext.setup_items() if not i["set"]]
+        if args.json or not sys.stdin.isatty():
+            # For a session: it asks the user each question in chat and
+            # answers with `herald config set` or `herald secret request`.
+            print(json.dumps(todo, indent=2))
+            return 0
+        if not todo:
+            print(f"  {ext.name} has everything it asks for")
+            return 0
+        for item in todo:
+            if item.get("secret"):
+                print(f"  {item['prompt']}: a secret. Run "
+                      + _c(f"herald secret request {item['key']} --why '{ext.name}'", DIM))
+                continue
+            hint = item.get("default") or item.get("example") or ""
+            raw = input(f"  {item['prompt']}{f' [{hint}]' if hint else ''}: ").strip()
+            if not raw and "default" in item:
+                value = extensions._expand(item["default"])
+            elif not raw:
+                print(_c("    skipped", DIM))
+                continue
+            elif item.get("type") in ("list", "object", "number", "boolean"):
+                try:
+                    value = json.loads(raw)
+                except json.JSONDecodeError:
+                    value = [v.strip() for v in raw.split(",")] if item["type"] == "list" else raw
+            else:
+                value = raw
+            config.set_user(item["key"], value)
+            print(_c(f"    {item['key']} = {json.dumps(value)}", DIM))
+        return 0
 
     if args.action == "check":
         if not args.name:
@@ -1086,13 +1127,12 @@ def _print_provides(ext) -> None:
 
 
 def _print_needed(ext) -> None:
-    for path, kind in ext.settings_needed():
-        how = (f"herald secret request {path}" if kind == "secret"
-               else f"herald config set {path} <value>")
-        print(f"  needs {kind} {path}:  {_c(how, DIM)}")
-    for cap in ext.manifest.get("provides_capabilities", []) or []:
-        if isinstance(cap, dict) and cap.get("setup_hint") and ext.settings_needed():
-            print(_c(f"    {cap['setup_hint']}", DIM))
+    for item in ext.setup_items():
+        if item["set"] or not item["required"]:
+            continue
+        kind = "secret" if item.get("secret") else "setting"
+        ask = item["prompt"] if item["prompt"] != item["key"] else ""
+        print(f"  needs {kind} {item['key']}{': ' + ask if ask else ''}")
 
 
 def _print_sync(report: dict) -> None:
@@ -2119,11 +2159,13 @@ def main() -> int:
     e = sub.add_parser("ext", help="extensions: personal collectors, cycles and skills")
     e.add_argument("action", nargs="?", default="list",
                    choices=["list", "new", "enable", "disable", "sync",
-                            "install", "update", "check"])
+                            "install", "update", "check", "setup"])
     e.add_argument("name", nargs="?",
                    help="an extension's name; for install, its git URL")
     e.add_argument("--enable", action="store_true",
                    help="install: turn it on straight away rather than leaving it off")
+    e.add_argument("--json", action="store_true",
+                   help="setup: print the unanswered questions as JSON, for a session to ask")
     e.set_defaults(fn=cmd_ext)
 
     y = sub.add_parser("cycle", help="run one cycle")

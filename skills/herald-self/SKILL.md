@@ -184,6 +184,31 @@ extension code to them too.
 If you are about to write a collector that names a university, an employer, a
 self-hosted service or software only this person runs, it is an extension.
 
+## Installing an extension somebody sent
+
+When the user sends a repository URL and asks for it (usually from Telegram):
+
+1. `herald ext install <url>`. It clones, writes any defaults the manifest
+   gives into their config.json, and leaves the extension **off**. Tell them
+   what it runs (the output lists collectors, cycles, units, hooks and red
+   actions), and say plainly that it is somebody else's code that will run on
+   their machine.
+2. Read its README for system requirements. A package install needs root:
+   `herald root run --why '...' -- apt install ...` puts it on their phone.
+3. `herald ext setup <name> --json` lists the unanswered questions, each with a
+   prompt and an example. Ask them in chat, a few at a time, and save each
+   answer with `herald config set <key> '<json>'`. A secret goes through
+   `herald secret request <key> --why '...'`, never through chat.
+4. When they say to turn it on: `herald ext enable <name>`, then
+   `herald services install` and `herald services enable` if it ships units.
+   From a Telegram turn, do not restart the bridge you are answering through.
+5. Follow the README's first-run step (a login, a sync) and show one real
+   result.
+
+`herald ext update` later fast-forwards it. It refuses a clone that was
+edited, so a personal value never goes into the extension's files: it goes in
+config.json. Before publishing one of their own, `herald ext check <name>`.
+
 Either constitution file is a place where a careless edit changes Herald's
 behaviour everywhere at once. Two things follow. **Quote the source** when a rule comes
 from somewhere real (a syllabus section, something the user said) so it can be

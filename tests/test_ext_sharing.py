@@ -131,6 +131,27 @@ class Sharing(unittest.TestCase):
         self.assertEqual(self.ext.find("demo").settings_needed(),
                          [("demo.token", "secret")])
 
+    def test_defaults_land_in_config_and_questions_remain(self):
+        src = _upstream(self.base / "up", {
+            "name": "demo", "description": "d", "version": "1",
+            "setup": [
+                {"key": "demo.dir", "prompt": "Where", "default": "{HOME}/demo"},
+                {"key": "demo.url", "prompt": "Your school's address",
+                 "example": "https://x.instructure.com"},
+                {"key": "demo.extra", "required": False},
+            ],
+            "provides_capabilities": [{"key": "demo",
+                                       "settings": ["demo.dir", "demo.url"]}]})
+        e = self.ext.install(str(src))
+        self.assertEqual(self.cfg.get("demo.dir"), f"{self.home}/demo")
+        self.assertEqual(e.settings_needed(), [("demo.url", "setting")])
+        keys = [i["key"] for i in e.setup_items() if not i["set"]]
+        self.assertEqual(keys, ["demo.url", "demo.extra"])
+        # A value the user set is never overwritten by a later default.
+        self.cfg.set_user("demo.dir", "/elsewhere")
+        self.assertEqual(self.ext.apply_defaults(self.ext.find("demo")), [])
+        self.assertEqual(self.cfg.get("demo.dir"), "/elsewhere")
+
 
 if __name__ == "__main__":
     unittest.main()

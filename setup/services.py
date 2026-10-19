@@ -6,7 +6,8 @@ reaches you the hour it is found -- depends on something scheduling it, and that
 something is different on the two platforms this supports.
 
 **Linux: systemd user units.** The unit files in `systemd/` are templates:
-`{{ROOT}}` for the checkout, `{{GOOGLE}}` for the credentials directory, `%h`
+`{{ROOT}}` for the checkout, `{{HOME}}` for $HERALD_HOME (so an extension's unit
+can name its own files), `{{GOOGLE}}` for the credentials directory, `%h`
 for the home directory (systemd's own). They used to hardcode `%h/herald`, which
 worked exactly as long as everyone kept Herald in the same place.
 
@@ -47,6 +48,7 @@ def platform_name() -> str:
 
 def render(text: str) -> str:
     return (text.replace("{{ROOT}}", str(config.ROOT))
+                .replace("{{HOME}}", str(config.HOME))
                 .replace("{{GOOGLE}}", str(google.credentials_dir())))
 
 

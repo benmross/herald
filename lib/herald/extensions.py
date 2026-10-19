@@ -150,20 +150,71 @@ class Extension:
         r = _git(self.path, "remote", "get-url", "origin")
         return (r.stdout.strip() or None) if r.returncode == 0 else None
 
-    def settings_needed(self) -> list[tuple[str, str]]:
-        """[(path, "setting" | "secret")] the manifest declares and this
-        install has not set. Read from the manifest, so nothing is run."""
-        out = []
+    def setup_items(self) -> list[dict]:
+        """What this extension asks of the person installing it.
+
+        The manifest's `setup` list describes each value: `key`, `prompt`,
+        `example`, `default`, `type` (string, list, object, number, boolean),
+        `secret` and `required`. Anything a capability names under `settings`
+        or `secrets` without a description still appears, with a bare prompt,
+        so an older manifest is asked about too. `set` says whether this
+        install already has it; a secret's value is never read out.
+        """
+        items = [dict(i) for i in self.manifest.get("setup", []) or []
+                 if isinstance(i, dict) and i.get("key")]
+        described = {i["key"] for i in items}
         for cap in self.manifest.get("provides_capabilities", []) or []:
-            if isinstance(cap, str):
+            if not isinstance(cap, dict):
                 continue
-            for path in cap.get("settings", ()):
-                if config.get(path) in (None, "", [], {}):
-                    out.append((path, "setting"))
-            for path in cap.get("secrets", ()):
-                if not config.secret(path):
-                    out.append((path, "secret"))
-        return out
+            for key in cap.get("settings", ()):
+                if key not in described:
+                    items.append({"key": key})
+                    described.add(key)
+            for key in cap.get("secrets", ()):
+                if key not in described:
+                    items.append({"key": key, "secret": True})
+                    described.add(key)
+        for item in items:
+            item.setdefault("required", True)
+            item.setdefault("prompt", item["key"])
+            if item.get("secret"):
+                item["set"] = bool(config.secret(item["key"]))
+            else:
+                item["set"] = config.get(item["key"]) not in (None, "", [], {})
+        return items
+
+    def settings_needed(self) -> list[tuple[str, str]]:
+        """[(path, "setting" | "secret")] that are required and unset."""
+        return [(i["key"], "secret" if i.get("secret") else "setting")
+                for i in self.setup_items() if i["required"] and not i["set"]]
+
+
+def _expand(value):
+    """`{HOME}` and `{ROOT}` in a default, so a manifest can say where things
+    go on whoever's machine it lands on."""
+    if isinstance(value, str):
+        return value.replace("{HOME}", str(config.HOME)).replace("{ROOT}", str(config.ROOT))
+    if isinstance(value, list):
+        return [_expand(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _expand(v) for k, v in value.items()}
+    return value
+
+
+def apply_defaults(ext: "Extension") -> list[str]:
+    """Write each unset setting that has a default into the user's config.
+
+    Only into the user's config.json, never the extension's files, and never
+    over a value they set. Run at install and again after an update, so a
+    setting a new version adds arrives with its default.
+    """
+    written = []
+    for item in ext.setup_items():
+        if item.get("secret") or item["set"] or "default" not in item:
+            continue
+        config.set_user(item["key"], _expand(item["default"]))
+        written.append(item["key"])
+    return written
 
 
 def _git(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
@@ -449,6 +500,7 @@ def install(url: str, *, enable: bool = False) -> Extension:
         raise
     staging.rename(target)
     _ignore_in_home(ext.name)
+    apply_defaults(_load(target))
     config.set_user(f"extensions.{ext.name}.source", url)
     config.set_user(f"extensions.{ext.name}.enabled", bool(enable))
     if enable:
@@ -487,6 +539,7 @@ def update(name: str) -> dict:
     if before == after:
         return {"name": ext.name, "status": "current", "detail": before[:7]}
     log = _git(ext.path, "log", "--oneline", f"{before}..{after}").stdout.splitlines()
+    apply_defaults(find(name))
     if find(name).enabled:
         sync()
     return {"name": ext.name, "status": "updated",
