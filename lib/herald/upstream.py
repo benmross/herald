@@ -216,6 +216,16 @@ HOOK = f"""#!/bin/sh
 #
 # Removing this hook is not the way; `herald check` reports the drift either
 # way, and the next update will refuse.
+#
+# The mode is asked at commit time, of whichever $HERALD_HOME the committer
+# is using, and not frozen into this file: a maintainer who ran one command
+# against a scratch home (a rehearsal install) once got this hook written into
+# their checkout, and the next release's version commit was refused.
+root="$(git rev-parse --show-toplevel)"
+py="$root/venv/bin/python"
+[ -x "$py" ] || py=python3
+"$py" -c 'import sys; sys.path.insert(0, sys.argv[1]); from herald import upstream; sys.exit(10 if upstream.may_self_edit() else 0)' "$root/lib" 2>/dev/null
+[ $? -eq 10 ] && exit 0
 echo "herald: this install tracks upstream releases, so commits here are refused." >&2
 echo "herald: run 'herald mode fork' to take ownership of the program, or make" >&2
 echo "herald: the change in \\$HERALD_HOME (config, ledger, extensions) instead." >&2
@@ -232,8 +242,10 @@ def hook_path() -> pathlib.Path:
 
 
 def hook_installed() -> bool:
+    """Herald's hook, in its current form. An older copy counts as not
+    installed, so the next `herald` command replaces it."""
     path = hook_path()
-    return path.exists() and HOOK_MARKER in path.read_text()
+    return path.exists() and path.read_text() == HOOK
 
 
 def install_hook() -> bool:
@@ -252,7 +264,7 @@ def install_hook() -> bool:
 
 def remove_hook() -> bool:
     path = hook_path()
-    if hook_installed():
+    if path.exists() and HOOK_MARKER in path.read_text():
         path.unlink()
         return True
     return False

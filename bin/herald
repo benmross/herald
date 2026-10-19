@@ -814,8 +814,16 @@ def cmd_release(args) -> int:
     upstream.write_changelog(tag, commits)
     subprocess.run(["git", "add", "CHANGELOG.md", "lib/herald/__init__.py"],
                    cwd=str(config.ROOT), check=False)
-    subprocess.run(["git", "commit", "-q", "-m", f"Release {tag}"],
-                   cwd=str(config.ROOT), check=False)
+    commit = subprocess.run(["git", "commit", "-q", "-m", f"Release {tag}"],
+                            cwd=str(config.ROOT), capture_output=True, text=True)
+    if commit.returncode != 0:
+        # Tagging anyway would publish a release whose tag misses its own
+        # version bump, which v0.4.0 did once and needed a forced tag to fix.
+        print(_c(f"  the release commit failed, so nothing was tagged: "
+                 f"{(commit.stderr or commit.stdout).strip()[:300]}", BAD), file=sys.stderr)
+        print(_c("  CHANGELOG.md and lib/herald/__init__.py are staged; fix the "
+                 "cause and run `herald release` again", DIM), file=sys.stderr)
+        return 1
     subprocess.run(["git", "tag", "-a", tag, "-m", f"Herald {tag}"],
                    cwd=str(config.ROOT), check=False)
     push = subprocess.run(["git", "push", "-q", "origin", "main", tag],
