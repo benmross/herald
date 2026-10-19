@@ -27,7 +27,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
 from herald import (capabilities, config, constitution,  # noqa: E402
-                    extensions, migrations, upstream)
+                    extensions, leaks, migrations, upstream)
 
 
 class Checker:
@@ -50,24 +50,8 @@ class Checker:
         self.ok(name) if condition else self.fail(name, detail)
 
 
-def account_pattern(login: str) -> re.Pattern:
-    """Where a login name is evidence of a leak rather than an ordinary word.
-
-    A login is very often a real word -- `runner` on a CI machine, `pi` on a
-    Raspberry Pi, `admin`, `dev` -- so matching it as prose is useless. Matching
-    it after any slash is not much better: a login called `dev` then flags
-    /dev/null, /dev/tty and a GitHub branch called dev.
-
-    What actually leaks is a **home** directory or an address: /home/<login>,
-    /Users/<login>, ~login, login@host. Anchoring on those is the difference
-    between catching a tracked symlink into somebody's home and flagging half
-    the shell scripts in the tree.
-
-    Anything outside a home directory is covered by the home-path needles the
-    caller builds separately, which match the literal path this install uses.
-    """
-    account = re.escape(login.lower())
-    return re.compile(rf"(?:/home/|/users/|~){account}\b|\b{account}@")
+#: Kept here as well because tests reach it through this module.
+account_pattern = leaks.account_pattern
 
 
 def python_files() -> list[pathlib.Path]:
@@ -511,127 +495,16 @@ def main() -> int:
     # address and credentials are, none of them may appear in a tracked file.
     print("\n\033[1mnothing personal in the tracked tree\033[0m")
     def _scan_tracked_tree() -> None:
-        # Name parts match on word boundaries and case-sensitively: a leaked name
-        # is capitalised ("Ada"), an ordinary word in a docstring is not ("will").
-        # The full name and the email match case-insensitively, since they cannot
-        # be ordinary words. A checker that cries wolf on every docstring is a
-        # checker somebody switches off.
-        needles: dict[str, str] = {}
-        name = (config.get("user.name") or "").strip()
-        if len(name) >= 3:
-            needles[name.lower()] = "the user's name"
-        for part in name.split():
-            if len(part) >= 3:
-                needles[part] = "the user's name"
-        for key in ("user.email", "user.school", "user.city"):
-            value = str(config.get(key) or "").strip()
-            if len(value) >= 5:
-                needles[value.lower()] = key
-
-        # The home paths, which a name-derived denylist misses entirely: five
-        # tracked symlinks once pointed at /home/<user>/.herald/extensions/...,
-        # publishing a username and the names of somebody's private extensions
-        # without containing their name anywhere.
-        for path in (config.HOME, pathlib.Path.home()):
-            needles[str(path).lower()] = "an absolute path into this user's home"
-
-        # The account name, but only where it is a path or an address. A login is
-        # very often an ordinary word -- `runner` on a CI machine, `pi` on a
-        # Raspberry Pi, `admin`, `dev` -- and matching it as prose flagged
-        # "${{ runner.temp }}", "the test runner's PYTHONPATH" and "the bundled
-        # runner" on the public repo's very first CI run. What actually leaks is
-        # /home/<login>, ~login, or login@host, so that is what this looks for.
-        import getpass
-        contextual = [(account_pattern(getpass.getuser()),
-                       "this machine's account name, in a path or address")]
-
-        def _walk(node, prefix=""):
-            if isinstance(node, dict):
-                for k, v in node.items():
-                    _walk(v, f"{prefix}.{k}" if prefix else k)
-            elif isinstance(node, str) and len(node) >= 12 and not node.startswith("_"):
-                needles[node.lower()] = f"a value from secrets.json ({prefix})"
-
-        _walk(config.secrets())
-
-        #: shapes that are a credential wherever they appear, whoever's they are
-        SHAPES = [
-            (re.compile(r"\b\d{8,}:[A-Za-z0-9_-]{30,}\b"), "a Telegram bot token"),
-            (re.compile(r"\b\d+-[a-z0-9]{20,}\.apps\.googleusercontent\.com\b"),
-             "a Google OAuth client id"),
-            (re.compile(r"\bya29\.[A-Za-z0-9_-]{20,}"), "a Google access token"),
-            (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "a private key"),
-            (re.compile(r"\bghp_[A-Za-z0-9]{30,}\b"), "a GitHub token"),
-            (re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"), "an API key"),
-        ]
-
-        # The project's own repository URL is not a leak, and on a machine where the
-        # GitHub account and the login share a name it would otherwise trip the
-        # account-name needle in every install instruction. Blanked before scanning
-        # rather than allowlisted per file, so a home *path* containing the same
-        # name is still caught.
-        remote_urls = set()
-        for line in subprocess.run(["git", "remote", "-v"], cwd=ROOT,
-                                   capture_output=True, text=True).stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                url = parts[1].removesuffix(".git")
-                remote_urls.add(url.lower())
-                if "github.com" in url:
-                    remote_urls.add(url.lower().split("github.com", 1)[1].lstrip(":/"))
-
+        # The needles, the credential shapes and the blanking of this repo's own
+        # URL all live in lib/herald/leaks.py, which `herald ext check` uses
+        # too, so an extension is held to exactly this before it is published.
         tracked = subprocess.run(["git", "ls-files"], cwd=ROOT,
                                  capture_output=True, text=True).stdout.split()
         # A copyright line is attribution, which is the one place the author's name
         # belongs in a public repository. Nothing else is exempt.
-        ALLOWED = {"LICENSE"}
-        hits = []
-        for rel in tracked:
-            if rel in ALLOWED:
-                continue
-            path = ROOT / rel
-            if path.is_symlink():
-                # A symlink's *target* is content too. Five of them were tracked
-                # here pointing at $HERALD_HOME/extensions/..., which would have
-                # published the names of private extensions and a username, and the
-                # scan skipped them because they are not files.
-                text = str(pathlib.Path.readlink(path))
-            elif not path.exists():
-                continue
-            else:
-                try:
-                    text = path.read_text()
-                except (UnicodeDecodeError, OSError):
-                    continue
-            lowered = text.lower()
-            for url in remote_urls:
-                if url:
-                    lowered = lowered.replace(url, "<this project's repo>")
-            for needle, why in needles.items():
-                pattern = re.compile(rf"\b{re.escape(needle)}\b")
-                # A lowercase needle scans the lowered text; a capitalised one (a
-                # name part) scans the text as written, so "Ada" is a hit and the
-                # word "ben" inside prose is not.
-                haystack = lowered if needle == needle.lower() else text
-                for url in (remote_urls if haystack is text else ()):
-                    haystack = haystack.replace(url, "<this project's repo>")
-                if not pattern.search(haystack):
-                    continue
-                line = next((i + 1 for i, l in enumerate(text.splitlines())
-                             if pattern.search(l.lower() if haystack is lowered else l)), 0)
-                hits.append(f"{rel}:{line} contains {why}")
-            for pattern, why in contextual:
-                m = pattern.search(lowered)
-                if m:
-                    line = next((i + 1 for i, l in enumerate(text.splitlines())
-                                 if pattern.search(l.lower())), 0)
-                    hits.append(f"{rel}:{line} contains {why}")
-            for pattern, why in SHAPES:
-                m = pattern.search(text)
-                if m:
-                    hits.append(f"{rel}: looks like {why}")
+        hits = leaks.scan(ROOT, tracked, allowed={"LICENSE"})
         c.check(f"{len(tracked)} tracked files carry nothing personal", not hits,
-                "; ".join(sorted(set(hits))[:6])
+                "; ".join(hits[:6])
                 + ". This repository is public: move it to $HERALD_HOME.")
 
     if upstream.may_self_edit():

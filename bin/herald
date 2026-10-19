@@ -977,8 +977,75 @@ def cmd_ext(args) -> int:
             if ext.hooks():
                 parts.append("hooks")
             print(f"  {state} {ext.name:14} {ext.description[:70]}")
+            if ext.source():
+                parts.append(f"from {ext.source()}")
             if parts:
                 print(f"      {_c(', '.join(parts), DIM)}")
+        return 0
+
+    if args.action == "install":
+        if not args.name:
+            print("usage: herald ext install <git-url> [--enable]", file=sys.stderr)
+            return 2
+        try:
+            ext = extensions.install(args.name, enable=args.enable)
+        except (RuntimeError, FileExistsError) as exc:
+            print(f"  {exc}", file=sys.stderr)
+            return 1
+        print(f"  installed {ext.name} at {ext.path}")
+        print(f"  {ext.description}")
+        _print_provides(ext)
+        _print_needed(ext)
+        if ext.enabled:
+            _print_sync(extensions.sync())
+        else:
+            print(_c(f"  off until you run: herald ext enable {ext.name}", DIM))
+        if ext.units():
+            print(_c("  it ships systemd units: run tools/install-units.sh after "
+                     "enabling", DIM))
+        return 0
+
+    if args.action == "update":
+        names = [args.name] if args.name else [
+            e.name for e in extensions.all_extensions() if e.own_repo()]
+        if not names:
+            print(_c("  no installed extension has a repository to update from", DIM))
+            return 0
+        rc = 0
+        for name in names:
+            try:
+                r = extensions.update(name)
+            except LookupError as exc:
+                print(f"  {exc}", file=sys.stderr)
+                return 2
+            colour = {"updated": OK, "current": DIM}.get(r["status"], WARN)
+            print(f"  {r['name']:14} {_c(r['status'], colour)}  {r['detail']}")
+            for line in r.get("log", []):
+                print(_c(f"      {line}", DIM))
+            if r["status"] in ("changed", "failed"):
+                rc = 1
+            elif r["status"] == "updated":
+                ext = extensions.find(name)
+                _print_needed(ext)
+        return rc
+
+    if args.action == "check":
+        if not args.name:
+            print("usage: herald ext check <name>", file=sys.stderr)
+            return 2
+        try:
+            problems, notes = extensions.publish_problems(args.name)
+        except LookupError as exc:
+            print(f"  {exc}", file=sys.stderr)
+            return 2
+        for note in notes:
+            print(_c(f"  {note}", DIM))
+        for problem in problems:
+            print(f"  {_c('FAIL', BAD)}  {problem}")
+        if problems:
+            print(f"  {len(problems)} problem(s): fix these before publishing {args.name}")
+            return 1
+        print(f"  {_c('ready to publish', OK)}: nothing personal found")
         return 0
 
     if args.action == "new":
@@ -1001,6 +1068,31 @@ def cmd_ext(args) -> int:
         _print_sync(extensions.sync())
         return 0
     return 2
+
+
+def _print_provides(ext) -> None:
+    """What turning it on would run, read from its directory and manifest."""
+    for label, items in (("collectors", list(ext.collectors())),
+                         ("cycles", list(ext.cycles())),
+                         ("skills", [p.name for p in ext.skills()]),
+                         ("units", [p.name for p in ext.units()])):
+        if items:
+            print(f"    {label}: {', '.join(items)}")
+    if ext.hooks():
+        print(f"    hooks: {', '.join(sorted((ext.hooks().get('hooks') or {})))} "
+              f"(these run in every session)")
+    if (ext.path / "red.py").exists():
+        print("    red actions of its own, behind the usual tap")
+
+
+def _print_needed(ext) -> None:
+    for path, kind in ext.settings_needed():
+        how = (f"herald secret request {path}" if kind == "secret"
+               else f"herald config set {path} <value>")
+        print(f"  needs {kind} {path}:  {_c(how, DIM)}")
+    for cap in ext.manifest.get("provides_capabilities", []) or []:
+        if isinstance(cap, dict) and cap.get("setup_hint") and ext.settings_needed():
+            print(_c(f"    {cap['setup_hint']}", DIM))
 
 
 def _print_sync(report: dict) -> None:
@@ -1686,7 +1778,7 @@ PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check"}
 PRIVATE_READ_OPS = {"obligation": ("op", {"list"}), "deadline": ("op", {"list"}),
                     "safety": ("op", {"status", "test"}), "root": ("op", {"status"}),
                     "secret": ("op", {"has", "status"}),
-                    "config": ("action", {"get", "path"}), "ext": ("action", {"list"})}
+                    "config": ("action", {"get", "path"}), "ext": ("action", {"list", "check"})}
 
 
 def _reads_only(args) -> bool:
@@ -2026,8 +2118,12 @@ def main() -> int:
 
     e = sub.add_parser("ext", help="extensions: personal collectors, cycles and skills")
     e.add_argument("action", nargs="?", default="list",
-                   choices=["list", "new", "enable", "disable", "sync"])
-    e.add_argument("name", nargs="?")
+                   choices=["list", "new", "enable", "disable", "sync",
+                            "install", "update", "check"])
+    e.add_argument("name", nargs="?",
+                   help="an extension's name; for install, its git URL")
+    e.add_argument("--enable", action="store_true",
+                   help="install: turn it on straight away rather than leaving it off")
     e.set_defaults(fn=cmd_ext)
 
     y = sub.add_parser("cycle", help="run one cycle")

@@ -38,6 +38,10 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
+import shutil
+import subprocess
+import uuid
 from dataclasses import dataclass
 
 from . import config
@@ -132,6 +136,38 @@ class Extension:
         except (OSError, json.JSONDecodeError):
             return {}
         return json.loads(json.dumps(raw).replace("{extension}", str(self.path)))
+
+
+    def own_repo(self) -> bool:
+        """Whether this directory is a git repository of its own, rather than
+        a folder inside the ledger's repository."""
+        return (self.path / ".git").exists()
+
+    def source(self) -> str | None:
+        """Where it was installed from: its own repo's origin, if it has one."""
+        if not self.own_repo():
+            return None
+        r = _git(self.path, "remote", "get-url", "origin")
+        return (r.stdout.strip() or None) if r.returncode == 0 else None
+
+    def settings_needed(self) -> list[tuple[str, str]]:
+        """[(path, "setting" | "secret")] the manifest declares and this
+        install has not set. Read from the manifest, so nothing is run."""
+        out = []
+        for cap in self.manifest.get("provides_capabilities", []) or []:
+            if isinstance(cap, str):
+                continue
+            for path in cap.get("settings", ()):
+                if config.get(path) in (None, "", [], {}):
+                    out.append((path, "setting"))
+            for path in cap.get("secrets", ()):
+                if not config.secret(path):
+                    out.append((path, "secret"))
+        return out
+
+
+def _git(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
 
 
 def _load(path: pathlib.Path) -> Extension | None:
@@ -343,6 +379,160 @@ def sync() -> dict:
     CODEX_HOOKS_PATH.parent.mkdir(parents=True, exist_ok=True)
     CODEX_HOOKS_PATH.write_text(codex_text + "\n")
     return report
+
+
+# --------------------------------------------------------------------------
+# Sharing: an extension published as its own git repository is installed by
+# cloning it and kept current by fast-forwarding it. That only works while
+# nothing personal is written into the clone, which is the same rule a
+# tracking install of Herald lives by: the person's values go in their
+# config.json (declared in the manifest under a capability's `settings`) or
+# in their ledger, and the code stays exactly what upstream shipped.
+# --------------------------------------------------------------------------
+
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,40}$")
+
+
+def _ignore_in_home(name: str) -> None:
+    """Keep an installed extension out of the ledger's own repository.
+
+    `git add -A` in $HERALD_HOME would otherwise record the clone as an
+    embedded repository (a bare gitlink with no URL), which restores as an
+    empty directory. Its origin is kept in config instead, where a restore can
+    find it.
+    """
+    if not (config.HOME / ".git").exists():
+        return
+    ignore = config.HOME / ".gitignore"
+    line = f"/extensions/{name}/"
+    text = ignore.read_text() if ignore.exists() else ""
+    if line in text.splitlines():
+        return
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += (f"# Installed from its own repository; `extensions.{name}.source` "
+             f"in config.json says where.\n{line}\n")
+    ignore.write_text(text)
+
+
+def install(url: str, *, enable: bool = False) -> Extension:
+    """Clone an extension's repository into $HERALD_HOME/extensions.
+
+    It is left **off** unless `enable` is given. A user extension's manifest
+    usually says `"enabled": true`, and a collector is live the moment its
+    file exists, so without this the first run of somebody else's code would
+    be the timer's, before anyone had read what it does.
+    """
+    config.EXTENSIONS.mkdir(parents=True, exist_ok=True)
+    staging = config.EXTENSIONS / f".installing-{uuid.uuid4().hex[:8]}"
+    r = subprocess.run(["git", "clone", "-q", "--", url, str(staging)],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise RuntimeError(f"git clone failed: {r.stderr.strip() or r.stdout.strip()}")
+    try:
+        ext = _load(staging)
+        if ext is None:
+            raise RuntimeError(f"{url} has no {MANIFEST} at its top level, so it "
+                               f"is not a Herald extension")
+        if "error" in ext.manifest:
+            raise RuntimeError(f"its manifest does not parse: {ext.manifest['error']}")
+        if not NAME_RE.match(ext.name):
+            raise RuntimeError(f"its manifest names it {ext.name!r}, which is not "
+                               f"a usable directory name")
+        target = config.EXTENSIONS / ext.name
+        if target.exists():
+            raise FileExistsError(f"{target} already exists; `herald ext update "
+                                  f"{ext.name}` updates an installed one")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    staging.rename(target)
+    _ignore_in_home(ext.name)
+    config.set_user(f"extensions.{ext.name}.source", url)
+    config.set_user(f"extensions.{ext.name}.enabled", bool(enable))
+    if enable:
+        sync()
+    return _load(target)
+
+
+def update(name: str) -> dict:
+    """Fast-forward one installed extension to its origin.
+
+    Refuses rather than merges when the clone has changed: a local edit is
+    either a personal value that belongs in config, or a fix that belongs
+    upstream, and in neither case should an update quietly fold it in.
+    """
+    ext = find(name)
+    if not ext:
+        raise LookupError(f"no extension named {name!r}")
+    if ext.bundled:
+        return {"name": ext.name, "status": "bundled",
+                "detail": "ships with Herald and updates with it"}
+    if not ext.own_repo():
+        return {"name": ext.name, "status": "local",
+                "detail": "not its own repository, so there is nothing to update from"}
+    dirty = [l for l in _git(ext.path, "status", "--porcelain",
+                             "--untracked-files=no").stdout.splitlines() if l.strip()]
+    if dirty:
+        return {"name": ext.name, "status": "changed",
+                "detail": f"{len(dirty)} file(s) edited here; move personal values "
+                          f"to config.json, or commit the fix upstream"}
+    before = _git(ext.path, "rev-parse", "HEAD").stdout.strip()
+    r = _git(ext.path, "pull", "-q", "--ff-only")
+    if r.returncode != 0:
+        said = (r.stderr.strip() or r.stdout.strip() or "git pull failed").splitlines()
+        return {"name": ext.name, "status": "failed", "detail": said[-1]}
+    after = _git(ext.path, "rev-parse", "HEAD").stdout.strip()
+    if before == after:
+        return {"name": ext.name, "status": "current", "detail": before[:7]}
+    log = _git(ext.path, "log", "--oneline", f"{before}..{after}").stdout.splitlines()
+    if find(name).enabled:
+        sync()
+    return {"name": ext.name, "status": "updated",
+            "detail": f"{before[:7]} -> {after[:7]}", "log": log}
+
+
+def publish_problems(name: str) -> tuple[list[str], list[str]]:
+    """(problems, notes) for publishing one extension.
+
+    A problem is something that would put this person in public or leave
+    another user unable to set it up. The leak scan is the same one `herald
+    check` runs on the program, against this install's own name, addresses,
+    home paths and secrets.
+    """
+    from . import leaks  # noqa: PLC0415  (imports config-derived needles)
+
+    ext = find(name)
+    if not ext:
+        raise LookupError(f"no extension named {name!r}")
+    problems, notes = [], []
+    for key in ("name", "description", "version"):
+        if not ext.manifest.get(key):
+            problems.append(f"the manifest has no {key}")
+    if not (ext.path / "README.md").exists():
+        problems.append("no README.md: someone installing it has nothing to read first")
+    if ext.own_repo():
+        files = _git(ext.path, "ls-files").stdout.split()
+        urls = leaks.remote_urls(ext.path)
+        if not ext.source():
+            notes.append("its own repository, with no origin yet")
+    else:
+        skip = {".git", "__pycache__", "venv", ".venv", "node_modules"}
+        files = [str(p.relative_to(ext.path)) for p in sorted(ext.path.rglob("*"))
+                 if (p.is_file() or p.is_symlink())
+                 and not skip & set(p.relative_to(ext.path).parts)
+                 and p.suffix != ".pyc"]
+        urls = set()
+        notes.append("not its own repository yet: `git init` it and add it to "
+                     "$HERALD_HOME/.gitignore before publishing")
+    problems += leaks.scan(ext.path, files, urls=urls)
+    caps = [c for c in ext.manifest.get("provides_capabilities", []) or []
+            if isinstance(c, dict)]
+    declared = {p for c in caps for p in c.get("settings", ())}
+    notes.append(f"{len(files)} file(s) scanned; settings declared: "
+                 f"{', '.join(sorted(declared)) or 'none'}")
+    return problems, notes
 
 
 SCAFFOLD_MANIFEST = {

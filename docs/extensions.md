@@ -163,10 +163,58 @@ A section that raises is left out, and the rest of the brief is still built.
 
 ## Sharing one
 
-An extension is a directory, so it is a git repository. Clone it into
-`$HERALD_HOME/extensions/` and enable it.
+An extension is a directory, so it can be a git repository of its own, and
+that is how one is shared. Somebody else installs it with
 
-Two things to check before you publish one: that its manifest names every
-credential it needs (so someone else's `herald status` tells them what to set
-up), and that nothing personal is in it. Herald's own check will not scan a repo
-it does not know about.
+```bash
+herald ext install https://github.com/someone/herald-tides
+herald ext enable tides
+```
+
+`install` clones it into `$HERALD_HOME/extensions/`, prints what it would
+run (collectors, cycles, skills, units, hooks, red actions) and which settings
+and secrets its manifest says are still unset, and leaves it **off**. A
+collector is live the moment its file exists, so without that the first run
+of somebody else's code would be the timer's, before anyone had read what it
+does. It records the URL as `extensions.<name>.source` in config.json, and
+adds the directory to `$HERALD_HOME/.gitignore` so the ledger's repository
+does not swallow the clone as an embedded repo.
+
+`herald ext update` fast-forwards every installed extension that is its own
+repository, or one by name. It refuses a clone that has been edited, for the
+same reason a tracking install of Herald cannot be edited: a fast-forward
+cannot happen over a local change.
+
+So **nothing about the person goes in an extension's files.** Their values go
+in their own config.json, under the extension's name, and the manifest
+declares them in a capability's `settings` so that `install` and `herald
+status` can ask for them:
+
+```json
+"provides_capabilities": [{
+  "key": "shop",
+  "settings": ["shop.sizes"],
+  "setup_hint": "herald config set shop.sizes.tops M"
+}]
+```
+
+Code reads them with `config.get("shop.sizes")`, or straight from
+`$HERALD_HOME/config.json` if it runs outside Herald's venv. A skill tells the
+session where to look (`herald config get shop.sizes`) rather than stating
+the answer. Judgement criteria too long for a setting, such as what makes a
+campus event worth keeping, go in the person's `identity/preferences.md`, and
+the extension's prompt points at the section.
+
+Before publishing one, run
+
+```bash
+herald ext check tides
+```
+
+It scans every file the extension's repository tracks with the same scan
+`herald check` runs on the program: this install's name, email, school, home
+paths, account name and every value in secrets.json, plus the shapes of
+common credentials. It also wants a manifest with a name, description and
+version, and a README. It cannot see a personal fact that is not in your
+config (a family member's name, a store's rewards programme), so read the
+diff as well.
