@@ -81,6 +81,21 @@ def _j(row, key: str, default=None):
         return default
 
 
+def _fix_age(row) -> int | None:
+    """Minutes since a `current` fact's fix, from its timestamp.
+
+    A source's own `age_minutes` is how old the fix was when it was stored,
+    which for a location shared once on Telegram is zero forever.
+    """
+    try:
+        when = dt.datetime.fromisoformat(row["ts"])
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=config.tz())
+        return max(0, round((dt.datetime.now(config.tz()) - when).total_seconds() / 60))
+    except (TypeError, ValueError):
+        return _j(row, "age_minutes")
+
+
 def last_cycle(con, label: str) -> str | None:
     row = con.execute(
         "SELECT MAX(ts) t FROM runs WHERE label = ? AND exit_code = 0", (label,)
@@ -192,7 +207,7 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
     if loc:
         head(f"Where {they} {'are' if WHO['plural_verb'] else 'is'}")
         r = loc[0]
-        age = _j(r, "age_minutes")
+        age = _fix_age(r)
         line = f"{r['title']} — last fix {age} min ago" if age is not None else str(r["title"])
         if _j(r, "city_is_stale"):
             line += (f" (the newest fix is not geocoded yet; the place name is from"
@@ -533,7 +548,7 @@ def orientation(con) -> str:
     loc = _rows(con, "SELECT * FROM facts WHERE kind='current' "
                      "ORDER BY ts DESC LIMIT 1")
     if loc:
-        age = _j(loc[0], "age_minutes")
+        age = _fix_age(loc[0])
         suffix = f", last fix {age} min ago" if age is not None else ""
         out.append(f"\n**Where {name} is:** {loc[0]['title']}{suffix}")
 

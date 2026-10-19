@@ -54,7 +54,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, obligations, sessioninfo, study, tgsessions, tgtext, think  # noqa: E402
+from herald import activity, approvals, config, db, obligations, sessioninfo, study, tglocation, tgsessions, tgtext, think  # noqa: E402
 from herald import private as private_mod  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -926,6 +926,31 @@ def handle(update: dict, state: dict) -> None:
     pv = _private.get(key)
     ts = topic_state(state, key)
     inbox = pathlib.Path(pv["scratch"]) / "inbox" if pv else None
+
+    # A shared location (one fix, or a live share's stream of edits) carries no
+    # text, and used to be dropped here without a word. It becomes the newest
+    # `current` fact. Only the first message of a share is acknowledged; the
+    # edits that follow it every few seconds are stored silently.
+    if loc := msg.get("location"):
+        if pv is not None:
+            if not update.get("edited_message"):
+                send(chat_id, "Private mode keeps nothing, so that location was "
+                              "not saved.", thread_id)
+            return
+        try:
+            where = tglocation.record(loc["latitude"], loc["longitude"],
+                                      accuracy_m=loc.get("horizontal_accuracy"),
+                                      live=bool(loc.get("live_period")))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[{key}] location not saved: {type(exc).__name__}: {exc}", file=sys.stderr)
+            if not update.get("edited_message"):
+                send(chat_id, "That location didn't save. Try sending it again.", thread_id)
+            return
+        if not update.get("edited_message"):
+            live = (" Keep sharing live and it stays current." if loc.get("live_period")
+                    else " Share it live to keep it current.")
+            send(chat_id, f"Got your location: {where}.{live}", thread_id)
+        return
 
     # General is the forum's default topic, which carries no thread id of its
     # own -- indistinguishable from a plain chat by thread id alone. Chat type
