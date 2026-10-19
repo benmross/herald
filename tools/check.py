@@ -479,7 +479,14 @@ def main() -> int:
             c.warn("ledger repo privacy is verifiable",
                    f"origin is {remote}, which is not GitHub, so this check "
                    "cannot confirm it is private. Confirm it by hand.")
-        else:
+        if remote:
+            from herald import ledger  # noqa: PLC0415
+            stuck = ledger.backlog()
+            if stuck and stuck[1] >= ledger.BACKLOG_HOURS:
+                c.warn("the ledger's backup is current",
+                       f"{stuck[0]} commit(s) unpushed, the oldest {stuck[1]:.0f}h "
+                       f"old; `git -C {home} push` says why")
+        if remote and m:
             r = subprocess.run(["gh", "repo", "view", f"{m.group(1)}/{m.group(2)}",
                                 "--json", "isPrivate"], capture_output=True, text=True)
             c.check("the ledger's github repo is private",

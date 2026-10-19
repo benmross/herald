@@ -23,8 +23,12 @@ no-op.
 from __future__ import annotations
 
 import subprocess
+import time
 
 from . import config
+
+#: How old the oldest unpushed commit may get before it is reported.
+BACKLOG_HOURS = 24
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
@@ -61,3 +65,24 @@ def commit(message: str, *, push: bool = True) -> str | None:
                          cwd=str(config.HOME), stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL)
     return short
+
+
+def backlog() -> tuple[int, float] | None:
+    """(commits not on the remote, age in hours of the oldest), or None when
+    the ledger is pushed, unversioned, or has no remote.
+
+    `commit()` pushes fire-and-forget and discards the output, which is right
+    for a cycle and wrong as the only record: from 15 to 18 October 2026 every
+    push was rejected (a 109 MB file had been swept into a commit) and the
+    off-box copy fell three days behind with nothing anywhere saying so. The
+    morning brief and `herald check` ask this instead.
+    """
+    if not versioned() or _git("remote", "get-url", "origin").returncode != 0:
+        return None
+    r = _git("log", "@{u}..HEAD", "--format=%ct")
+    if r.returncode != 0:
+        return None
+    stamps = [int(x) for x in r.stdout.split()]
+    if not stamps:
+        return None
+    return len(stamps), (time.time() - min(stamps)) / 3600

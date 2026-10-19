@@ -236,6 +236,17 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         if r["body"]:
             out.append(f"    {r['body'][:400].replace(chr(10), ' ')}")
 
+    try:
+        from herald import ledger  # noqa: PLC0415
+        stuck = ledger.backlog()
+    except Exception:                                               # noqa: BLE001
+        stuck = None
+    if stuck and stuck[1] >= ledger.BACKLOG_HOURS:
+        head("The ledger's backup is not reaching its remote")
+        out.append(f"{stuck[0]} commit(s) in $HERALD_HOME have not been pushed, the "
+                   f"oldest {stuck[1] / 24:.1f} days ago. `git -C $HERALD_HOME push` "
+                   f"says why. Tell {them}: the only copy is on this machine.")
+
     waiting = _rows(con, "SELECT * FROM approvals WHERE state='pending' ORDER BY ts")
     if waiting:
         head(f"Waiting on a yes or no from {them} ({len(waiting)})")
