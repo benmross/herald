@@ -195,10 +195,12 @@ When the user sends a repository URL and asks for it (usually from Telegram):
    their machine.
 2. Read its README for system requirements. A package install needs root:
    `herald root run --why '...' -- apt install ...` puts it on their phone.
-3. `herald ext setup <name> --json` lists the unanswered questions, each with a
-   prompt and an example. Ask them in chat, a few at a time, and save each
-   answer with `herald config set <key> '<json>'`. A secret goes through
-   `herald secret request <key> --why '...'`, never through chat.
+3. `herald ext setup <name> --json` gives `questions` (each with a prompt and
+   an example or default) and `steps` (things only the user can do, in
+   order). Ask the questions in chat, a few at a time, and save each answer
+   with `herald config set <key> '<json>'`. A secret goes through
+   `herald secret request <key> --why '...'`, never through chat. Walk them
+   through the steps one at a time and confirm each before the next.
 4. When they say to turn it on: `herald ext enable <name>`, then
    `herald services install` and `herald services enable` if it ships units.
    From a Telegram turn, do not restart the bridge you are answering through.

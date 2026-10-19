@@ -625,6 +625,16 @@ def publish_problems(name: str) -> tuple[list[str], list[str]]:
     for key in ("name", "description", "version"):
         if not ext.manifest.get(key):
             problems.append(f"the manifest has no {key}")
+    # Whoever installs it is asked these by Herald, in chat. A manifest with
+    # no `setup` (even an empty one, for an extension that needs nothing)
+    # has not said what it needs, and a bare key is not a question.
+    if "setup" not in ext.manifest:
+        problems.append("the manifest has no `setup` list: describe each setting "
+                        "it needs, or give `\"setup\": []` if it needs none")
+    for item in ext.setup_items():
+        if item["prompt"] == item["key"]:
+            problems.append(f"{item['key']} has no prompt in `setup`, so the "
+                            f"user would be asked for a bare key")
     if not (ext.path / "README.md").exists():
         problems.append("no README.md: someone installing it has nothing to read first")
     if ext.own_repo():

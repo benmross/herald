@@ -214,6 +214,19 @@ real question rather than shown a key:
 ]
 ```
 
+`steps` lists what only the user can do, in order, as plain sentences
+Herald reads out one at a time: create a calendar, install a package, log in
+once. `herald ext check` refuses an extension with no `setup` list (`[]` when
+it needs nothing) or a setting with no prompt, because Herald is the one
+asking and a bare config key is not a question.
+
+```json
+"steps": [
+  "Create a Google calendar named UMD Campus Events (Settings > Add calendar).",
+  "Install the scrapers' packages: ~/herald/venv/bin/pip install beautifulsoup4 lxml"
+]
+```
+
 A `default` is written into the user's config.json at install (and after an
 update, for a setting a new version adds), with `{HOME}` and `{ROOT}`
 expanded; a value the user already set is never replaced. `herald ext setup

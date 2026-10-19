@@ -109,7 +109,7 @@ class Sharing(unittest.TestCase):
 
     def test_publish_check_finds_the_person(self):
         src = _upstream(self.base / "up", {"name": "demo", "description": "d",
-                                           "version": "1"})
+                                           "version": "1", "setup": []})
         e = self.ext.install(str(src))
         problems, _ = self.ext.publish_problems("demo")
         self.assertEqual(problems, [])
@@ -174,6 +174,15 @@ class Sharing(unittest.TestCase):
         self.ext._link_commands(report)
         self.assertEqual(report["commands_removed"], ["herald-demo"])
         self.assertTrue((bindir / "herald-mine").exists())
+
+    def test_publish_check_wants_setup_questions(self):
+        src = _upstream(self.base / "up", {
+            "name": "demo", "description": "d", "version": "1",
+            "provides_capabilities": [{"key": "demo", "settings": ["demo.url"]}]})
+        self.ext.install(str(src))
+        problems, _ = self.ext.publish_problems("demo")
+        self.assertTrue(any("no `setup` list" in p for p in problems), problems)
+        self.assertTrue(any("demo.url has no prompt" in p for p in problems), problems)
 
 
 if __name__ == "__main__":

@@ -1047,13 +1047,22 @@ def cmd_ext(args) -> int:
             print("usage: herald ext setup <name> [--json]", file=sys.stderr)
             return 2
         todo = [i for i in ext.setup_items() if not i["set"]]
+        steps = [str(s) for s in ext.manifest.get("steps", []) or []]
         if args.json or not sys.stdin.isatty():
-            # For a session: it asks the user each question in chat and
-            # answers with `herald config set` or `herald secret request`.
-            print(json.dumps(todo, indent=2))
+            # For a session: it asks the user each question in chat, answers
+            # with `herald config set` or `herald secret request`, and walks
+            # them through the steps (a package to install, an account to
+            # create, a first login) in order.
+            print(json.dumps({"extension": ext.name, "questions": todo,
+                              "steps": steps,
+                              "readme": str(ext.path / "README.md")
+                              if (ext.path / "README.md").exists() else None},
+                             indent=2))
             return 0
+        for n, step in enumerate(steps, 1):
+            print(f"  step {n}: {step}")
         if not todo:
-            print(f"  {ext.name} has everything it asks for")
+            print(f"  {ext.name} has every setting it asks for")
             return 0
         for item in todo:
             if item.get("secret"):
