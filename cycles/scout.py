@@ -625,7 +625,8 @@ def _write_calendar_events(events: list[dict]) -> int:
             if not start or not title:
                 continue
             all_day = bool(ev.get("all_day")) or len(start) == 10
-            if any(gwrite.similar_title(e["summary"], title)
+            nt = gwrite.norm_title(title)
+            if any(gwrite.norm_title(e["summary"]) == nt
                    and gwrite.same_start(e["start"], start) for e in live):
                 continue
             slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]

@@ -681,40 +681,6 @@ def norm_title(t: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", (t or "").lower())[:36]
 
 
-_FILLER = {"the", "a", "an", "of", "and", "at", "in", "for", "with", "to", "on"}
-
-
-def _stem(w: str) -> str:
-    # Crude on purpose: "Table" and "Tabling", "Meeting" and "Meetings" must
-    # meet, and nothing here needs to be a word.
-    while len(w) > 4:
-        for suf in ("ing", "es", "s", "e"):
-            if w.endswith(suf):
-                w = w[:-len(suf)]
-                break
-        else:
-            break
-    return w
-
-
-def title_tokens(t: str | None) -> set[str]:
-    return {_stem(w) for w in re.findall(r"[a-z0-9]+", (t or "").lower())
-            if w not in _FILLER}
-
-
-def similar_title(a: str | None, b: str | None) -> bool:
-    """One title's words all appear in the other's, at least two of them.
-
-    Exact normalized equality missed "Cipher Tech Lobby Day" beside "Cipher
-    Tech Solutions Lobby Day", two names one session read out of two emails
-    for the same event (18 Oct 2026). The two-word floor keeps "Tabling"
-    from matching every tabling event on the same day.
-    """
-    ta, tb = title_tokens(a), title_tokens(b)
-    small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
-    return len(small) >= 2 and small <= big
-
-
 def same_start(a: str | None, b: str | None) -> bool:
     """Compare two starts that may be a date or a datetime.
 
