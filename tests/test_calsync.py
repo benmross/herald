@@ -64,6 +64,12 @@ class CalendarPlanner(unittest.TestCase):
         self.assertEqual(ops[0][0], "stamp")
         self.assertEqual(ops[0][4], "adopt")
 
+    def test_adopts_a_similarly_named_event_at_the_same_start(self):
+        live = [self._live("email:help", "How to Help a Friend workshop")]
+        ops = self.plan(live, {"feed:1": self._want("feed:1", "How to Help a Friend")},
+                        set(), {"feed"}, self.today)
+        self.assertEqual(ops[0][4], "rekey")
+
     def test_rekeys_via_alias_and_does_not_cancel_old_key(self):
         live = [self._live("other:fair", "Fair")]
         ops = self.plan(live, {"feed:1": self._want("feed:1", "Fair",

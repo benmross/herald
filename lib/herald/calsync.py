@@ -92,7 +92,13 @@ def plan(live: list[dict], want: dict, cancelled: set[str],
             for e in unowned:
                 if e["id"] in used:
                     continue
-                if (gwrite.norm_title(e["summary"].removeprefix(gwrite.CANCEL_PREFIX)) == nt
+                # Similar, not only equal: a person or another writer often
+                # names the same event a little differently ("How to Help a
+                # Friend" vs "How to Help a Friend workshop"), and an exact
+                # test duplicated it instead of taking it over.
+                live_title = e["summary"].removeprefix(gwrite.CANCEL_PREFIX)
+                if ((gwrite.norm_title(live_title) == nt
+                     or gwrite.similar_title(live_title, body["summary"]))
                         and gwrite.same_start(e["start"], start)):
                     existing, how = e, ("rekey" if e["syncKey"] else "adopt")
                     break

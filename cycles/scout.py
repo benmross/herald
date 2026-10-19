@@ -625,8 +625,7 @@ def _write_calendar_events(events: list[dict]) -> int:
             if not start or not title:
                 continue
             all_day = bool(ev.get("all_day")) or len(start) == 10
-            nt = gwrite.norm_title(title)
-            if any(gwrite.norm_title(e["summary"]) == nt
+            if any(gwrite.similar_title(e["summary"], title)
                    and gwrite.same_start(e["start"], start) for e in live):
                 continue
             slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]
@@ -644,6 +643,9 @@ def _write_calendar_events(events: list[dict]) -> int:
                 gwrite.calendar_insert(con, actor=LABEL, cal_id=cal_id,
                                        cal_name=cal_name, body=body)
                 written += 1
+                # Two emails about one event arrive in the same batch often
+                # enough; the second must see the first.
+                live.append({"summary": title, "start": start, "syncKey": key})
             except Exception as e:  # noqa: BLE001
                 print(f"  calendar write failed for {title!r}: {e}", file=sys.stderr)
     return written
