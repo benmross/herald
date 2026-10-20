@@ -215,23 +215,50 @@ def telegram(text: str, *, record: bool = True,
     return ok
 
 
-def _own_topic_thread(chat_id: int | None = None) -> int | None:
+# A turn in the group's General topic, which Telegram addresses with no
+# message_thread_id at all. The topic helpers below return this rather than
+# None so "answer into General" is told apart from "no turn to answer into":
+# both look like a missing thread id, and conflating them sent a file or an
+# approval raised from a General turn to Updates instead of into the
+# conversation. (20 Oct 2026: the ExperityFile PDF, sent from a General turn,
+# landed in the daily-briefing topic.)
+_GENERAL = object()
+
+
+def _resolve(topic: object) -> int | None:
+    """Final message_thread_id for a resolved topic.
+
+    `_GENERAL` -> None, which sends with no thread id and lands in the General
+    topic. An int -> that topic. None means no turn to answer into, so fall
+    back to where unprompted things go, the Updates topic.
+    """
+    if topic is _GENERAL:
+        return None
+    if topic is not None:
+        return topic  # type: ignore[return-value]
+    return _updates_thread_id()
+
+
+def _own_topic_thread(chat_id: int | None = None) -> object | None:
     """The topic of the Telegram turn this process belongs to, or None.
 
     Exact, from HERALD_TELEGRAM_TOPIC ("<chat>:<thread>") as set by
     think._spawn, and nothing else. A topic in a chat other than `chat_id`
-    does not count.
+    does not count. Returns `_GENERAL` when the turn is the group's General
+    topic (thread "main"), which is not None: see `_resolve`.
     """
     own = os.environ.get("HERALD_TELEGRAM_TOPIC", "")
-    chat, _, thread = own.partition(":")
-    if not thread.isdigit():
+    chat, sep, thread = own.partition(":")
+    if not sep:
         return None
     if chat_id is not None and chat and chat != str(chat_id):
         return None
-    return int(thread)
+    if thread == "main":
+        return _GENERAL
+    return int(thread) if thread.isdigit() else None
 
 
-def _live_topic_thread() -> int | None:
+def _live_topic_thread() -> object | None:
     """The Telegram topic whose turn is running right now, if exactly one is.
 
     Same source `herald quiz` uses to work out where a quiz should land.
@@ -241,11 +268,14 @@ def _live_topic_thread() -> int | None:
     A turn started by the Telegram bridge carries its own topic in
     HERALD_TELEGRAM_TOPIC ("<chat>:<thread>"), set by think._spawn. That is
     exact where the liveness guess is not: a file sent while a second topic is
-    mid-turn used to fall through to Updates.
+    mid-turn used to fall through to Updates. Returns `_GENERAL` for the
+    General topic (thread "main"), distinct from None: see `_resolve`.
     """
     own = os.environ.get("HERALD_TELEGRAM_TOPIC", "")
     if own:
         _, _, thread = own.partition(":")
+        if thread == "main":
+            return _GENERAL
         return int(thread) if thread.isdigit() else None
     try:
         from . import activity  # noqa: PLC0415
@@ -255,7 +285,9 @@ def _live_topic_thread() -> int | None:
     if len(live) != 1:
         return None
     _, _, thread = live[0].partition(":")
-    return int(thread) if thread and thread != "main" else None
+    if thread == "main":
+        return _GENERAL
+    return int(thread) if thread.isdigit() else None
 
 
 def _telegram_upload(method: str, field: str, filename: str, blob: bytes,
@@ -319,9 +351,7 @@ def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = 
         # asked, so it belongs in the topic that asked. Only when no turn is
         # running (a cycle, a scheduled job) does it fall back to Updates,
         # where unprompted pushes go.
-        thread_id = _live_topic_thread()
-        if thread_id is None:
-            thread_id = _updates_thread_id()
+        thread_id = _resolve(_live_topic_thread())
     path = pathlib.Path(path)
     blob = path.read_bytes()
 
@@ -371,9 +401,7 @@ def telegram_document(path, *, caption: str | None = None,
     if not chat_id:
         return False
     if thread_id is None:
-        thread_id = _live_topic_thread()
-        if thread_id is None:
-            thread_id = _updates_thread_id()
+        thread_id = _resolve(_live_topic_thread())
     path = pathlib.Path(path)
     blob = path.read_bytes()
     common = {"chat_id": chat_id}
@@ -416,9 +444,7 @@ def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
         # liveness guess `_live_topic_thread` falls back on: a cycle's
         # approval routed into whichever topic happened to be busy would be
         # worse than Updates.
-        thread_id = _own_topic_thread(chat_id)
-        if thread_id is None:
-            thread_id = _updates_thread_id()
+        thread_id = _resolve(_own_topic_thread(chat_id))
     extra = {"message_thread_id": thread_id} if thread_id else {}
     resp = _telegram_api(
         "sendMessage", chat_id=chat_id,
