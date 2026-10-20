@@ -135,6 +135,46 @@ their sign-in commands: `claude auth login` or `codex login`. It asks the CLIs
 for authentication status and never reads their credential files. A failure
 affects that provider; it never switches to the other one.
 
+## Subscription usage
+
+`herald usage` and Telegram's `/usage` show subscription percentages and reset
+times for your enabled providers, without a model turn. Add `claude` or `codex`
+to select one provider. `herald usage --refresh` requests fresh readings;
+`herald usage --cached` reads only the saved data. Ordinary requests reuse a
+successful reading for five minutes. A private Telegram topic only reads the
+cache.
+
+Enable scheduled checks with `herald config set usage.enabled true`. The usage
+collector uses the existing collector timer, normally every 30 minutes. No new
+service is needed. Other installs keep this off until they enable it.
+
+Claude requires `tmux` and an existing subscription login in the CLI. Each check
+opens an isolated tmux server, waits for the normal input prompt, runs the
+built-in `/usage` panel through its `/cost` alias, captures its screen, and
+closes the server. The alias avoids skills overriding the `/usage` command;
+model tools are disabled for this check. Startup trust and login dialogs are never
+accepted automatically. Codex uses `account/rateLimits/read` through its
+first-party app-server. Herald reads neither provider's credential files.
+
+Reminders fire at 80% and 95% by default. Upcoming deadlines and dated open
+obligations lower the threshold to 60% when their preparation time overlaps the
+quota window. The defaults consider the next 24 hours and allow two hours of
+preparation. Configure these with `usage.thresholds`, `usage.work_threshold`,
+`usage.work_horizon_hours`, and `usage.work_lead_hours`. A calendar deadline is
+described as a calendar date, since it does not prove an assignment is still
+unfinished. Alerts are deduplicated per provider, quota window, reset and
+threshold. A check cannot warn about a sudden increase between samples.
+
+An unknown Claude screen or missing field is an error, never a zero-percent
+reading. The first failure is reported immediately; the last successful reading
+is retained and labelled stale alongside the error. Claude's own last-known
+usage screen is also rejected. `herald usage` exits nonzero on an error, an
+expired window or data older than `usage.max_age_minutes` (45 by default).
+To investigate a changed screen, open the CLI yourself and run `/usage`, then
+update `parse_claude` in `lib/herald/usage.py` and the captured-layout tests in
+`tests/test_usage.py`. Do not replace an unreadable percentage with zero or
+derive subscription percentages from token or dollar totals.
+
 ## Credentials
 
 Never printed, quoted, committed or transmitted:

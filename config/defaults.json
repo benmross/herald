@@ -38,6 +38,15 @@
       "escalate_effort": "high"
     }
   },
+  "usage": {
+    "_comment": "Opt-in subscription quota checks, without model calls. The usage collector runs every 30 minutes on the existing collector timer. Claude uses an isolated tmux pane and strictly parses /usage; Codex uses account/rateLimits/read. Failures are explicit and never replace the last good reading. /usage in Telegram and herald usage can also check on demand. Threshold reminders are deduplicated per provider/window/reset; upcoming calendar deadlines and open obligations lower the threshold when their preparation period overlaps the quota window. No automatic model switching, spending or task blocking.",
+    "enabled": false,
+    "thresholds": [80, 95],
+    "work_threshold": 60,
+    "work_horizon_hours": 24,
+    "work_lead_hours": 2,
+    "max_age_minutes": 45
+  },
   "notify": {
     "ntfy_url": "https://ntfy.sh",
     "default_tags": "scroll"

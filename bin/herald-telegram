@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, sessioninfo, study, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import private as private_mod  # noqa: E402
+from herald import private as private_mod, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -124,7 +124,7 @@ OBLIGATION_COMMANDS = ("/obligations",)
 # slash is text for the model.
 SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private")
 COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
-            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, "/models")
+            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, "/models", "/usage")
 
 
 def command_word(text: str) -> str:
@@ -1606,6 +1606,25 @@ def _handle_stop(update: dict, key: str) -> None:
         send(chat_id, "*Nothing running here.*", thread_id)
 
 
+def _handle_usage(update: dict, key: str, state: dict) -> None:
+    """Quota metadata without adding a turn to the topic's conversation."""
+    msg = update.get("message") or {}
+    if (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        return
+    words = (msg.get("text") or "").split()
+    engine = words[1].lower() if len(words) > 1 else None
+    if len(words) > 2 or engine and engine not in config.ENGINE_NAMES:
+        send(msg["chat"]["id"], "Use /usage, /usage claude or /usage codex.", msg.get("message_thread_id"))
+        return
+    try:
+        with db.session() as con:
+            text, _ = usage.report(con, [engine] if engine else None,
+                                   cached_only=key in _private)
+    except Exception as exc:
+        text = f"Usage check failed: {type(exc).__name__}"
+    send(msg["chat"]["id"], tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
+
+
 def _is_debug_command(update: dict) -> bool:
     msg = update.get("message") or update.get("edited_message") or {}
     word = (msg.get("text") or "").strip().lower().split("@")[0]
@@ -1980,6 +1999,8 @@ def _dispatch(update: dict, state: dict) -> None:
             _handle_stop(update, key)
         elif _is_debug_command(update):
             _handle_debug(update, key, state)
+        elif command_word((update.get("message") or {}).get("text") or "") == "/usage":
+            _handle_usage(update, key, state)
         elif _is_obligations_command(update):
             _handle_obligations(update)
         elif command_word((update.get("message") or {}).get("text") or "") == "/models":

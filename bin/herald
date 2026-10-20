@@ -189,6 +189,16 @@ def cmd_status(args) -> int:
 
 # --------------------------------------------------------------------------- doctor
 
+def cmd_usage(args) -> int:
+    """Subscription percentages, distinct from the local token/cost ledger."""
+    from herald import usage
+    with db.session() as con:
+        text, failed = usage.report(con, [args.engine] if args.engine else None,
+                                    force=args.refresh, cached_only=args.cached)
+    print(text)
+    return int(failed)
+
+
 def cmd_doctor(args) -> int:
     problems = 0
 
@@ -1876,6 +1886,12 @@ def main() -> int:
 
     sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)
+    quota = sub.add_parser("usage", help="subscription quotas and reset times (no model turn)")
+    quota.add_argument("engine", nargs="?", choices=config.ENGINE_NAMES)
+    mode = quota.add_mutually_exclusive_group()
+    mode.add_argument("--refresh", action="store_true", help="read fresh limits through the CLI")
+    mode.add_argument("--cached", action="store_true", help="only read saved statistics")
+    quota.set_defaults(fn=cmd_usage)
 
     act = sub.add_parser("act", help="an outward action, through the right door")
     act_sub = act.add_subparsers(dest="kind", required=True)

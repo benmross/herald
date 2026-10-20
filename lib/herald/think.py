@@ -33,6 +33,9 @@ import contextlib
 import json
 import os
 import queue
+import re
+import shlex
+import shutil
 import select
 import signal
 import subprocess
@@ -40,6 +43,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -148,6 +152,87 @@ def _catalog_process(cmd: list[str], timeout: int = 20):
             reader.join(timeout=3)
             proc.stdin.close()
             proc.stdout.close()
+
+
+def _usage_prompt_ready(screen: str) -> bool:
+    # Trust/login menus also use ❯ for their selected option. Never type or
+    # press Enter into those; a changed prompt must fail closed.
+    return bool(re.search(r"^❯[ \u00a0]*(?:Try [^\n]+)?$", screen, re.M)
+                and "Claude Code v" in screen)
+
+
+def subscription_usage(engine: str, timeout: int = 45) -> dict | str:
+    """Read subscription metadata through a first-party CLI, without inference.
+
+    Claude needs its interactive /usage screen. Give it a dedicated tmux
+    server so sampling never types into somebody's working pane, inherits
+    another server's credentials/environment, or kills another session.
+    Screen interpretation belongs to usage.py and must fail on layout drift.
+    """
+    resolve_engine(engine)
+    if engine == "codex":
+        with _catalog_process([config.engine_settings(engine).get("cmd") or engine,
+                               "app-server"], timeout=timeout) as ask:
+            response = ask([{"id": 1, "method": "initialize", "params": {
+                "clientInfo": {"name": "herald-usage", "version": "1"}}}],
+                lambda v: v.get("id") == 1)
+            if "error" in response:
+                raise RuntimeError("Codex usage initialization failed")
+            response = ask([{"method": "initialized"},
+                            {"id": 2, "method": "account/rateLimits/read"}],
+                           lambda v: v.get("id") == 2)
+            if "error" in response:
+                raise RuntimeError("Codex could not read subscription limits; check its login")
+            return response.get("result") or {}
+    if not shutil.which("tmux"):
+        raise RuntimeError("Claude usage requires tmux; install it and retry")
+    # A private socket also makes cleanup independent of the user's tmux.
+    socket = "herald-usage-" + uuid.uuid4().hex
+    env = config.agent_env()
+    env.pop("CLAUDECODE", None)
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
+    env["TERM"] = "xterm-256color"
+    env["TZ"] = str(config.tz())
+    base = ["tmux", "-L", socket, "-f", os.devnull]
+
+    def tmux(*args):
+        p = subprocess.run([*base, *args], env=env, capture_output=True,
+                           text=True, timeout=5)
+        if p.returncode:
+            # Do not expose startup output: auth prompts can contain codes.
+            raise RuntimeError("Claude usage tmux pane exited or could not be captured")
+        return p.stdout
+
+    try:
+        cmd = [config.engine_settings(engine).get("cmd") or engine,
+               "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+               "--tools", ""]
+        tmux("new-session", "-d", "-s", "usage", "-x", "180", "-y", "80",
+             "-c", str(config.ROOT), shlex.join(cmd))
+        deadline = time.monotonic() + timeout
+        previous, stable_since, screen = "", time.monotonic(), ""
+        sent = False
+        while time.monotonic() < deadline:
+            screen = tmux("capture-pane", "-p", "-t", "usage:0.0")
+            if screen != previous:
+                previous, stable_since = screen, time.monotonic()
+            if not sent and _usage_prompt_ready(screen) and time.monotonic() - stable_since >= 0.6:
+                # /cost is the built-in /usage alias. Unlike the primary
+                # name, built-in aliases cannot be replaced by a skill:
+                # https://code.claude.com/docs/en/slash-commands#where-skills-live
+                tmux("send-keys", "-t", "usage:0.0", "-l", "/cost")
+                tmux("send-keys", "-t", "usage:0.0", "Enter")
+                sent = True
+            # Wait for data, not just the initial loading panel. Unknown or
+            # blocked screens are returned at the deadline and rejected.
+            if (sent and "%" in screen and "Current session" in screen and "Current week" in screen
+                    and time.monotonic() - stable_since >= 2):
+                return screen
+            time.sleep(0.3)
+        return screen
+    finally:
+        subprocess.run([*base, "kill-server"], env=env, capture_output=True, timeout=5)
 
 
 def available_models(engine: str) -> list[dict]:
