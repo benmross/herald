@@ -97,6 +97,25 @@ every session reads. [`SECURITY.md`](SECURITY.md) covers what is stored, what
 is sent where, and how text from mail and web pages is kept from acting as
 instructions.
 
+## Extensions
+
+An extension adds a source or a skill that only some people need. Send your
+Herald the repository's URL and ask it to install one: it shows you what the
+extension would run, leaves it off until you say so, and asks you for each
+setting in chat. `herald ext install <url>` does the same from a terminal.
+
+| extension | what it does |
+|---|---|
+| [canvas](https://github.com/benmross/herald-canvas) | Canvas LMS through your own browser session: courses, grades, submission state and announcements, with tap-approved writes and courses you can lock to dates and grades only |
+| [umd](https://github.com/benmross/herald-umd) | UMD campus events on a Google calendar of their own, each judged once against criteria you write |
+| [transit](https://github.com/benmross/herald-transit) | DC-region buses and Metro: live arrivals, alerts and a trip planner, from where you are |
+| [shop](https://github.com/benmross/herald-shop) | clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's, with a contact sheet of the photos |
+
+More are listed under the
+[`herald-extension`](https://github.com/topics/herald-extension) topic. To
+write one, see [`docs/extensions.md`](docs/extensions.md); tag its repository
+`herald-extension` and it appears there too.
+
 ## Where your data lives
 
 The checkout is the program, and it is the same for everyone. `~/.herald` is
