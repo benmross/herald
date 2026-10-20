@@ -2,6 +2,17 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.1 — 20 October 2026
+
+- Warn before subscription limits leave upcoming work without capacity
+- Route files and approvals into the General topic instead of Updates
+- Pull requests go through a tap, and every tap lands in the topic that asked
+- Add a Slack collector that reads the user's own workspaces with a user token
+- Extensions say what setup needs, and the publish check insists on it
+- Take the user's location from Telegram, and age fixes from their timestamp
+- Give every enabled extension command a launcher in ~/.local/bin
+- Ask the mode at commit time, and never tag a release whose commit failed
+
 ## v0.4.0 — 18 October 2026
 
 - Ask an extension's settings at install, and say how from Telegram
