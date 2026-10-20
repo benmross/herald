@@ -215,6 +215,22 @@ def telegram(text: str, *, record: bool = True,
     return ok
 
 
+def _own_topic_thread(chat_id: int | None = None) -> int | None:
+    """The topic of the Telegram turn this process belongs to, or None.
+
+    Exact, from HERALD_TELEGRAM_TOPIC ("<chat>:<thread>") as set by
+    think._spawn, and nothing else. A topic in a chat other than `chat_id`
+    does not count.
+    """
+    own = os.environ.get("HERALD_TELEGRAM_TOPIC", "")
+    chat, _, thread = own.partition(":")
+    if not thread.isdigit():
+        return None
+    if chat_id is not None and chat and chat != str(chat_id):
+        return None
+    return int(thread)
+
+
 def _live_topic_thread() -> int | None:
     """The Telegram topic whose turn is running right now, if exactly one is.
 
@@ -394,7 +410,15 @@ def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
     if not chat_id:
         return False
     if thread_id is None:
-        thread_id = _updates_thread_id()
+        # Ask where the request was made. An approval asked from a Telegram
+        # turn used to land in Updates, away from the conversation that
+        # explains it. Only the turn's own topic counts here, never the
+        # liveness guess `_live_topic_thread` falls back on: a cycle's
+        # approval routed into whichever topic happened to be busy would be
+        # worse than Updates.
+        thread_id = _own_topic_thread(chat_id)
+        if thread_id is None:
+            thread_id = _updates_thread_id()
     extra = {"message_thread_id": thread_id} if thread_id else {}
     resp = _telegram_api(
         "sendMessage", chat_id=chat_id,

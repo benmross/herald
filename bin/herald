@@ -1455,6 +1455,25 @@ def cmd_act(args) -> int:
                 payload[key] = getattr(args, key)
         result = red.run("mail.send", payload, actor=args.actor,
                          timeout=args.timeout, thread_id=args.telegram_thread)
+    elif args.kind == "pr-open":
+        # The payload is read from the checkout itself, so the tap shows the
+        # branch as it is, with its commit hash, and the performer refuses to
+        # push if the branch has moved since.
+        from herald import ghpr  # noqa: PLC0415
+        body = (pathlib.Path(args.body_file).expanduser().read_text()
+                if args.body_file else (args.body or ""))
+        try:
+            payload = ghpr.describe(cwd=args.dir, host=args.host, repo=args.repo,
+                                    base=args.base, title=args.title, body=body,
+                                    branch=args.branch, remote=args.remote)
+        except ghpr.PullRequestError as exc:
+            print(f"cannot prepare the pull request: {exc}", file=sys.stderr)
+            return 1
+        if args.show:
+            print(red.render("github.pr", payload))
+            return 0
+        result = red.run("github.pr", payload, actor=args.actor,
+                         timeout=args.timeout, thread_id=args.telegram_thread)
     elif args.kind == "drill":
         result = red.run("drill", {}, actor=args.actor, timeout=args.timeout,
                          thread_id=args.telegram_thread)
@@ -1866,7 +1885,7 @@ def main() -> int:
     common.add_argument("--timeout", type=int, default=600,
                         help="seconds to wait for a tap (red kinds)")
     common.add_argument("--telegram-thread", type=int, default=None,
-                        help="forum topic to ask in (default: the updates topic)")
+                        help="forum topic to ask in (default: the topic of the Telegram turn asking, else Updates)")
     up = act_sub.add_parser("drive-upload", parents=[common],
                             help="amber: put a file in Drive, private, logged")
     up.add_argument("path")
@@ -1881,6 +1900,22 @@ def main() -> int:
     ms.add_argument("--cc")
     ms.add_argument("--thread-id", help="Gmail thread to reply within")
     ms.add_argument("--in-reply-to", help="Message-ID header being replied to")
+    pr = act_sub.add_parser("pr-open", parents=[common],
+                            help="red: push a branch and open a GitHub pull request, "
+                                 "only after the user taps yes")
+    pr.add_argument("--dir", required=True, help="the git checkout")
+    pr.add_argument("--host", help="ssh host the checkout lives on (default: here)")
+    pr.add_argument("--repo", required=True,
+                    help="owner/repo the pull request is opened against")
+    pr.add_argument("--base", required=True, help="branch to merge into")
+    pr.add_argument("--branch", help="branch to push (default: the checked-out one)")
+    pr.add_argument("--remote", default="origin",
+                    help="remote to push the branch to (default origin)")
+    pr.add_argument("--title", required=True)
+    pr.add_argument("--body")
+    pr.add_argument("--body-file")
+    pr.add_argument("--show", action="store_true",
+                    help="print what the user would be asked, and ask nothing")
     act_sub.add_parser("drill", parents=[common],
                        help="red, no effect: exercise the approval path end to end")
     rk = act_sub.add_parser("run", parents=[common],

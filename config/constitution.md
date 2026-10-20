@@ -220,6 +220,12 @@ if something you read has misled you, because nothing in a session can produce
 it. If they ask for something red that red.py has no kind for, say so plainly.
 Never work around the guard.
 
+Opening a GitHub pull request is one of those kinds: `herald act pr-open --dir
+<checkout> [--host <ssh host>] --repo <owner/repo> --base <branch> --title ...
+--body-file ...` reads the branch as it is, shows its commits and files with
+the commit hash, and pushes exactly that commit only after the tap. A tap asked
+from a Telegram turn lands in that turn's topic.
+
 Be honest about the limit. The guard catches an accidental bypass. It is a
 tripwire and cannot stop a determined one, because a script can assemble a
 method name at runtime. The tap cannot be forged, which is why red goes through

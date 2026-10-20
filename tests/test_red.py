@@ -203,5 +203,95 @@ class ExtensionKinds(RedTier):
         self.assertEqual(self.actions()[-1]["approval_id"], i)
 
 
+class PullRequests(RedTier):
+    """github.pr pushes exactly the commit the user saw, or nothing."""
+
+    PAYLOAD = {"repo": "org/proj", "base": "master", "head": "me:fix/1",
+               "remote": "origin", "push_to": "me/proj", "branch": "fix/1",
+               "sha": "a" * 40, "dir": "/src/proj", "host": "laptop",
+               "title": "Fix the thing", "body": "Closes #1",
+               "commits": ["aaaaaaa Fix the thing"], "files": ["M\tsrc/x.ts"],
+               "stat": "1 file changed, 1 insertion(+)", "target": "org/proj"}
+
+    def test_render_comes_from_the_payload(self):
+        text = red.render("github.pr", self.PAYLOAD)
+        for needle in ("org/proj", "master from me:fix/1", "aaaaaaaaaa",
+                       "me/proj on laptop", "Fix the thing", "src/x.ts", "Closes #1"):
+            self.assertIn(needle, text)
+
+    def test_moved_branch_pushes_nothing(self):
+        from herald import ghpr
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return "b" * 40 + "\n"
+
+        i = self.add("approved", kind="github.pr", payload=self.PAYLOAD)
+        with mock.patch.object(ghpr, "run", fake_run):
+            with self.assertRaises(PermissionError):
+                red.execute(i)
+        self.assertEqual(calls, [["git", "rev-parse", "fix/1"]])
+        self.assertEqual(self.state(i), "done", "a failed action still consumes the tap")
+        self.assertEqual(self.actions(), [])
+
+    def test_pushes_the_approved_commit_then_opens_the_pr(self):
+        from herald import ghpr
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append((argv, kw))
+            if argv[:2] == ["git", "rev-parse"]:
+                return "a" * 40 + "\n"
+            if argv[:3] == ["gh", "pr", "create"]:
+                return "https://github.com/org/proj/pull/7\n"
+            return ""
+
+        i = self.add("approved", kind="github.pr", payload=self.PAYLOAD)
+        with mock.patch.object(ghpr, "run", fake_run):
+            result = red.execute(i)
+        argvs = [c[0] for c in calls]
+        self.assertIn(["git", "push", "origin", "a" * 40 + ":refs/heads/fix/1"], argvs)
+        create = next(c for c in calls if c[0][:3] == ["gh", "pr", "create"])
+        self.assertEqual(create[1]["stdin"], "Closes #1")
+        self.assertEqual(create[1]["host"], "laptop")
+        self.assertEqual(result["ref"], "https://github.com/org/proj/pull/7")
+        self.assertEqual(self.actions()[-1]["approval_id"], i)
+
+
+class ApprovalTopic(unittest.TestCase):
+    """An approval asked from a Telegram turn lands in that turn's topic."""
+
+    def ask(self, env: dict) -> dict:
+        from herald import notify
+        sent = {}
+
+        def api(method, **kw):
+            sent.update(kw)
+            return {"ok": True}
+
+        with mock.patch.dict("os.environ", env, clear=False), \
+                mock.patch.object(notify, "_telegram_chat_id", lambda: -100), \
+                mock.patch.object(notify, "_updates_thread_id", lambda: 5), \
+                mock.patch.object(notify, "_telegram_api", api):
+            self.assertTrue(notify.ask(1, "Open this pull request?"))
+        return sent
+
+    def test_own_topic(self):
+        self.assertEqual(self.ask({"HERALD_TELEGRAM_TOPIC": "-100:1356"})
+                         ["message_thread_id"], 1356)
+
+    def test_no_turn_goes_to_updates(self):
+        import os
+        env = dict(os.environ)
+        env.pop("HERALD_TELEGRAM_TOPIC", None)
+        with mock.patch.dict("os.environ", env, clear=True):
+            self.assertEqual(self.ask({})["message_thread_id"], 5)
+
+    def test_topic_in_another_chat_is_ignored(self):
+        self.assertEqual(self.ask({"HERALD_TELEGRAM_TOPIC": "-999:1356"})
+                         ["message_thread_id"], 5)
+
+
 if __name__ == "__main__":
     unittest.main()

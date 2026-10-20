@@ -140,10 +140,66 @@ def _perform_safety_allow(p: dict) -> tuple[str, str]:
     return (f"lifted safety rule {rule} for {minutes} min", f"safety:{rule}")
 
 
+def _render_pr(p: dict) -> str:
+    where = f" on {p['host']}" if p.get("host") else ""
+    commits = p.get("commits") or []
+    files = p.get("files") or []
+    lines = ["Open this pull request?", "",
+             f"Repo: {p.get('repo', '?')}",
+             f"Into: {p.get('base', '?')} from {p.get('head', '?')}",
+             f"Pushes {p.get('branch', '?')} at {str(p.get('sha', '?'))[:10]} "
+             f"to {p.get('push_to', '?')}{where}", "",
+             f"Title: {p.get('title', '')}", "",
+             f"Commits ({len(commits)}):"]
+    lines += [f"  {c}" for c in commits[:15]]
+    if len(commits) > 15:
+        lines.append(f"  and {len(commits) - 15} more")
+    lines += ["", f"Files: {p.get('stat') or len(files)}"]
+    lines += [f"  {f}" for f in files[:20]]
+    if len(files) > 20:
+        lines.append(f"  and {len(files) - 20} more")
+    body = (p.get("body") or "").strip()
+    preview = body if len(body) <= 900 else body[:900] + "\n[...]"
+    lines += ["", preview or "(no description)"]
+    return "\n".join(lines)
+
+
+def _perform_pr(p: dict) -> tuple[str, str]:
+    """Push the approved commit and open the pull request.
+
+    The branch is checked against the commit hash the user was shown before
+    anything leaves the machine, so a commit added after the tap cannot ride
+    along on it. The push names that exact commit for the same reason.
+    """
+    from . import ghpr  # noqa: PLC0415
+    for field in ("repo", "base", "head", "remote", "branch", "sha", "dir", "title"):
+        if not p.get(field):
+            raise ValueError(f"github.pr payload is missing {field!r}")
+    cwd, host = p["dir"], p.get("host")
+    now = ghpr.run(["git", "rev-parse", p["branch"]], cwd=cwd, host=host).strip()
+    if now != p["sha"]:
+        raise PermissionError(
+            f"{p['branch']} moved from {p['sha'][:10]} to {now[:10]} after the "
+            "approval was asked for; nothing pushed. Ask again.")
+    ghpr.run(["git", "push", p["remote"], f"{p['sha']}:refs/heads/{p['branch']}"],
+             cwd=cwd, host=host)
+    try:  # tracking is a convenience for later pushes; the PR does not need it
+        ghpr.run(["git", "branch", f"--set-upstream-to={p['remote']}/{p['branch']}",
+                  p["branch"]], cwd=cwd, host=host)
+    except ghpr.PullRequestError:
+        pass
+    url = ghpr.run(["gh", "pr", "create", "--repo", p["repo"], "--base", p["base"],
+                    "--head", p["head"], "--title", p["title"], "--body-file", "-"],
+                   cwd=cwd, host=host, stdin=p.get("body") or "").strip()
+    url = url.splitlines()[-1] if url else ""
+    return (f"opened PR '{p['title'][:60]}' on {p['repo']}", url or f"github:{p['repo']}")
+
+
 KINDS = {
     "mail.send": (_render_mail, _perform_mail),
     "drill": (_render_drill, _perform_drill),
     "safety.allow": (_render_safety_allow, _perform_safety_allow),
+    "github.pr": (_render_pr, _perform_pr),
 }
 
 
@@ -222,7 +278,7 @@ def request(kind: str, payload: dict, *, actor: str,
     private.refuse("A red action")
     text = render(kind, payload)
     target = payload.get("to") if kind == "mail.send" else (
-        payload.get("target") if kind not in KINDS else None)
+        payload.get("target") if kind not in KINDS or kind == "github.pr" else None)
     approval_id = approvals.request(actor=actor, kind=kind, target=target,
                                     summary=text.splitlines()[0], payload=payload)
     if not notify.ask(approval_id, text, yes="Yes, do it", no="No",
