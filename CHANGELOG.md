@@ -2,6 +2,11 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.2: 20 October 2026
+
+- List the published extensions in the README
+- Keep generated release headings consistent with the writing rules
+
 ## v0.4.1: 20 October 2026
 
 - Warn before subscription limits leave upcoming work without capacity
