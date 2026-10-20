@@ -72,6 +72,14 @@ BUILTIN: tuple[Capability, ...] = (
                 "CLI you are already signed into.",
     ),
     Capability(
+        key="slack",
+        title="Slack",
+        summary="Messages from the workspaces you belong to, DMs included, read "
+                "with a user token from a Slack app you create yourself.",
+        secrets=("slack.tokens",),
+        setup_hint="docs/slack.md",
+    ),
+    Capability(
         key="jobs",
         title="Job and internship feeds",
         summary="Public posting lists, scanned for things worth applying to.",
