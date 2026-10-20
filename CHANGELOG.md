@@ -2,7 +2,7 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
-## v0.4.1 — 20 October 2026
+## v0.4.1: 20 October 2026
 
 - Warn before subscription limits leave upcoming work without capacity
 - Route files and approvals into the General topic instead of Updates
@@ -13,7 +13,7 @@ What each release changed, from the commit messages. `herald update` shows the e
 - Give every enabled extension command a launcher in ~/.local/bin
 - Ask the mode at commit time, and never tag a release whose commit failed
 
-## v0.4.0 — 18 October 2026
+## v0.4.0: 18 October 2026
 
 - Ask an extension's settings at install, and say how from Telegram
 - Report a ledger backup that has stopped reaching its remote
@@ -37,13 +37,13 @@ What each release changed, from the commit messages. `herald update` shows the e
 - Keep Codex context when resuming with extra workspaces
 - An extension can add a red action, behind the same tap
 
-## v0.3.2 — 7 October 2026
+## v0.3.2: 7 October 2026
 
 - The README leads with a quick start and says each thing once
 - Herald runs in a Docker container, with a supervisor in place of systemd
 - A fresh install ends on commands that work, and says so when nothing can be scheduled
 
-## v0.3.1 — 7 October 2026
+## v0.3.1: 7 October 2026
 
 - A reply to a message from an earlier conversation resumes that conversation
 - The watchdog no longer reports a rule the user lifted as a broken guard
@@ -53,7 +53,7 @@ What each release changed, from the commit messages. `herald update` shows the e
 - A reply given before background work lands is delivered, not left in the progress block
 - herald find: locate, minus what has gone since the nightly index
 
-## v0.3.0 — 4 October 2026
+## v0.3.0: 4 October 2026
 
 - Safety is Herald's, not the engine's; root goes through a tap on a bot no session can reach
 - Use a placeholder fact id in amber's refusal example
@@ -67,7 +67,7 @@ What each release changed, from the commit messages. `herald update` shows the e
 - Cycles act on what they read, through a narrow amber door
 - herald notify --file: a document arrives on the phone, not on the server
 
-## v0.2.0 — 22 September 2026
+## v0.2.0: 22 September 2026
 
 - Setup, doctor and the install docs know about the second engine
 - The guard now reads a -c script that contains a semicolon
@@ -79,7 +79,7 @@ What each release changed, from the commit messages. `herald update` shows the e
 - A message Telegram cut in half is one turn again
 - A think ceiling of 0 means no absolute ceiling
 
-## v0.1.9 — 14 September 2026
+## v0.1.9: 14 September 2026
 
 - A quiz no longer eats the message that was not an answer
 - Quizzes that answer without a model, and one turn per multi-file message
@@ -88,20 +88,20 @@ What each release changed, from the commit messages. `herald update` shows the e
 - A conversation could not see the world move underneath it
 - Latency was never measured, so it was optimised by guesswork
 
-## v0.1.8 — 10 September 2026
+## v0.1.8: 10 September 2026
 
 - Setup reads like it was written for the person doing it, and does not lag
 - The tracking hook decides at commit time, not at install time
 
-## v0.1.7 — 10 September 2026
+## v0.1.7: 10 September 2026
 
 - Three things the first outside install tripped on
 
-## v0.1.6 — 10 September 2026
+## v0.1.6: 10 September 2026
 
 - The installer checked venv support on the wrong interpreter
 
-## v0.1.5 — 10 September 2026
+## v0.1.5: 10 September 2026
 
 - Preflight tells WSL2 the truth about systemd
 - The tracking guard no longer depends on one wizard screen having been seen
@@ -109,23 +109,23 @@ What each release changed, from the commit messages. `herald update` shows the e
 - The terminal wizard could not be left mid-step
 - What a full rehearsal of a fresh install found
 
-## v0.1.4 — 10 September 2026
+## v0.1.4: 10 September 2026
 
 - Where to run it, and the login constraint that decides the answer
 
-## v0.1.3 — 10 September 2026
+## v0.1.3: 10 September 2026
 
 - A checkout is not an install, and now a test knows the difference
 
-## v0.1.2 — 10 September 2026
+## v0.1.2: 10 September 2026
 
 - Two bugs in the update path, both found by rehearsing one
 
-## v0.1.1 — 10 September 2026
+## v0.1.1: 10 September 2026
 
 - Nothing ever created the ledger symlink
 
-## v0.1.0 — 10 September 2026
+## v0.1.0: 10 September 2026
 
 - Two docstrings named the maintainer
 - Three modes: follow upstream, own the program, or be upstream

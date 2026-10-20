@@ -443,7 +443,7 @@ def write_changelog(tag: str, commits: list[str]) -> None:
     is worse than none.
     """
     import datetime as dt  # noqa: PLC0415
-    header = f"## {tag} — {dt.date.today():%-d %B %Y}\n\n"
+    header = f"## {tag}: {dt.date.today():%-d %B %Y}\n\n"
     body = "\n".join(f"- {line.split(' ', 1)[-1]}" for line in commits) + "\n"
     intro = ("# Changelog\n\nWhat each release changed, from the commit "
              "messages. `herald update` shows the entry for whatever it is "
