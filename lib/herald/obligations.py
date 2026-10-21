@@ -81,6 +81,11 @@ def announce(con, row: dict) -> bool:
     ok = notify.buttons(_card(row, head), _keyboard(row["id"]))
     if ok:
         con.execute("UPDATE commitments SET announced_at=? WHERE id=?", (db.now(), row["id"]))
+        # Committed now, not at the end of the sweep: the card is already on
+        # the phone, and the next card's notify call writes through its own
+        # connection, which an open write here would hold off for the whole
+        # busy timeout.
+        con.commit()
     return ok
 
 
@@ -91,6 +96,7 @@ def ask(con, row: dict) -> bool:
                         _keyboard(row["id"]))
     if ok:
         con.execute("UPDATE commitments SET asked_at=? WHERE id=?", (db.now(), row["id"]))
+        con.commit()
     return ok
 
 

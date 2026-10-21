@@ -125,5 +125,39 @@ class Obligations(unittest.TestCase):
         self.assertEqual(obligations.on_callback(self.con, f"oblig:{oid}:drop")[0], "Already done.")
 
 
+class SweepAgainstAFile(unittest.TestCase):
+    """Each card is shown through notify, which writes its own record on a
+    second connection. A sweep that held its write until the end blocked every
+    card after the first for the busy timeout, and lost its record."""
+
+    def test_a_second_card_is_not_held_off(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name) / "facts.db"
+        con = sqlite3.connect(path)
+        con.row_factory = sqlite3.Row
+        con.executescript(db.SCHEMA)
+        self.addCleanup(con.close)
+        for text in ("one", "two"):
+            con.execute("INSERT INTO commitments (created_at, text, kind, status)"
+                        " VALUES (?, ?, 'task', 'open')", (db.now(), text))
+        con.commit()
+
+        def buttons(text, rows, **k):
+            other = sqlite3.connect(path, timeout=0.2)
+            try:
+                other.execute("INSERT INTO notifications (ts, channel, priority, title, body, ok)"
+                              " VALUES ('t', 'telegram', 'default', 'x', ?, 1)", (text,))
+                other.commit()
+            finally:
+                other.close()
+            return True
+
+        with mock.patch.object(obligations.notify, "buttons", side_effect=buttons):
+            self.assertEqual(obligations.sweep(con), {"announced": 2})
+        self.assertEqual(con.execute("SELECT count(*) FROM notifications").fetchone()[0], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

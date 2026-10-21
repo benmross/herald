@@ -105,6 +105,12 @@ def collect(con) -> dict:
         data={"tag": tag, "from": release["from"],
               "commits": len(release["commits"])},
     )
+    # The approvals below are written through their own connection, and the
+    # clear and put_fact above left this one holding the write lock. Without
+    # this commit the second connection waits out its busy timeout and the run
+    # fails with "database is locked", every run, for as long as a release is
+    # waiting to be offered.
+    con.commit()
 
     # Already said yes? Then the only thing left is to do it, out of process.
     if approved := _approved_for(tag):
