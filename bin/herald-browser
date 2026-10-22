@@ -70,7 +70,11 @@ button.q{background:#333;color:#e8e8e8}
 const B=location.pathname.replace(/\\/$/,''), img=document.getElementById('scr'), st=document.getElementById('st');
 let busy=false;
 function frame(){ img.src=B+'/frame?'+Date.now(); }
-img.onload=()=>{busy=false}; img.onerror=()=>{st.textContent='this link has expired or the browser stopped'};
+let fails=0;
+img.onload=()=>{busy=false; fails=0; st.textContent=''};
+// One failed frame is usually a tab that was just opened; keep polling, and
+// only call the link dead after it has failed for a while.
+img.onerror=()=>{busy=false; fails++; st.textContent = fails>5 ? 'this link has expired or the browser stopped' : 'waiting for the browser…'};
 async function act(o){ st.textContent='…'; const r=await fetch(B+'/act',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(o)});
   st.textContent=r.ok?'':'that did not work ('+r.status+')'; setTimeout(frame,350); setTimeout(frame,1500); }
 img.addEventListener('click',e=>{const r=img.getBoundingClientRect();
@@ -137,13 +141,32 @@ class Driver:
             self.s = browse.Session()
         return self.s
 
+    def reset(self) -> None:
+        # Stop the old Playwright before making a new one: a sync Playwright
+        # left running keeps its event loop on this thread, and every later
+        # start fails with "using Playwright Sync API inside the asyncio loop".
+        if self.s is not None:
+            self.s.close()
+        self.s = None
+
     def page(self, tab: str):
-        try:
-            return self.session().tab(tab)
-        except Exception:
-            # The connection may have died with a browser restart; try once more.
-            self.s = None
-            return self.session().tab(tab)
+        # Session.tab raises SystemExit for a missing tab, which is right for
+        # the CLI and fatal here: on 22 Oct 2026 one stale link took the whole
+        # service down. Turn it into an ordinary error.
+        for attempt in (1, 2):
+            try:
+                return self.session().tab(tab)
+            except SystemExit as e:
+                # A tab another connection opened a moment ago may not be in
+                # this one's list yet; reconnect once before giving up.
+                if attempt == 2:
+                    raise LookupError(str(e)) from None
+                self.reset()
+            except Exception:
+                # The connection may have died with a browser restart.
+                self.reset()
+                if attempt == 2:
+                    raise
 
 
 DRIVER = Driver()
@@ -186,7 +209,11 @@ class Handler(BaseHTTPRequestHandler):
                 page.bring_to_front()
                 shot = page.screenshot(type="jpeg", quality=70)
                 return self._send(200, shot, "image/jpeg")
-        except Exception:
+        except Exception as e:
+            # The exception names the failure, never anything the user typed.
+            print(f"frame failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr, flush=True)
+            if not isinstance(e, LookupError):
+                DRIVER.reset()
             return self._send(502, b"the tab is gone", "text/plain")
         return self._send(404, b"not found", "text/plain")
 
@@ -220,7 +247,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 return self._send(400, b"unknown action", "text/plain")
             return self._send(200, b"ok", "text/plain")
-        except Exception:
+        except Exception as e:
+            print(f"action failed: {type(e).__name__}", file=sys.stderr, flush=True)
+            if not isinstance(e, LookupError):
+                DRIVER.reset()
             return self._send(502, b"that did not work", "text/plain")
 
 
