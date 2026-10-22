@@ -216,6 +216,38 @@ Do not use `tailscale funnel` or anything else that puts it on the public
 internet. The token is long enough that guessing is not the risk; the risk is a
 page that writes credentials being reachable by anyone who is sent the link.
 
+## The browser
+
+`herald browse` (skill `herald-browse`, module `lib/herald/browse.py`) needs
+nothing set up: the first command starts a headless Chromium with a persistent
+profile in `$HERALD_HOME/browser/profile`, DevTools on `127.0.0.1:9333`
+(`browser.cdp_port`). The profile holds cookies, so it is gitignored in
+`$HERALD_HOME` (migration 0004) and listed under `safety.secret_paths`.
+
+Signing in to a site needs the user's hands, and that is what the service is
+for. `bin/herald-browser` (unit `herald-browser.service`) keeps the profile
+browser running headed inside Xvfb, which sign-in pages accept more readily,
+and serves the page a `herald browse login` link opens: a live picture of one
+tab whose taps and typing go straight to it. Nothing typed there is logged or
+reaches a session. The link expires (30 minutes by default) or when they tap
+Done. It binds to `127.0.0.1:8793` (`surfaces.browser_view.port`) and stays
+off until `surfaces.browser_view.url` is set:
+
+```bash
+sudo apt install xvfb        # optional; without it the browser runs headless
+tailscale serve --bg --https=8449 http://127.0.0.1:8793
+herald config set surfaces.browser_view.url https://<machine>.<tailnet>.ts.net:8449
+herald services install && herald services enable
+```
+
+As with the secret page, never put it behind `tailscale funnel`: whoever opens
+a live link is driving a browser that may be signed in to the user's accounts.
+
+Chromium's sandbox is off (`browser.sandbox: false`) because Ubuntu 23.10 and
+later block the unprivileged user namespaces it needs unless an AppArmor
+profile allows them. Installing such a profile for the Chromium binary and
+setting `browser.sandbox` to true turns it back on.
+
 ## Backups
 
 There are two repositories. The program pushes to the public `herald` repo; the person

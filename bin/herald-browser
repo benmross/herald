@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""The profile browser, and the page the user drives it from. See lib/herald/browse.py.
+
+Two jobs in one process, because the second needs the first:
+
+1. Keep one Chromium running with the persistent profile, its DevTools port on
+   127.0.0.1 only. Headed inside a private Xvfb display when Xvfb is installed
+   (sign-in pages are warier of a headless browser), headless otherwise. If it
+   exits, it is started again.
+2. Serve the view page on 127.0.0.1 (`surfaces.browser_view.port`), which
+   `tailscale serve` or similar puts in front of the user's phone. A
+   `herald browse login` link opens it: a live picture of one tab, and a box
+   whose taps and typing go straight to that tab. This is how the user signs
+   in to a site without a password passing through a model.
+
+Every route is keyed by an unguessable token that expires. An unknown,
+expired or closed token gets the same plain 404. Nothing typed is logged.
+"""
+
+from __future__ import annotations
+
+import html
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "lib"))
+
+from herald import browse, config, db  # noqa: E402
+
+HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
+
+PAGE = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name=robots content=noindex><title>Herald browser</title>
+<style>
+body{margin:0;font:15px -apple-system,system-ui,sans-serif;background:#151515;color:#e8e8e8}
+#bar{display:flex;gap:.3rem;padding:.4rem;position:sticky;top:0;background:#151515;z-index:2;flex-wrap:wrap}
+#bar input{flex:1;min-width:8rem;font-size:16px;padding:.45rem;border-radius:6px;border:1px solid #444;background:#1f1f1f;color:#e8e8e8}
+button{font-size:15px;padding:.45rem .7rem;border:0;border-radius:6px;background:#e8e8e8;color:#151515}
+button.q{background:#333;color:#e8e8e8}
+#why{padding:.2rem .6rem .5rem;color:#aaa;font-size:13px}
+#scr{width:100%;display:block;touch-action:manipulation}
+#st{font-size:12px;color:#888;padding:.2rem .6rem}
+</style>
+<div id=why>__WHY__</div>
+<div id=bar>
+<input id=t placeholder="type here, then Send" autocomplete=off autocapitalize=off spellcheck=false>
+<button id=send>Send</button><button class=q data-k=Enter>⏎</button>
+<button class=q data-k=Tab>Tab</button><button class=q data-k=Backspace>⌫</button>
+</div>
+<div id=bar2 style="display:flex;gap:.3rem;padding:0 .4rem .4rem">
+<button class=q id=up>▲</button><button class=q id=dn>▼</button>
+<button class=q id=back>Back</button><button class=q id=re>Refresh</button>
+<button id=done style="margin-left:auto">Done</button></div>
+<div id=st></div>
+<img id=scr alt="">
+<script>
+const B=location.pathname.replace(/\\/$/,''), img=document.getElementById('scr'), st=document.getElementById('st');
+let busy=false;
+function frame(){ img.src=B+'/frame?'+Date.now(); }
+img.onload=()=>{busy=false}; img.onerror=()=>{st.textContent='this link has expired or the browser stopped'};
+async function act(o){ st.textContent='…'; const r=await fetch(B+'/act',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(o)});
+  st.textContent=r.ok?'':'that did not work ('+r.status+')'; setTimeout(frame,350); setTimeout(frame,1500); }
+img.addEventListener('click',e=>{const r=img.getBoundingClientRect();
+  act({k:'click',x:(e.clientX-r.left)*img.naturalWidth/r.width,y:(e.clientY-r.top)*img.naturalHeight/r.height});});
+document.getElementById('send').onclick=()=>{const t=document.getElementById('t'); if(t.value){act({k:'type',text:t.value}); t.value='';}};
+document.querySelectorAll('[data-k]').forEach(b=>b.onclick=()=>act({k:'key',key:b.dataset.k}));
+document.getElementById('up').onclick=()=>act({k:'scroll',dy:-600});
+document.getElementById('dn').onclick=()=>act({k:'scroll',dy:600});
+document.getElementById('back').onclick=()=>act({k:'back'});
+document.getElementById('re').onclick=frame;
+document.getElementById('done').onclick=async()=>{await act({k:'done'}); document.body.innerHTML='<p style="padding:1rem">Done. Herald can carry on from here.</p>'};
+frame(); setInterval(()=>{ if(!busy && !document.hidden){busy=true; frame();} }, 2000);
+</script>"""
+
+
+# --- the browser ---------------------------------------------------------------
+
+class Chrome:
+    """Starts and restarts the profile browser."""
+
+    def __init__(self):
+        self.proc = None
+        self.xvfb = None
+        self.display = None
+
+    def start(self) -> None:
+        if browse.alive():
+            return  # something (a session's `ensure`) already started one
+        env = dict(os.environ)
+        headed = bool(config.get("browser.headed", True)) and shutil.which("Xvfb")
+        if headed:
+            if self.xvfb is None or self.xvfb.poll() is not None:
+                self.display = f":{int(config.get('browser.display', 93))}"
+                self.xvfb = subprocess.Popen(
+                    ["Xvfb", self.display, "-screen", "0", "1280x900x24", "-nolisten", "tcp"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(1)
+            env["DISPLAY"] = self.display
+        log = open(browse.home() / "chrome.log", "ab")
+        self.proc = subprocess.Popen(browse.chrome_args(headless=not headed), env=env,
+                                     stdout=log, stderr=log, stdin=subprocess.DEVNULL)
+        for _ in range(60):
+            if browse.alive():
+                return
+            time.sleep(0.25)
+
+    def watch(self) -> None:
+        while True:
+            if not browse.alive():
+                self.start()
+            time.sleep(10)
+
+
+# --- the view page -------------------------------------------------------------
+
+class Driver:
+    """One CDP connection, used only from the server thread."""
+
+    def __init__(self):
+        self.s = None
+
+    def session(self) -> browse.Session:
+        if self.s is None:
+            self.s = browse.Session()
+        return self.s
+
+    def page(self, tab: str):
+        try:
+            return self.session().tab(tab)
+        except Exception:
+            # The connection may have died with a browser restart; try once more.
+            self.s = None
+            return self.session().tab(tab)
+
+
+DRIVER = Driver()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "herald-browser"
+    sys_version = ""
+
+    def log_message(self, *args):  # nothing about a request is logged
+        pass
+
+    def _send(self, code: int, body: bytes, ctype: str = "text/html; charset=utf-8") -> None:
+        self.send_response(code)
+        for k, v in HEADERS.items():
+            self.send_header(k, v)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _route(self):
+        parts = self.path.split("?")[0].strip("/").split("/")
+        if len(parts) < 2 or parts[0] != "v":
+            return None, None, None
+        token = parts[1]
+        rec = browse.view(token)
+        return token, rec, (parts[2] if len(parts) > 2 else "")
+
+    def do_GET(self):
+        token, rec, sub = self._route()
+        if not rec:
+            return self._send(404, b"not found", "text/plain")
+        try:
+            if sub == "":
+                why = html.escape(f"Herald asked for this: {rec['why']}")
+                return self._send(200, PAGE.replace("__WHY__", why).encode())
+            if sub == "frame":
+                page = DRIVER.page(rec["tab"])
+                page.bring_to_front()
+                shot = page.screenshot(type="jpeg", quality=70)
+                return self._send(200, shot, "image/jpeg")
+        except Exception:
+            return self._send(502, b"the tab is gone", "text/plain")
+        return self._send(404, b"not found", "text/plain")
+
+    def do_POST(self):
+        token, rec, sub = self._route()
+        if not rec or sub != "act":
+            return self._send(404, b"not found", "text/plain")
+        try:
+            n = min(int(self.headers.get("Content-Length") or 0), 8192)
+            a = json.loads(self.rfile.read(n) or b"{}")
+            k = a.get("k")
+            if k == "done":
+                browse.close_view(token)
+                with db.session() as con:
+                    db.record_action(con, actor="user", tier="green", kind="browser.view",
+                                     target=rec["tab"],
+                                     summary="the user finished driving a browser tab "
+                                             "(sign-in or similar); nothing they typed is kept")
+                return self._send(200, b"ok", "text/plain")
+            page = DRIVER.page(rec["tab"])
+            if k == "click":
+                page.mouse.click(float(a["x"]), float(a["y"]))
+            elif k == "type":
+                page.keyboard.type(str(a.get("text", ""))[:2000])
+            elif k == "key" and a.get("key") in ("Enter", "Tab", "Backspace", "Escape"):
+                page.keyboard.press(a["key"])
+            elif k == "scroll":
+                page.mouse.wheel(0, max(-3000, min(3000, int(a.get("dy", 0)))))
+            elif k == "back":
+                page.go_back(timeout=15000)
+            else:
+                return self._send(400, b"unknown action", "text/plain")
+            return self._send(200, b"ok", "text/plain")
+        except Exception:
+            return self._send(502, b"that did not work", "text/plain")
+
+
+def main() -> int:
+    browse.home().mkdir(parents=True, exist_ok=True)
+    chrome = Chrome()
+    chrome.start()
+    threading.Thread(target=chrome.watch, daemon=True).start()
+    # Single-threaded on purpose: Playwright's sync API is not thread-safe, and
+    # one person driving one tab does not need concurrency.
+    srv = HTTPServer(("127.0.0.1", browse.view_port()), Handler)
+    print(f"herald-browser: CDP {browse.cdp_url()}, view on 127.0.0.1:{browse.view_port()}",
+          flush=True)
+    srv.serve_forever()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

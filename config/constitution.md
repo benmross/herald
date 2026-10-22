@@ -410,6 +410,11 @@ you send it.
   field, because it has to be useful from a phone on the way there. Check a
   real academic or institutional calendar for breaks; never invent a TBA time.
 - **Google**: use the `google-workspace` skill. Its rules are Herald's rules.
+- **The web**: load the `herald-browse` skill before browsing anything
+  WebFetch cannot render (most career and application sites), before filling a
+  form, and before reading more than a handful of pages. `herald browse` runs
+  a real browser on this machine; do not drive a browser on another device or
+  write a one-off scraper for what it already does.
 - **Devices**: anything the config lists under `devices` may be asleep. When a
   capability needs a device that is asleep, say so and queue the work. Do not
   pretend it happened.

@@ -1730,6 +1730,161 @@ def cmd_deadline(args) -> int:
     return 0
 
 
+def cmd_browse(args) -> int:
+    """Browse the web in a real browser on this machine. See lib/herald/browse.py."""
+    from herald import browse  # noqa: PLC0415
+
+    op = args.op
+    if op == "crawl":
+        jobs = browse.read_jobs(args.urls)
+        print(f"crawling {len(jobs)} pages, {args.concurrency} at a time, into {args.out}",
+              flush=True)
+        r = browse.crawl(jobs, args.out, concurrency=args.concurrency, wait_ms=args.wait,
+                         grep=args.grep, profile=args.profile, every=args.every)
+        print(f"done: {r['ok']} read, {r['err']} failed, {r['skipped']} already there, "
+              f"{r['seconds']}s. One file per page, first line its final URL"
+              + ("; matches.jsonl has the --grep hits." if args.grep else "."))
+        return 0
+    if op == "status":
+        print(f"  profile browser  {'up' if browse.alive() else 'down'} on {browse.cdp_url()}")
+        print(f"  profile          {browse.profile_dir()}")
+        print(f"  user view        {browse.view_base() or 'off: set surfaces.browser_view.url'}")
+        return 0
+    if op == "fetch":
+        url, text = browse.fetch_text(args.url, args.wait)
+        print(url)
+        print(browse.UNTRUSTED)
+        print(text[:args.max])
+        return 0
+
+    with browse.Session() as s:
+        if op == "tabs":
+            for i, p in enumerate(s.pages()):
+                print(f"  {i}  {s.tab_id(p)}  {p.title()[:60]!s:<60}  {p.url[:110]}")
+            return 0
+        if op == "open":
+            page = s.ctx.new_page()
+            page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
+            browse.settle(page, args.wait)
+            print(f"tab {s.tab_id(page)}  {page.title()[:70]}  {page.url}")
+            return 0
+        page = s.tab(args.tab)
+        if op == "close":
+            page.close()
+            print("closed")
+        elif op == "go":
+            page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
+            browse.settle(page, args.wait)
+            print(f"{page.title()[:70]}  {page.url}")
+        elif op == "text":
+            t = browse.visible_text(page, args.selector)
+            print(page.url)
+            print(browse.UNTRUSTED)
+            print(t[args.offset:args.offset + args.max])
+            if len(t) > args.offset + args.max:
+                print(f"\n[{len(t) - args.offset - args.max} more characters: "
+                      f"--offset {args.offset + args.max}]")
+        elif op == "links":
+            rx = re.compile(args.match, re.I) if args.match else None
+            seen = set()
+            for label, href in page.evaluate(browse.LINKS_JS):
+                if href in seen or (rx and not (rx.search(label) or rx.search(href))):
+                    continue
+                seen.add(href)
+                print(f"{label[:80]}\t{href}")
+        elif op == "fields":
+            print(browse.UNTRUSTED)
+            for fr in page.frames:
+                try:
+                    found = fr.evaluate(browse.FIELDS_JS)
+                except Exception:
+                    continue
+                if found:
+                    if fr != page.main_frame:
+                        print(f"[frame {fr.url[:90]}]")
+                    for f in found:
+                        print(json.dumps(f, ensure_ascii=False))
+            print("buttons: " + " | ".join(page.evaluate(browse.BUTTONS_JS)[:40]))
+        elif op in ("fill", "select", "check", "upload"):
+            target = f"[data-hb='{args.field}']" if args.field.isdigit() else args.field
+            loc = None
+            for fr in page.frames:
+                if fr.locator(target).count():
+                    loc = fr.locator(target).first
+                    break
+            if loc is None:
+                print(f"no field {args.field!r}; `herald browse fields {args.tab}` lists them",
+                      file=sys.stderr)
+                return 1
+            if (loc.get_attribute("type") or "").lower() == "password":
+                print("refused: a password is typed by the user, through "
+                      "`herald browse login`, never by a session", file=sys.stderr)
+                return 1
+            if op == "fill":
+                loc.fill(args.value)
+            elif op == "select":
+                loc.select_option(label=args.value)
+            elif op == "check":
+                loc.set_checked(args.value.lower() not in ("0", "false", "no", "off"))
+            else:
+                loc.set_input_files(args.value)
+            print(f"{op}: {args.field}")
+        elif op == "click":
+            if args.target.startswith(("css=", "#", ".", "[", "xpath=")):
+                loc = page.locator(args.target.removeprefix("css=")).first
+            else:
+                loc = page.get_by_role("button", name=args.target).or_(
+                    page.get_by_role("link", name=args.target)).or_(
+                    page.get_by_text(args.target, exact=False)).first
+            label = (loc.inner_text(timeout=5000) or loc.get_attribute("value")
+                     or loc.get_attribute("aria-label") or args.target)
+            browse.refuse_submit(label)
+            loc.click(timeout=10000)
+            browse.settle(page, args.wait)
+            print(f"clicked {label.strip()[:60]!r}; now {page.url}")
+        elif op == "press":
+            if args.key.lower() == "enter":
+                for fr in page.frames:
+                    try:
+                        if fr.evaluate(browse.ENTER_SUBMITS_JS):
+                            browse.refuse_submit("submit (Enter in a form)")
+                    except SystemExit:
+                        raise
+                    except Exception:
+                        continue
+            page.keyboard.press(args.key)
+            browse.settle(page, args.wait)
+            print(f"pressed {args.key}; now {page.url}")
+        elif op == "scroll":
+            page.mouse.wheel(0, args.dy)
+            page.wait_for_timeout(800)
+            print("scrolled")
+        elif op == "shot":
+            out = args.path or str(browse.home() / f"shot-{int(time.time())}.png")
+            page.screenshot(path=out, full_page=args.full)
+            print(out)
+        elif op == "html":
+            h = page.inner_html(args.selector) if args.selector != "html" else page.content()
+            print(browse.UNTRUSTED)
+            print(h[:args.max])
+        elif op == "login":
+            from herald import notify  # noqa: PLC0415
+            base = browse.view_base()
+            if not base:
+                print("no view URL: set surfaces.browser_view.url (see docs/operations.md)",
+                      file=sys.stderr)
+                return 1
+            token = browse.new_view(s.tab_id(page), args.why, args.minutes)
+            url = f"{base}/v/{token}"
+            sent = notify.telegram(
+                f"A browser tab is waiting for you ({page.url[:80]}).\n{url}\n\n"
+                f"Why: {args.why}\n\nWhat you type there goes straight to the "
+                f"browser; no model sees it. Works for {args.minutes} minutes.",
+                thread_id=notify._live_topic_thread())
+            print("the link is on the user's phone" if sent else f"open: {url}")
+    return 0
+
+
 def cmd_find(args) -> int:
     from herald import find as find_mod
     q = find_mod.Query(
@@ -2157,6 +2312,54 @@ def main() -> int:
     sess_p.add_argument("session_id", nargs="?",
                         help="id or prefix (default: the most recent)")
     sess_p.set_defaults(fn=cmd_session)
+
+    bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
+    bw_sub = bw.add_subparsers(dest="op", required=True)
+    bw_sub.add_parser("status", help="is the profile browser up, and where")
+    bw_sub.add_parser("tabs", help="open tabs, with their ids")
+    x = bw_sub.add_parser("fetch", help="render one public page headless and print its text")
+    x.add_argument("url"); x.add_argument("--wait", type=int, default=5000)
+    x.add_argument("--max", type=int, default=20000)
+    x = bw_sub.add_parser("open", help="open a URL in a new tab of the profile browser")
+    x.add_argument("url"); x.add_argument("--wait", type=int, default=4000)
+    x = bw_sub.add_parser("go", help="navigate a tab"); x.add_argument("tab"); x.add_argument("url")
+    x.add_argument("--wait", type=int, default=4000)
+    x = bw_sub.add_parser("close", help="close a tab"); x.add_argument("tab")
+    x = bw_sub.add_parser("text", help="a tab's visible text, frames included")
+    x.add_argument("tab"); x.add_argument("--selector", default="body")
+    x.add_argument("--max", type=int, default=12000); x.add_argument("--offset", type=int, default=0)
+    x = bw_sub.add_parser("links", help="a tab's links, label<TAB>href")
+    x.add_argument("tab"); x.add_argument("--match", help="regex on label or href")
+    x = bw_sub.add_parser("fields", help="form fields with handles to fill, and the buttons")
+    x.add_argument("tab")
+    for name, h in (("fill", "type a value"), ("select", "choose an option by its label"),
+                    ("check", "tick (or 'off' to untick)"), ("upload", "attach a file path")):
+        x = bw_sub.add_parser(name, help=h + " into a field (handle from `fields`, or a selector)")
+        x.add_argument("tab"); x.add_argument("field"); x.add_argument("value")
+    x = bw_sub.add_parser("click", help="click a button, link or text; refuses final submits")
+    x.add_argument("tab"); x.add_argument("target"); x.add_argument("--wait", type=int, default=2500)
+    x = bw_sub.add_parser("press", help="press a key (Enter, Tab, Escape...)")
+    x.add_argument("tab"); x.add_argument("key"); x.add_argument("--wait", type=int, default=2000)
+    x = bw_sub.add_parser("scroll", help="scroll a tab"); x.add_argument("tab")
+    x.add_argument("dy", type=int, nargs="?", default=900)
+    x = bw_sub.add_parser("shot", help="screenshot a tab to a PNG (Read it to see the page)")
+    x.add_argument("tab"); x.add_argument("path", nargs="?"); x.add_argument("--full", action="store_true")
+    x = bw_sub.add_parser("html", help="a tab's HTML, or one element's")
+    x.add_argument("tab"); x.add_argument("--selector", default="html")
+    x.add_argument("--max", type=int, default=30000)
+    x = bw_sub.add_parser("login", help="send the user a link to drive a tab themselves (sign-ins)")
+    x.add_argument("tab"); x.add_argument("--why", required=True)
+    x.add_argument("--minutes", type=int, default=30)
+    x = bw_sub.add_parser("crawl", help="read many pages in parallel, headless, resumable")
+    x.add_argument("urls", help="file: one URL, or id<TAB>URL, per line")
+    x.add_argument("--out", required=True, help="directory; one <id>.txt per page")
+    x.add_argument("--concurrency", type=int, default=6)
+    x.add_argument("--wait", type=int, default=5000, help="ms to let each page render")
+    x.add_argument("--grep", help="regex; matching lines go to <out>/matches.jsonl")
+    x.add_argument("--profile", action="store_true",
+                   help="use the signed-in profile browser instead of a clean one")
+    x.add_argument("--every", type=int, default=25, help="print progress every N pages")
+    bw.set_defaults(fn=cmd_browse)
 
     n = sub.add_parser("notify", help="push to the user's phone")
     n.add_argument("title")

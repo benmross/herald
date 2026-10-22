@@ -1,0 +1,18 @@
+[Unit]
+Description=Herald — the signed-in browser, and the page the user drives it from
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-browser
+Restart=always
+RestartSec=10
+MemoryMax=3G
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
