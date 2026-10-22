@@ -1885,6 +1885,55 @@ def cmd_browse(args) -> int:
     return 0
 
 
+def cmd_watch(args) -> int:
+    """Pages Herald rechecks until an opportunity opens. See lib/herald/watch.py."""
+    from herald import browse, watch  # noqa: PLC0415
+
+    with db.session() as con:
+        if args.op == "add":
+            if args.pattern:
+                re.compile(args.pattern)
+            n = con.execute("""UPDATE opportunities SET watch_url=?, watch_for=?,
+                               watch_hash=NULL, watch_hit=NULL, watch_error=NULL
+                               WHERE id=?""", (args.url, args.pattern, args.id)).rowcount
+            if not n:
+                print(f"no opportunity #{args.id}", file=sys.stderr)
+                return 1
+            print(f"watching #{args.id}: {args.url}"
+                  + (f" for /{args.pattern}/" if args.pattern else " for any change"))
+            if args.now:
+                row = con.execute("SELECT * FROM opportunities WHERE id=?", (args.id,)).fetchone()
+                r = watch.check(con, row, browse.fetch_text)
+                print(f"  now: {r['event']}" + (f" -- {r['excerpt']}" if r.get("excerpt") else "")
+                      + (f" -- {r['error']}" if r.get("error") else ""))
+            return 0
+        if args.op == "rm":
+            con.execute("UPDATE opportunities SET watch_url=NULL, watch_for=NULL WHERE id=?",
+                        (args.id,))
+            print(f"stopped watching #{args.id}")
+            return 0
+        if args.op == "check":
+            rows = watch.due(con)
+            if args.id:
+                rows = [r for r in rows if r["id"] == args.id]
+            for row in rows:
+                r = watch.check(con, row, browse.fetch_text)
+                con.commit()
+                print(f"  #{r['id']} {r['event']:<8} {r['title'][:60]}"
+                      + (f"\n      {r['excerpt']}" if r.get("excerpt") else "")
+                      + (f"\n      {r['error']}" if r.get("error") else ""))
+            return 0
+        rows = watch.due(con)
+        if not rows:
+            print("  nothing watched")
+        for r in rows:
+            state = "OPEN" if r["watch_hit"] else ("error" if r["watch_error"] else "waiting")
+            print(f"  #{r['id']:<4} {state:<8} checked {(r['watch_checked'] or 'never')[:16]}"
+                  f"  {r['title'][:55]}\n        {r['watch_url']}"
+                  + (f"  /{r['watch_for']}/" if r["watch_for"] else ""))
+    return 0
+
+
 def cmd_find(args) -> int:
     from herald import find as find_mod
     q = find_mod.Query(
@@ -2312,6 +2361,20 @@ def main() -> int:
     sess_p.add_argument("session_id", nargs="?",
                         help="id or prefix (default: the most recent)")
     sess_p.set_defaults(fn=cmd_session)
+
+    wt = sub.add_parser("watch", help="recheck a page until an opportunity opens")
+    wt_sub = wt.add_subparsers(dest="op")
+    wt_sub.add_parser("list", help="what is watched, and whether it has opened")
+    x = wt_sub.add_parser("add", help="watch a page for one opportunity row")
+    x.add_argument("id", type=int, help="opportunities.id")
+    x.add_argument("url")
+    x.add_argument("--for", dest="pattern",
+                   help="regex the page will match once it is open; without it, any change is noted")
+    x.add_argument("--now", action="store_true", help="check it once right away")
+    x = wt_sub.add_parser("rm", help="stop watching"); x.add_argument("id", type=int)
+    x = wt_sub.add_parser("check", help="check now rather than on the timer")
+    x.add_argument("id", type=int, nargs="?")
+    wt.set_defaults(fn=cmd_watch, op="list")
 
     bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
     bw_sub = bw.add_subparsers(dest="op", required=True)

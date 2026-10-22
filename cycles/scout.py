@@ -224,6 +224,22 @@ same thing before inserting**: the table has a uniqueness constraint on
 Also revisit rows already in the table. If something has been overtaken, mark it
 `passed` or `expired` with a note.
 
+**When something is not open yet, watch it; do not write "check again".** A
+programme that has not posted, a round expected next month, a page that will
+list the date later: give its row a watch, which a collector rechecks four
+times a day and pushes the moment it matches.
+
+    herald watch add <id> '<url of the page that will change>' --for '<regex it will match once open>'
+
+Pick the page the opening will actually appear on (the employer's own job
+search filtered to the programme beats a landing page), and a pattern specific
+enough not to match today (`2027 Ignite`, `Summer 2027`, `Apply now`). Check
+it with `--now`: if it already matches, the thing is open, so say so. A
+sentence in `notes` asking a later pass to recheck is not a schedule. On 22
+October 2026 the user missed a two-week window that had been flagged six
+weeks earlier because that was all there was. `herald watch list` shows what
+is watched.
+
 Then rewrite `ledger/state/opportunities.md` as the readable view: what is live,
 sorted by deadline, each with its next action. Append a short entry to today's
 journal at `ledger/journal/YYYY-MM-DD.md`.
@@ -457,6 +473,28 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
                    f"score {o['score']}  **{o['title']}** ({o['org'] or '?'})")
         if o["fit"]:
             out.append(f"    {o['fit'][:180]}")
+        if o["watch_url"]:
+            state = (f"OPEN: {o['watch_hit'][:160]}" if o["watch_hit"]
+                     else f"watching, last checked {(o['watch_checked'] or 'never')[:16]}")
+            out.append(f"    watch: {state}")
+
+    # Watched pages that changed since the last pass. A match on watch_for was
+    # already pushed by the collector; a plain change is for you to judge.
+    last = con.execute("SELECT MAX(ts) FROM runs WHERE label = ?", (LABEL,)).fetchone()[0]
+    changes = con.execute("""
+        SELECT * FROM facts WHERE source='watch'
+          AND ingested_at > COALESCE(?, datetime('now', '-2 days'))
+        ORDER BY ts""", (last,)).fetchall()
+    if changes:
+        out.append(f"\n## Watched pages that changed ({len(changes)})\n")
+        out.append("Each is a page an opportunity row is waiting on. `hit` means it "
+                   "now matches what you said would mean it is open, and the user has "
+                   "already been told. `changed` means the text moved and nobody has "
+                   "judged it: decide whether it opened, and update the row.\n")
+        for c in changes:
+            d = json.loads(c["data"] or "{}")
+            out.append(f"- #{d.get('opportunity')} {c['kind']} **{c['title']}** {d.get('url')}")
+            out.append(f"    <<<{(c['body'] or '')[:600]}>>>")
 
     postings = con.execute("""
         SELECT * FROM facts WHERE source='internships' AND kind='posting'

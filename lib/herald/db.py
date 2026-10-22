@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS opportunities (
                                          -- | applied | passed | expired
     notified_at TEXT,
     notes       TEXT,
+    watch_url   TEXT,                    -- a page to recheck until this opens
+    watch_for   TEXT,                    -- regex that means it is open; see watch.py
+    watch_hash  TEXT,
+    watch_checked TEXT,
+    watch_hit   TEXT,                    -- the excerpt that first matched watch_for
+    watch_error TEXT,
     UNIQUE (title, org)
 );
 CREATE INDEX IF NOT EXISTS idx_opp_live ON opportunities (status, deadline);
@@ -358,6 +364,9 @@ def _migrate(con: sqlite3.Connection) -> None:
     _add_column_if_missing(con, "actions", "approval_id", "INTEGER")
     for col in ("announced_at", "confirmed_at", "asked_at"):
         _add_column_if_missing(con, "commitments", col, "TEXT")
+    for col in ("watch_url", "watch_for", "watch_hash", "watch_checked",
+                "watch_hit", "watch_error"):
+        _add_column_if_missing(con, "opportunities", col, "TEXT")
     con.commit()
 
 

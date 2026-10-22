@@ -220,7 +220,21 @@ def launchd_jobs() -> dict[str, dict]:
         jobs[f"{LABEL_PREFIX}.secrets"] = _plist(
             f"{LABEL_PREFIX}.secrets",
             [python, str(config.ROOT / "bin" / "herald-secrets")], keepalive=True)
+    if _browser_wanted():
+        jobs[f"{LABEL_PREFIX}.browser"] = _plist(
+            f"{LABEL_PREFIX}.browser",
+            [python, str(config.ROOT / "bin" / "herald-browser")], keepalive=True)
     return jobs
+
+
+def _browser_wanted() -> bool:
+    """The browser service runs once the user can reach its view page.
+
+    Without it, `herald browse` still works: the first command starts a
+    headless browser on its own. The service adds a headed one that survives
+    restarts, and the page a sign-in is done through.
+    """
+    return bool(config.get("surfaces.browser_view.url"))
 
 
 def install_launchd(labels: list[str] | None = None) -> list[str]:
