@@ -38,6 +38,7 @@ to file it properly and pull the dates out of it.
 
 from __future__ import annotations
 
+import difflib
 import json
 import pathlib
 import re
@@ -134,6 +135,28 @@ def command_word(text: str) -> str:
     why this looks at the first word rather than the whole text."""
     word = (text or "").strip().split(None, 1)[0].lower().split("@")[0] if (text or "").strip() else ""
     return word if word in COMMANDS else ""
+
+# Commands the engine itself answers, which the bridge passes through.
+# Anything else shaped like a command and unknown to both is refused here: a
+# mistyped /new used to be sent into the topic's session, and answering it
+# meant loading a context of several hundred thousand tokens for nothing.
+ENGINE_COMMANDS_PASSED = ("/compact",)
+
+
+def unknown_command(text: str) -> str:
+    """The slash word a message starts with, if nothing would answer it.
+
+    Only a bare word counts (`/nwe`, `/nwe@bot`), so a message that starts
+    with a path such as `/home/x` is still ordinary text. Skill names stay
+    valid, since a session can be pointed at a skill by its name."""
+    first = (text or "").strip().split(None, 1)[0] if (text or "").strip() else ""
+    word = first.lower().split("@")[0]
+    if not re.fullmatch(r"/[a-z0-9_-]+", word) or word in COMMANDS or word in ENGINE_COMMANDS_PASSED:
+        return ""
+    skills = {d.name.lower() for base in (config.ROOT / ".claude" / "skills", config.ROOT / ".agents" / "skills")
+              if base.is_dir() for d in base.iterdir()}
+    return "" if word[1:] in skills else word
+
 
 PREAMBLE = """\
 This message arrived from the user over Telegram. The user is probably on their phone, and
@@ -1625,6 +1648,18 @@ def _handle_usage(update: dict, key: str, state: dict) -> None:
     send(msg["chat"]["id"], tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
 
 
+def _handle_unknown_command(update: dict) -> None:
+    """Refuse a command nothing answers, and never start a turn for it."""
+    msg = update.get("message") or {}
+    if (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        return
+    word = unknown_command(msg.get("text") or "")
+    near = difflib.get_close_matches(word, [*COMMANDS, *ENGINE_COMMANDS_PASSED], n=1, cutoff=0.6)
+    hint = f" Did you mean {near[0]}?" if near else ""
+    send(msg["chat"]["id"], f"{word} isn't a command, so nothing was sent to the session.{hint}",
+         msg.get("message_thread_id"), markup=False)
+
+
 def _is_debug_command(update: dict) -> bool:
     msg = update.get("message") or update.get("edited_message") or {}
     word = (msg.get("text") or "").strip().lower().split("@")[0]
@@ -2005,6 +2040,8 @@ def _dispatch(update: dict, state: dict) -> None:
             _handle_obligations(update)
         elif command_word((update.get("message") or {}).get("text") or "") == "/models":
             _handle_models(update, state)
+        elif unknown_command((update.get("message") or {}).get("text") or ""):
+            _handle_unknown_command(update)
         elif _study_text(update, state):
             pass  # a quiz answer, checked without a session
         elif _collect_album(update, state):

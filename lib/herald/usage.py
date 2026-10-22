@@ -35,6 +35,13 @@ def _error(detail: str) -> UsageParseError:
                            "No fresh usage reading was saved.")
 
 
+def _excerpt(block: str) -> str:
+    """The quota lines of one section, for an error message. Only text from
+    inside a quota section reaches here, never the pane's startup output."""
+    text = " / ".join(line.strip(" █▌▏▎▍▋▊▉░▒▓") for line in block.splitlines() if line.strip(" █▌▏▎▍▋▊▉░▒▓"))
+    return text[:160] or "nothing"
+
+
 def _reset(text: str, now: dt.datetime) -> int:
     """Known CLI reset formats only. Refuse ambiguous or changed formats."""
     text = text.strip()
@@ -112,8 +119,17 @@ def parse_claude(screen: str, now: dt.datetime | None = None) -> list[dict]:
         block = re.split(r"\n\s*(?:What's contributing|Usage credits|Extra usage|Esc to cancel)", block)[0]
         values = re.findall(r"(?<![\d.])(\d+(?:\.\d+)?)%\s+(used|remaining)\b", block)
         resets = re.findall(r"^\s*Resets\s+([^\n]+)", block, re.M)
+        if (key == "session" and not resets
+                and (not values or values == [("0", "used")] or values == [("100", "remaining")])):
+            # The five-hour window starts at the first message after the last
+            # one lapsed, so in between there is nothing to reset. The check
+            # runs every half hour and kept landing in that gap.
+            windows.append({"key": key, "label": label, "used_percent": 0.0,
+                            "window_minutes": minutes, "resets_at": None})
+            continue
         if len(values) != 1 or len(resets) != 1:
-            raise _error(f"expected one percentage and reset time for {label}")
+            raise _error(f"expected one percentage and reset time for {label} "
+                         f"(saw: {_excerpt(block)})")
         percentage = float(values[0][0])
         if not 0 <= percentage <= 100:
             raise _error("percentage outside 0–100")
@@ -183,7 +199,7 @@ def refresh(con, engine: str) -> dict:
             raw = think.subscription_usage(engine)
             windows = parse_claude(raw) if engine == "claude" else parse_codex(raw)
             now = dt.datetime.now(config.tz()).timestamp()
-            if any(w["resets_at"] <= now for w in windows):
+            if any(w["resets_at"] is not None and w["resets_at"] <= now for w in windows):
                 raise UsageError(f"{engine} returned expired quota windows; no fresh reading saved")
             snapshot = {"engine": engine, "sampled_at": now, "windows": windows}
             _save(con, "snapshot", engine, snapshot)
@@ -236,6 +252,8 @@ def reminders(con, snapshot: dict) -> int:
     early = float(config.get("usage.work_threshold", 60))
     sent = 0
     for window in snapshot["windows"]:
+        if window["resets_at"] is None:
+            continue
         reset = dt.datetime.fromtimestamp(window["resets_at"], config.tz())
         if reset <= now:
             continue
@@ -314,9 +332,12 @@ def report(con, engines=None, *, force: bool = False, cached_only: bool = False)
             continue
         age = max(0, int((now - snapshot["sampled_at"]) / 60))
         stale = age > float(config.get("usage.max_age_minutes", 45)) or any(
-            w["resets_at"] <= now for w in snapshot["windows"])
+            w["resets_at"] is not None and w["resets_at"] <= now for w in snapshot["windows"])
         lines.append(f"{engine} ({'STALE, ' if stale or status and not status['ok'] else ''}sampled {age}m ago)")
         for window in snapshot["windows"]:
+            if window["resets_at"] is None:
+                lines.append(f"  {window['label']}: not started; begins with the next message")
+                continue
             reset = dt.datetime.fromtimestamp(window["resets_at"], config.tz())
             lines.append(f"  {window['label']}: {window['used_percent']:g}% used; "
                          f"resets {reset.strftime('%a %d %b')} {config.clock(reset)}")

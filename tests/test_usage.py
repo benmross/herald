@@ -43,6 +43,16 @@ class Parsers(unittest.TestCase):
         self.assertEqual(session['resets_at'], int(NOW.replace(hour=22, minute=20).timestamp()))
         self.assertEqual(week['resets_at'], int(NOW.replace(day=23, hour=11, minute=0).timestamp()))
 
+    def test_session_not_started_between_windows(self):
+        for idle in ("   0% used\n", ""):
+            screen = SCREEN.replace("   ██████                                             12% used\n   Resets 10:20pm (UTC)\n", idle)
+            with self.subTest(idle=idle):
+                session, week = usage.parse_claude(screen, NOW)
+                self.assertEqual((session['used_percent'], session['resets_at']), (0, None))
+                self.assertEqual(week['used_percent'], 45)
+        with self.assertRaisesRegex(usage.UsageParseError, "saw: 12% used"):
+            usage.parse_claude(SCREEN.replace("   Resets 10:20pm (UTC)\n", ""), NOW)
+
     def test_extra_model_quota_and_remaining_word(self):
         extra = '\nCurrent week (Sonnet only)\n20% remaining\nResets Oct 23, 11am (UTC)\n'
         windows = usage.parse_claude(SCREEN.replace("   What's contributing", extra + "   What's contributing"), NOW)
