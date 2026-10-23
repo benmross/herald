@@ -56,7 +56,7 @@ SUBMIT = re.compile(
 
 # Labels that match SUBMIT but only change what the page shows.
 HARMLESS = re.compile(
-    r"^\s*(accept( all)?( cookies)?|accept all cookies|apply( filters?)?|"
+    r"^\s*(accept( all)?( cookies)?|accept all cookies|apply filters?|"
     r"agree( and close)?|sign in|log in|send (me )?(a )?(code|link))\s*$", re.I)
 
 # Whether pressing Enter in the focused field would submit a form that is not
@@ -298,7 +298,25 @@ def visible_text(page, selector: str = "body") -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(parts)).strip()
 
 
-def refuse_submit(label: str) -> None:
+# "Apply" starts an application on a job page and finishes one on a form. On
+# 23 Oct 2026 the plain label rule refused "Apply Manually", Workday's button
+# for opening the form. So an apply-style label is allowed while the page holds
+# no filled-in form, and refused once it does. Submit, send, pay and the rest
+# are refused everywhere.
+START = re.compile(r"^\s*(apply|apply now|apply manually|apply for this (job|position|role)|"
+                   r"apply with (resume|linkedin|indeed|google)|autofill with resume|"
+                   r"use my last application|start( your)? application|i'?m interested)\s*$", re.I)
+
+FILLED_JS = """() => [...document.querySelectorAll('input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=file]),textarea')]
+  .filter(e => e.getBoundingClientRect().width > 0 && (e.value || '').trim()).length"""
+
+
+def refuse_submit(label: str, filled: int = 0) -> None:
+    """Refuse a click that would submit. `filled` is how many visible fields
+    on the page hold a value; an apply-style button on an empty page only
+    opens a form."""
+    if START.match(label or "") and filled < 3:
+        return
     if SUBMIT.search(label or "") and not HARMLESS.match(label or ""):
         raise SystemExit(
             f"refused: {label!r} reads like a final submit, send or purchase. That "

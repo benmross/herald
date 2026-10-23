@@ -26,7 +26,15 @@ class Refusal(unittest.TestCase):
         for label in ("Submit application", "Apply now", "Send", "Place order",
                       "Confirm and pay", "Register", "Post"):
             with self.assertRaises(SystemExit, msg=label):
-                browse.refuse_submit(label)
+                browse.refuse_submit(label, filled=8)
+
+    def test_apply_opens_but_does_not_submit(self):
+        browse.refuse_submit("Apply Manually", filled=0)
+        browse.refuse_submit("Apply", filled=1)
+        with self.assertRaises(SystemExit):
+            browse.refuse_submit("Apply", filled=8)
+        with self.assertRaises(SystemExit):
+            browse.refuse_submit("Submit application", filled=0)
 
     def test_harmless_allowed(self):
         for label in ("Accept all cookies", "Accept", "Apply filters", "Sign in",

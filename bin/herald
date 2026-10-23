@@ -1848,7 +1848,13 @@ def cmd_browse(args) -> int:
                     page.get_by_text(args.target, exact=False)).first
             label = (loc.inner_text(timeout=5000) or loc.get_attribute("value")
                      or loc.get_attribute("aria-label") or args.target)
-            browse.refuse_submit(label)
+            filled = 0
+            for fr in page.frames:
+                try:
+                    filled += fr.evaluate(browse.FILLED_JS)
+                except Exception:
+                    pass
+            browse.refuse_submit(label, filled)
             loc.click(timeout=10000)
             browse.settle(page, args.wait)
             print(f"clicked {label.strip()[:60]!r}; now {page.url}")
