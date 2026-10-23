@@ -91,3 +91,28 @@ class NoPasswords(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MailStatus(unittest.TestCase):
+    def test_confirmation_then_rejection(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("appcol", ROOT / "collectors" / "applications.py")
+        col = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(col)
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.executescript(db.SCHEMA)
+        app = ap.record(con, url="https://jobs.example/9", company="Acme Robotics")
+        con.execute("UPDATE applications SET created_at='2026-10-01T00:00:00' WHERE id=?", (app,))
+        db.put_fact(con, "gmail", "message", external_id="a", ts="2026-10-02T09:00:00",
+                    title="Thank you for applying to Acme Robotics", body="We have received your application.",
+                    data={"from": "no-reply@acmerobotics.com"})
+        db.put_fact(con, "gmail", "message", external_id="b", ts="2026-10-02T09:00:00",
+                    title="Thank you for applying to Other Co", body="received", data={"from": "x@other.com"})
+        self.assertEqual(col.collect(con)["submitted"], 1)
+        self.assertEqual(ap.get(con, app)["status"], "submitted")
+        db.put_fact(con, "gmail", "message", external_id="c", ts="2026-10-09T09:00:00",
+                    title="Your application to Acme Robotics",
+                    body="Unfortunately we have decided not to move forward.", data={"from": "jobs@acmerobotics.com"})
+        self.assertEqual(col.collect(con)["rejected"], 1)
+        self.assertEqual(ap.get(con, app)["status"], "rejected")
