@@ -115,7 +115,12 @@
     "_comment": "Herald's own safety rules, applied by tools/guard.py before every hooked tool call on every engine. Each rule is block, warn or off; `herald safety allow <rule>` lifts one for ten minutes on a tap. See lib/herald/safety.py.",
     "engine_mode": "auto",
     "_engine_mode_comment": "auto: Claude also runs its own auto-mode classifier on top of these rules. herald: Herald's rules are the only check, and Claude runs with bypassPermissions (Codex always runs this way). Per surface in `surfaces`, e.g. {\"telegram\": \"herald\"}.",
-    "browser": {
+    "apply": {
+    "_comment": "`herald apply` (lib/herald/apply.py): bank is the answer bank's path under the ledger. bitwarden_extension_id, if set, mirrors every new application-site login into the Bitwarden extension installed in the profile browser; Herald keeps its own copy in secrets.json under accounts.* either way.",
+    "bank": "documents/career/answers.json",
+    "bitwarden_extension_id": null
+  },
+  "browser": {
     "_comment": "`herald browse`: the profile browser lives in $HERALD_HOME/browser. executable null means Playwright's Chromium. headed runs it inside Xvfb when installed, which sign-in pages trust more. sandbox stays off until an AppArmor profile allows Chromium's user namespaces (Ubuntu 23.10+).",
     "executable": null,
     "cdp_port": 9333,

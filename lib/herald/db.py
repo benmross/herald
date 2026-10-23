@@ -157,6 +157,27 @@ CREATE TABLE IF NOT EXISTS opportunities (
 );
 CREATE INDEX IF NOT EXISTS idx_opp_live ON opportunities (status, deadline);
 
+-- One row per job application Herald fills (lib/herald/apply.py). Submitting
+-- is the person's; status moves to submitted or rejected from their mail.
+CREATE TABLE IF NOT EXISTS applications (
+    id             INTEGER PRIMARY KEY,
+    url            TEXT NOT NULL UNIQUE,
+    company        TEXT,
+    title          TEXT,
+    ats            TEXT,                 -- workday | greenhouse | ashby | lever | ...
+    status         TEXT NOT NULL DEFAULT 'filling',
+                                         -- filling | filled | submitted | rejected
+                                         -- | closed | withdrawn
+    opportunity_id INTEGER REFERENCES opportunities (id) ON DELETE SET NULL,
+    pending        TEXT,                 -- JSON: questions with no answer yet
+    answers        TEXT,                 -- JSON: answers for this application only
+    account        TEXT,                 -- host whose account it uses, if any
+    created_at     TEXT NOT NULL,
+    filled_at      TEXT,
+    submitted_at   TEXT,
+    notes          TEXT
+);
+
 -- What the digest has already told the user.
 --
 -- A briefing is supposed to tell them what the user does not know. Without this, every
