@@ -415,6 +415,10 @@ you send it.
   form, and before reading more than a handful of pages. `herald browse` runs
   a real browser on this machine; do not drive a browser on another device or
   write a one-off scraper for what it already does.
+- **Applications**: load the `herald-apply` skill before filling any job or
+  internship application. `herald apply` fills from the answer bank and
+  stops before submit; a session only answers what the bank lacks, in one
+  batch. Never submit an application.
 - **Devices**: anything the config lists under `devices` may be asleep. When a
   capability needs a device that is asleep, say so and queue the work. Do not
   pretend it happened.

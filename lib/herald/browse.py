@@ -78,13 +78,19 @@ FIELDS_JS = r"""
 () => {
  const out=[];
  const lab=e=>{ let t='';
-   if(e.id){const l=document.querySelector('label[for="'+CSS.escape(e.id)+'"]'); if(l) t=l.innerText;}
+   const root=e.getRootNode();
+   if(e.id){const l=root.querySelector('label[for="'+CSS.escape(e.id)+'"]'); if(l) t=l.innerText;}
    if(!t&&e.getAttribute('aria-labelledby')){t=e.getAttribute('aria-labelledby').split(' ').map(i=>(document.getElementById(i)||{}).innerText||'').join(' ');}
    if(!t) t=e.getAttribute('aria-label')||e.getAttribute('placeholder')||'';
    if(!t){const l=e.closest('label'); if(l) t=l.innerText;}
    if(!t){const f=e.closest('fieldset,.field,li,div[class*=question],div[class*=field]'); if(f) t=(f.querySelector('legend,label')||{}).innerText||'';}
    return (t||'').replace(/\s+/g,' ').trim().slice(0,140);};
- document.querySelectorAll('input,textarea,select,[role=combobox],[role=radio],[role=checkbox],[contenteditable=true]').forEach((e,i)=>{
+ // Open shadow roots too: SmartRecruiters builds its form from web
+ // components, and the fields inside were invisible here on 23 Oct 2026.
+ const all=[];
+ (function walk(root){ root.querySelectorAll('*').forEach(x=>{ if(x.shadowRoot) walk(x.shadowRoot);
+   if(x.matches('input,textarea,select,[role=combobox],[role=radio],[role=checkbox],[contenteditable=true]')) all.push(x); }); })(document);
+ all.forEach((e,i)=>{
    const type=(e.getAttribute('type')||e.tagName).toLowerCase();
    if(type=='hidden') return;
    const r=e.getBoundingClientRect(); if(r.width==0 && type!='file') return;
