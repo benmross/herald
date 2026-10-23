@@ -240,6 +240,20 @@ herald config set surfaces.browser_view.url https://<machine>.<tailnet>.ts.net:8
 herald services install && herald services enable
 ```
 
+With `x11vnc` and `novnc` installed (`sudo apt install x11vnc novnc`), a
+login link opens a live remote screen of the browser instead of the polled
+screenshot page. The service runs x11vnc on the Xvfb display
+(127.0.0.1:5993) and websockify (127.0.0.1:6093), which serves the noVNC page
+and admits a connection only with a token `herald browse login` wrote. Mount it
+under the same URL:
+
+```bash
+tailscale serve --bg --https=8449 --set-path /vnc http://127.0.0.1:6093
+```
+
+The display is portrait (`browser.screen`, 820x1180) because the person
+signing in is usually on a phone.
+
 As with the secret page, never put it behind `tailscale funnel`: whoever opens
 a live link is driving a browser that may be signed in to the user's accounts.
 

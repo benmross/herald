@@ -154,7 +154,10 @@ def chrome_args(*, headless: bool) -> list[str]:
             "--no-first-run", "--no-default-browser-check",
             "--disable-features=Translate,MediaRouter",
             "--password-store=basic",
-            "--window-size=1280,900"]
+            # Hides the "unsupported command-line flag" bar --no-sandbox brings.
+            "--test-type",
+            "--window-position=0,0",
+            f"--window-size={','.join(str(n) for n in screen_size())}"]
     if not config.get("browser.sandbox", False):
         # Ubuntu 23.10+ blocks the unprivileged user namespaces Chromium's
         # sandbox needs unless an AppArmor profile allows them, and a service
@@ -165,6 +168,17 @@ def chrome_args(*, headless: bool) -> list[str]:
     if headless:
         args += ["--headless=new", f"--user-agent={DESKTOP_UA}"]
     return args + ["about:blank"]
+
+
+def screen_size() -> tuple[int, int]:
+    """The display the profile browser draws on. Portrait by default, because
+    the person driving it through `login` is usually on a phone, and a
+    1280-wide desktop scaled onto one was unreadable (23 Oct 2026)."""
+    try:
+        w, h = str(config.get("browser.screen", "820x1180")).lower().split("x")
+        return int(w), int(h)
+    except ValueError:
+        return 820, 1180
 
 
 def alive() -> bool:
@@ -179,6 +193,15 @@ def ensure() -> None:
     """Make sure the profile browser is up, starting a headless one if not."""
     if alive():
         return
+    if view_base():
+        # The service owns the browser on this install (headed, with the live
+        # screen). Give it time to come up rather than racing it with a
+        # headless one: a headless browser started here outlives the service
+        # and left the live screen blank on 23 Oct 2026.
+        for _ in range(60):
+            if alive():
+                return
+            time.sleep(0.5)
     with socket.socket() as s:
         if s.connect_ex(("127.0.0.1", cdp_port())) == 0:
             raise SystemExit(f"port {cdp_port()} is taken by something that is not "
@@ -303,6 +326,16 @@ def new_view(tab: str, why: str, minutes: int = 30) -> str:
     path = spool() / f"{_hash(token)}.json"
     path.write_text(json.dumps(rec))
     os.chmod(path, 0o600)
+    if vnc_enabled():
+        # websockify's TokenFile plugin maps a token to the VNC server. It has
+        # to hold the token itself; the directory is private and each entry is
+        # removed when the view closes or expires (prune_views).
+        d = vnc_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+        f = d / _hash(token)
+        f.write_text(f"{token}: 127.0.0.1:{vnc_port()}\n")
+        os.chmod(f, 0o600)
     return token
 
 
@@ -327,6 +360,67 @@ def close_view(token: str) -> None:
         path.write_text(json.dumps(rec))
     except Exception:
         pass
+    (vnc_dir() / _hash(token)).unlink(missing_ok=True)
+
+
+# --- the live screen ------------------------------------------------------------
+#
+# The first view was a screenshot polled every two seconds with taps replayed
+# as synthetic clicks. On a phone it lagged, jumped, and turned taps into text
+# selection (22 Oct 2026). When x11vnc and noVNC are installed, a login link
+# opens a real remote screen of the browser's Xvfb display instead: x11vnc
+# serves the display on localhost, websockify bridges it to a WebSocket and
+# serves the noVNC page, and each link's token is the only way through.
+
+NOVNC_DIR = pathlib.Path("/usr/share/novnc")
+
+
+def vnc_dir() -> pathlib.Path:
+    return config.HOME / "run" / "browser-vnc"
+
+
+def vnc_port() -> int:
+    return int(config.get("browser.vnc_port", 5993))
+
+
+def ws_port() -> int:
+    return int(config.get("browser.ws_port", 6093))
+
+
+def vnc_enabled() -> bool:
+    import shutil
+    return (bool(config.get("browser.vnc", True)) and bool(config.get("browser.headed", True))
+            and all(shutil.which(b) for b in ("Xvfb", "x11vnc", "websockify"))
+            and (NOVNC_DIR / "vnc.html").exists())
+
+
+def prune_views() -> None:
+    """Remove the live-screen entry of every view that has closed or expired."""
+    d = vnc_dir()
+    if not d.exists():
+        return
+    for f in d.iterdir():
+        rec_path = spool() / f"{f.name}.json"
+        try:
+            rec = json.loads(rec_path.read_text())
+            dead = rec.get("closed") or rec["expires"] < time.time()
+        except Exception:
+            dead = True
+        if dead:
+            f.unlink(missing_ok=True)
+
+
+def view_link(token: str) -> str | None:
+    base = view_base()
+    if not base:
+        return None
+    path = str(config.get("surfaces.browser_view.vnc_path") or "").strip("/")
+    if vnc_enabled() and path:
+        import urllib.parse
+        ws = urllib.parse.quote(f"{path}/websockify?token={token}", safe="")
+        return (f"{base}/{path}/vnc.html?path={ws}&autoconnect=true&resize=scale"
+                "&reconnect=true&show_dot=true")
+    return f"{base}/v/{token}"
 
 
 # --- crawling -------------------------------------------------------------------

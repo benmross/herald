@@ -1874,12 +1874,15 @@ def cmd_browse(args) -> int:
                 print("no view URL: set surfaces.browser_view.url (see docs/operations.md)",
                       file=sys.stderr)
                 return 1
+            page.bring_to_front()  # the live screen shows whichever tab is in front
             token = browse.new_view(s.tab_id(page), args.why, args.minutes)
-            url = f"{base}/v/{token}"
+            url = browse.view_link(token)
             sent = notify.telegram(
                 f"A browser tab is waiting for you ({page.url[:80]}).\n{url}\n\n"
                 f"Why: {args.why}\n\nWhat you type there goes straight to the "
-                f"browser; no model sees it. Works for {args.minutes} minutes.",
+                f"browser; no model sees it. Works for {args.minutes} minutes."
+                + ("\n\nIt is a live screen: tap to click, and use the keyboard "
+                   "button in the left-hand menu to type." if "/vnc.html" in url else ""),
                 thread_id=notify._live_topic_thread())
             print("the link is on the user's phone" if sent else f"open: {url}")
     return 0

@@ -121,7 +121,11 @@
     "cdp_port": 9333,
     "headed": true,
     "display": 93,
-    "sandbox": false
+    "sandbox": false,
+    "vnc": true,
+    "screen": "820x1180",
+    "vnc_port": 5993,
+    "ws_port": 6093
   },
   "surfaces": {},
     "rules": {
@@ -184,7 +188,9 @@
     "browser_view": {
       "_comment": "The page the user drives the server's browser from, for signing in to sites (`herald browse login`). bin/herald-browser listens on 127.0.0.1:port; `url` is where the user's phone reaches it, e.g. through `tailscale serve`. The browser service is off until url is set; `herald browse` still works without it, headless.",
       "url": null,
-      "port": 8793
+      "port": 8793,
+      "vnc_path": "/vnc",
+      "_vnc_comment": "With x11vnc and noVNC installed, login links open a live screen through websockify on 127.0.0.1:browser.ws_port, which must be reachable at url + vnc_path (e.g. `tailscale serve --https=8449 --set-path /vnc http://127.0.0.1:6093`)."
     }
   }
 }
