@@ -1808,10 +1808,20 @@ def cmd_browse(args) -> int:
         elif op in ("fill", "select", "check", "upload"):
             target = f"[data-hb='{args.field}']" if args.field.isdigit() else args.field
             loc = None
-            for fr in page.frames:
-                if fr.locator(target).count():
-                    loc = fr.locator(target).first
+            for attempt in (1, 2):
+                for fr in page.frames:
+                    if fr.locator(target).count():
+                        loc = fr.locator(target).first
+                        break
+                if loc is not None or not args.field.isdigit():
                     break
+                # The page re-rendered and dropped the handles (Ashby does after
+                # a resume upload). Tag the fields again; the order is the same.
+                for fr in page.frames:
+                    try:
+                        fr.evaluate(browse.FIELDS_JS)
+                    except Exception:
+                        pass
             if loc is None:
                 print(f"no field {args.field!r}; `herald browse fields {args.tab}` lists them",
                       file=sys.stderr)
