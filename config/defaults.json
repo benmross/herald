@@ -129,6 +129,7 @@
     "sandbox": false,
     "vnc": true,
     "screen": "820x1180",
+    "display_max": "2560x1600",
     "vnc_port": 5993,
     "ws_port": 6093
   },

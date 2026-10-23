@@ -101,6 +101,7 @@ class Chrome:
         self.display = None
         self.vnc = None
         self.ws = None
+        self.clip = browse.screen_size()
 
     def start(self) -> None:
         if browse.alive():
@@ -112,7 +113,7 @@ class Chrome:
                 self.display = f":{int(config.get('browser.display', 93))}"
                 self.xvfb = subprocess.Popen(
                     ["Xvfb", self.display, "-screen", "0",
-                     "{}x{}x24".format(*browse.screen_size()), "-nolisten", "tcp"],
+                     "{}x{}x24".format(*browse.display_max()), "-nolisten", "tcp"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 time.sleep(1)
             env["DISPLAY"] = self.display
@@ -136,7 +137,8 @@ class Chrome:
         if self.vnc is None or self.vnc.poll() is not None:
             self.vnc = subprocess.Popen(
                 ["x11vnc", "-display", self.display, "-rfbport", str(browse.vnc_port()),
-                 "-localhost", "-nopw", "-forever", "-shared", "-quiet", "-noxdamage"],
+                 "-localhost", "-nopw", "-forever", "-shared", "-quiet", "-noxdamage",
+                 "-clip", "{}x{}+0+0".format(*self.clip)],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL)
         if self.ws is None or self.ws.poll() is not None:
             d = browse.vnc_dir()
@@ -147,6 +149,23 @@ class Chrome:
                  "--token-plugin", "TokenFile", "--token-source", str(d),
                  f"127.0.0.1:{browse.ws_port()}"],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL)
+
+    def resize(self, w: int, h: int) -> None:
+        """Share only a w x h corner of the display, sized to the viewer.
+
+        x11vnc reads -clip once, so it is restarted; the noVNC page connects
+        after this returns.
+        """
+        mw, mh = browse.display_max()
+        self.clip = (max(480, min(w, mw)), max(480, min(h, mh)))
+        if self.vnc is not None and self.vnc.poll() is None:
+            self.vnc.terminate()
+            try:
+                self.vnc.wait(timeout=5)
+            except Exception:
+                self.vnc.kill()
+        self.vnc = None
+        self.screen()
 
     def watch(self) -> None:
         while True:
@@ -233,6 +252,11 @@ class Handler(BaseHTTPRequestHandler):
             if sub == "":
                 why = html.escape(f"Herald asked for this: {rec['why']}")
                 return self._send(200, PAGE.replace("__WHY__", why).encode())
+            if sub == "fit":
+                mw, mh = browse.display_max()
+                page = FIT.replace("__MAXW__", str(mw)).replace("__MAXH__", str(mh)) \
+                          .replace("__VNC__", json.dumps(browse.vnc_url(token)))
+                return self._send(200, page.encode())
             if sub == "frame":
                 page = DRIVER.page(rec["tab"])
                 page.bring_to_front()
@@ -248,6 +272,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         token, rec, sub = self._route()
+        if rec and sub == "size":
+            try:
+                n = min(int(self.headers.get("Content-Length") or 0), 1024)
+                a = json.loads(self.rfile.read(n) or b"{}")
+                w, h = int(a["w"]), int(a["h"])
+                CHROME.resize(w, h)
+                page = DRIVER.page(rec["tab"])
+                page.bring_to_front()
+                cdp = page.context.new_cdp_session(page)
+                win = cdp.send("Browser.getWindowForTarget")["windowId"]
+                cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {
+                    "left": 0, "top": 0, "width": CHROME.clip[0], "height": CHROME.clip[1],
+                    "windowState": "normal"}})
+                cdp.detach()
+                time.sleep(1.0)
+                return self._send(200, b"ok", "text/plain")
+            except Exception as e:
+                print(f"resize failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr, flush=True)
+                return self._send(200, b"kept size", "text/plain")
         if not rec or sub != "act":
             return self._send(404, b"not found", "text/plain")
         try:
@@ -283,9 +326,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(502, b"that did not work", "text/plain")
 
 
+FIT = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Herald browser</title>
+<body style="margin:0;background:#151515;color:#aaa;font:15px system-ui;display:grid;place-items:center;height:100vh">
+<p>Sizing the browser to this window…</p>
+<script>
+// Measure the window this link was opened in and size the server's browser
+// to match, so a laptop gets a laptop-sized page and a phone a phone-sized one.
+const w = Math.min(innerWidth, __MAXW__), h = Math.min(innerHeight, __MAXH__);
+fetch(location.pathname.replace(/fit\\/?$/, 'size'), {method: 'POST',
+  headers: {'content-type': 'application/json'}, body: JSON.stringify({w, h})})
+  .finally(() => location.replace(__VNC__));
+</script>"""
+
+CHROME = None
+
+
 def main() -> int:
+    global CHROME
     browse.home().mkdir(parents=True, exist_ok=True)
-    chrome = Chrome()
+    chrome = CHROME = Chrome()
     chrome.start()
     threading.Thread(target=chrome.watch, daemon=True).start()
     # Single-threaded on purpose: Playwright's sync API is not thread-safe, and

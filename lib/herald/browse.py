@@ -440,11 +440,30 @@ def view_link(token: str) -> str | None:
         return None
     path = str(config.get("surfaces.browser_view.vnc_path") or "").strip("/")
     if vnc_enabled() and path:
-        import urllib.parse
-        ws = urllib.parse.quote(f"{path}/websockify?token={token}", safe="")
-        return (f"{base}/{path}/vnc.html?path={ws}&autoconnect=true&resize=scale"
-                "&reconnect=true&show_dot=true")
+        # The fit page measures the window it is opened in, sizes the browser
+        # to match, then hands over to noVNC (see bin/herald-browser).
+        return f"{base}/v/{token}/fit"
     return f"{base}/v/{token}"
+
+
+def vnc_url(token: str) -> str:
+    """The noVNC page for a token, relative to the view's base URL."""
+    import urllib.parse
+    path = str(config.get("surfaces.browser_view.vnc_path") or "vnc").strip("/")
+    ws = urllib.parse.quote(f"{path}/websockify?token={token}", safe="")
+    return (f"/{path}/vnc.html?path={ws}&autoconnect=true&resize=scale"
+            "&reconnect=true&show_dot=true")
+
+
+def display_max() -> tuple[int, int]:
+    """The Xvfb display's full size. The browser and the shared area are
+    sized inside it to fit whoever is looking, since Xvfb cannot resize
+    its screen once started."""
+    try:
+        w, h = str(config.get("browser.display_max", "2560x1600")).lower().split("x")
+        return int(w), int(h)
+    except ValueError:
+        return 2560, 1600
 
 
 # --- crawling -------------------------------------------------------------------

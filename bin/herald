@@ -2015,6 +2015,14 @@ def cmd_apply(args) -> int:
             args.op, args.ids = "refill", sorted(apps)
             return cmd_apply(args)
         return 0
+    if args.op == "snapshot":
+        with db.session() as con:
+            marks = ",".join("?" * len(ap.DONE))
+            ids = args.ids or [r[0] for r in con.execute(
+                f"SELECT id FROM applications WHERE status NOT IN ({marks})", ap.DONE)]
+            for i in ids:
+                print(f"#{i}: {ap.snapshot(con, i)} fields saved")
+        return 0
     if args.op == "list":
         with db.session() as con:
             for r in con.execute("SELECT * FROM applications ORDER BY status, id"):
@@ -2474,6 +2482,8 @@ def main() -> int:
     ay_sub.add_parser("pending", help="every unanswered question across open applications")
     x = ay_sub.add_parser("answer", help='store answers, then refill: JSON list of {"app","q","a","keep":app|bank|company,"pattern"}')
     x.add_argument("json", help="a file or a JSON string"); x.add_argument("--no-refill", action="store_true")
+    x = ay_sub.add_parser("snapshot", help="save every field as it stands, so a refill restores it")
+    x.add_argument("ids", nargs="*", type=int)
     ay_sub.add_parser("list", help="every application and its status")
     x = ay_sub.add_parser("mark", help="set a status by hand")
     x.add_argument("id", type=int)

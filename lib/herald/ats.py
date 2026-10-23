@@ -284,7 +284,25 @@ class Generic:
 
     def fill(self) -> dict:
         filled, pending, failed = [], [], []
-        resume_done = False
+        # Upload first, then read the form again: Ashby rebuilds the whole
+        # form after a resume upload (it autofills from it), and on 23 Oct
+        # 2026 every field found before the upload went stale and each one
+        # waited out a 30-second timeout.
+        for f in self.scan():
+            if f["kind"] != "file" or f.get("value"):
+                continue
+            label = (f.get("label") or "").strip()
+            if re.search(r"cover|transcript", label, re.I):
+                continue
+            if not label or re.search(r"resume|cv|attach", label, re.I):
+                try:
+                    self.set(f, "resume")
+                    filled.append("resume")
+                    self.page.wait_for_timeout(3000)
+                except Exception as e:
+                    failed.append(f"resume: {type(e).__name__}")
+                break
+        resume_done = True
         for f in self.scan():
             label = (f.get("label") or "").strip()
             k = f["kind"]

@@ -339,6 +339,8 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
             page = s.ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             browse.settle(page, 4000)
+        # Fail fast on a field that went stale rather than waiting 30 s each.
+        page.set_default_timeout(8000)
         if kind == "generic":
             kind = ats.detect(page.url, page.content()[:20000])
         adapter = ats.adapter_for(kind)(page, bank, company, answers, resume=resume_path(bank))
@@ -363,3 +365,47 @@ def pending_all(con) -> list[dict]:
         for q in json.loads(r["pending"] or "[]"):
             out.append({"app": r["id"], "company": r["company"], **q})
     return out
+
+
+def snapshot(con, app_id: int) -> int:
+    """Save every field's current value as this application's own answers.
+
+    Choices made while filling (a team, a cohort, an essay pasted by hand)
+    live only in the page until saved. A browser restart on 23 Oct 2026 would
+    have lost fourteen half-reviewed forms; with a snapshot, `refill` puts
+    each one back exactly. Workday keeps its own drafts and is skipped.
+    """
+    from . import ats, browse
+
+    row = get(con, app_id)
+    if not row or row["ats"] == "workday":
+        return 0
+    base = row["url"].split("#")[0].split("?")[0].rstrip("/")
+    saved = app_answers(row)
+    n = 0
+    with browse.Session() as s:
+        page = next((pg for pg in s.pages() if pg.url.split("?")[0].startswith(base)), None)
+        if page is None:
+            return 0
+        adapter = ats.Generic(page, load_bank(), row["company"], saved, resume="")
+        for f in adapter.scan():
+            label = (f.get("label") or "").strip()
+            k = f["kind"]
+            if not label or k in ("file", "password"):
+                continue
+            if k in ("radio", "checks"):
+                on = [o["label"] for o in f["options"] if o["checked"]]
+                if not on:
+                    continue
+                value = ("^" + re.escape(on[0]) + "$") if k == "radio" else \
+                    ["^" + re.escape(x) + "$" for x in on]
+            else:
+                v = (f.get("value") or "").strip()
+                if not v:
+                    continue
+                value = ("^" + re.escape(v) + "$") if k in ("select", "combobox") else v
+            saved[norm(label)] = value
+            n += 1
+    con.execute("UPDATE applications SET answers = ? WHERE id = ?",
+                (json.dumps(saved, ensure_ascii=False), app_id))
+    return n
