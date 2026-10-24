@@ -287,11 +287,17 @@ class Generic:
 
     def fill(self) -> dict:
         filled, pending, failed = [], [], []
+        # Never upload twice. Greenhouse clears its file input once a file is
+        # attached, so on a refill the first empty file input was the cover
+        # letter's, and the resume went there (23 and 24 Oct 2026). If the
+        # page already shows the resume's file name, it is attached.
+        import os
+        already = os.path.basename(self.resume) in self.page.inner_text("body") if self.resume else True
         # Upload first, then read the form again: Ashby rebuilds the whole
         # form after a resume upload (it autofills from it), and on 23 Oct
         # 2026 every field found before the upload went stale and each one
         # waited out a 30-second timeout.
-        for f in self.scan():
+        for f in ([] if already else self.scan()):
             if f["kind"] != "file" or f.get("value"):
                 continue
             label = (f.get("label") or "").strip()
