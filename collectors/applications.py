@@ -33,10 +33,24 @@ SUBMITTED = re.compile(
     r"thank(s| you) for (applying|your application|your interest in)|"
     r"(we('ve| have)|has been) received your application|application (has been |was )?(received|submitted)|"
     r"we received your application|your application to .{0,60} (has been|was) (received|submitted)", re.I)
+# Phrases a rejection states outright. Confirmation mail is full of
+# conditionals ("if you are not selected", "unfortunately we cannot reply to
+# every applicant"), and on 24 Oct 2026 the first, looser pattern marked eight
+# confirmations as rejections. So a lone "unfortunately" or "not selected"
+# no longer counts, and a conditional "if ..." is stripped before matching.
+# A decision stated in the first person always means a rejection.
 REJECTED = re.compile(
-    r"unfortunately|not (to )?(move|moving) forward|will not be (moving|proceeding)|"
-    r"decided to (pursue|move forward with) other|position has been filled|"
-    r"no longer (being )?considered|not been selected|not selected", re.I)
+    r"(decided|chosen|elected) (not to|to not) (move|proceed|advance)|"
+    r"not (to )?(be )?(moving|move|proceeding|proceed) forward with your|"
+    r"will not be (moving|proceeding) forward|"
+    r"decided to (pursue|move forward with|proceed with) other|"
+    r"(have|has) not been selected|are not able to offer you", re.I)
+# These also appear in confirmations, explaining what a status page might one
+# day say (Microsoft's: "...or you were not selected for the role"). They
+# count only in a mail that is not itself a confirmation.
+REJECTED_WEAK = re.compile(
+    r"were not selected|position has (been filled|closed)|no longer (being )?considered for", re.I)
+CONDITIONAL = re.compile(r"\bif (you are|you're|we|your)[^.]{0,160}\.", re.I)
 
 
 def squash(s: str) -> str:
@@ -72,7 +86,10 @@ def collect(con) -> dict:
             if not any(n in head for n in names):
                 continue
             text = (m["title"] or "") + "\n" + (m["body"] or "")[:4000]
-            if REJECTED.search(text) and a["status"] != "rejected":
+            text = CONDITIONAL.sub(" ", text)
+            confirmation = bool(SUBMITTED.search(text))
+            rejected = REJECTED.search(text) or (REJECTED_WEAK.search(text) and not confirmation)
+            if rejected and a["status"] != "rejected":
                 ap.set_state(con, a["id"], status="rejected", note=f"rejection mail, fact {m['id']}")
                 db.put_fact(con, "applications", "status", external_id=f"{a['id']}:rejected", ts=m["ts"],
                             title=f"{a['company']}: rejected", body=m["title"],
