@@ -561,15 +561,25 @@ class Workday:
         email = self.bank.get("profile", {}).get("email")
         pw_fields = p.locator("input[type=password]:visible")
         if acct and acct.get("created", True) is True:
-            link = p.locator('[data-automation-id="signInLink"]:visible, button:has-text("Sign In"):visible')
-            if p.locator('[data-automation-id="createAccountSubmitButton"]:visible').count() and link.count():
-                link.first.click()
-                p.wait_for_timeout(1500)
-            p.locator('input[data-automation-id="email"]:visible, input[type=email]:visible, input[type=text]:visible').first.fill(acct["email"])
-            p.locator("input[type=password]:visible").first.fill(acct["password"])
+            # Go to the tenant's own login page rather than toggling the
+            # create-account form: on 24 Oct 2026 the toggle left the email in
+            # the wrong box and the sign-in failed. The redirect brings the
+            # browser back to this application afterwards.
+            from urllib.parse import quote, urlparse
+            u = urlparse(p.url)
+            parts = [x for x in u.path.split("/") if x]
+            site = "/".join(parts[:2]) if parts and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]) else parts[0]
+            back = u.path if "/apply" in u.path else u.path.rstrip("/") + "/apply/applyManually"
+            p.goto(f"{u.scheme}://{u.netloc}/{site}/login?redirect={quote(back, safe='')}",
+                   wait_until="domcontentloaded")
+            p.wait_for_timeout(4000)
+            p.locator('input[data-automation-id="email"]').first.fill(acct["email"])
+            p.locator('input[data-automation-id="password"]').first.fill(acct["password"])
             btn = p.locator('[data-automation-id="signInSubmitButton"]')
             self.click(btn.first if btn.count() else p.get_by_role("button", name="Sign In").first)
-            p.wait_for_timeout(5000)
+            p.wait_for_timeout(6000)
+            if p.locator('input[data-automation-id="password"]:visible').count():
+                return "sign-in failed: the stored password was not accepted"
             return "signed in"
         if not pw_fields.count() >= 2:
             ca = p.locator('[data-automation-id="createAccountLink"]:visible, button:has-text("Create Account"):visible')
@@ -653,6 +663,9 @@ class Workday:
         if start.count() and not p.locator('[data-automation-id^="formField-"]').count():
             self.click(start.first)
             p.wait_for_timeout(2500)
+        # The chooser can also be the whole page (a reload of /apply lands
+        # there), so look for it whether or not Apply was pressed.
+        if not p.locator('[data-automation-id^="formField-"]').count():
             manual = p.locator('[data-automation-id="applyManually"]:visible')
             if not manual.count():
                 manual = p.get_by_role("button", name=re.compile(r"^Apply Manually$", re.I))
