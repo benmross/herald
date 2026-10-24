@@ -83,7 +83,11 @@ def build(pbfs: list) -> int:
         address TEXT, tags TEXT)""")
     rows = 0
     for pbf in pbfs:
-        fp = osmium.FileProcessor(str(pbf)).with_locations()
+        # The filter runs in C++ after node locations are recorded, so the
+        # millions of untagged nodes and ways never reach Python. Without it
+        # Maryland alone took over eight minutes.
+        fp = (osmium.FileProcessor(str(pbf)).with_locations()
+              .with_filter(osmium.filter.KeyFilter(*KEYS)))
         for o in fp:
             if o.is_relation():
                 continue
@@ -137,9 +141,12 @@ def resolve(where: str) -> tuple[float, float, str]:
     if m := re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*", where):
         return float(m[1]), float(m[2]), where
     con = connect()
-    row = con.execute("SELECT name, lat, lon FROM places WHERE name = ? COLLATE NOCASE "
-                      "UNION ALL SELECT name, lat, lon FROM places WHERE name LIKE ? "
-                      "LIMIT 1", (where, f"%{where}%")).fetchone()
+    # Exact name first, then the shortest name containing it: "Stamp Student
+    # Union" should find the building, not a statue whose name mentions it.
+    row = con.execute("SELECT name, lat, lon FROM places WHERE name = ? COLLATE NOCASE",
+                      (where,)).fetchone() or con.execute(
+        "SELECT name, lat, lon FROM places WHERE name LIKE ? ORDER BY length(name) LIMIT 1",
+        (f"%{where}%",)).fetchone()
     if row:
         return row["lat"], row["lon"], row["name"]
     from herald import geo
