@@ -301,5 +301,27 @@ class CodexReasoningIsNotAMessage(unittest.TestCase):
         self.assertEqual([(e.kind, e.text) for e in seen], [("reasoning", "Thinking about it."), ("text", "Done.")])
 
 
+class StaleNotificationResult(unittest.TestCase):
+    """A resumed session answers a notification the last process left before
+    it reads the new prompt. That result is not this run's answer."""
+
+    def _feed(self, state, **result):
+        think._handle_stream_line(json.dumps({"type": "result", **result}),
+                                  state, None)
+
+    def test_a_drained_notification_does_not_end_the_turn(self):
+        state: dict = {"held_payload": None}
+        self._feed(state, origin={"kind": "task-notification"}, result="", num_turns=0)
+        self.assertIsNone(state.get("payload"))
+        self._feed(state, result="the answer", num_turns=4)
+        self.assertEqual(state["payload"]["result"], "the answer")
+
+    def test_a_notification_after_a_held_answer_still_counts(self):
+        """This run's own background task finishing is the real end."""
+        state: dict = {"held_payload": {"result": "waiting"}}
+        self._feed(state, origin={"kind": "task-notification"}, result="done")
+        self.assertEqual(state["payload"]["result"], "done")
+
+
 if __name__ == "__main__":
     unittest.main()

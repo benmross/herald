@@ -599,6 +599,19 @@ def _handle_stream_line(line: str, state: dict, on_progress,
         return
 
     if kind_top == "result":
+        # A resumed session first drains notifications left by the previous
+        # process: a Monitor or background task that finished after that turn
+        # closed. The CLI answers each with a `result` of its own before it
+        # reads this run's prompt. Taken as the answer, it ended the read loop
+        # at once (24 Oct 2026): steers were refused, no progress reached the
+        # user, and the real turn ran unread for two and a half minutes until
+        # /stop killed it. Until this run's own prompt has been answered, a
+        # notification's result belongs to a turn that already ended.
+        if ((candidate.get("origin") or {}).get("kind") == "task-notification"
+                and state.get("held_payload") is None
+                and not state.get("answered")):
+            return
+        state["answered"] = True
         state["payload"] = candidate
         # Only if something actually elapsed. `result` normally lands in the
         # same millisecond as the final `assistant` event, which already closed
