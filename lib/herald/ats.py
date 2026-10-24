@@ -37,8 +37,11 @@ PROFILE_RULES = [
     (r"^(full |legal )?(first and last )?name$|^full legal name$|^legal first and last name", "full_name"),
     (r"^(confirm (your )?)?e-?mail", "email"),
     (r"^(mobile |cell )?phone( number)?$", "phone"),
-    (r"linkedin", "linkedin"),
-    (r"github", "github"),
+    # Anchored: a question like "Are you proud of any GitHub repositories?"
+    # got the bare profile URL on 23 Oct 2026 because "github" matched
+    # anywhere. Only a field that asks for the profile link gets it.
+    (r"^linkedin( profile| url| link)?$|^linkedin profile url", "linkedin"),
+    (r"^github( profile| url| link| username)?( url)?$", "github"),
     (r"^(personal )?(website|portfolio)|^other website", "website"),
     (r"^(address|street)( line 1)?$", "address1"),
     (r"^city$", "city"),
