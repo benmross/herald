@@ -47,7 +47,7 @@ from email.message import EmailMessage
 import functools
 import inspect
 
-from . import config, db, google, mailfmt, private
+from . import config, db, google, gtasks, mailfmt, private
 
 TZ = "America/New_York"
 CANCEL_PREFIX = "CANCELLED - "
@@ -362,11 +362,15 @@ def calendar_delete_synced(con, *, actor: str, cal_id: str, cal_name: str,
 # --------------------------------------------------------------------------
 
 def _tasklist_id(svc, name: str) -> str | None:
-    resp = svc.tasklists().list(maxResults=100).execute()
-    for tl in resp.get("items", []):
-        if tl.get("title") == name:
-            return tl["id"]
-    return None
+    page = None
+    while True:
+        resp = svc.tasklists().list(maxResults=100, pageToken=page).execute()
+        for tl in resp.get("items", []):
+            if tl.get("title") == name:
+                return tl["id"]
+        page = resp.get("nextPageToken")
+        if not page:
+            return None
 
 
 def task_create(con, *, actor: str, list_name: str, title: str,
@@ -389,6 +393,11 @@ def task_create(con, *, actor: str, list_name: str, title: str,
     _log(con, actor, tier, "task.create", list_name,
          f"added task '{title}'" + (f" due {due[:10]}" if due else ""),
          f"gtask:{lid}:{task['id']}")
+    # The insert response is authoritative. Store it without another network
+    # request that could fail after the write and invite a duplicate retry.
+    db.put_fact(con, "gtasks", "list", external_id=lid, title=list_name)
+    gtasks.store_task(con, list_id=lid, list_name=list_name, task=task)
+    con.commit()
     return task
 
 
