@@ -485,8 +485,13 @@ def read_jobs(path: str) -> list[tuple[str, str]]:
     return jobs
 
 
+_LINKS_JS = """() => [...document.querySelectorAll('a[href]')].map(a =>
+    [(a.innerText || a.getAttribute('aria-label') || '').replace(/\\s+/g, ' ').trim(), a.href])"""
+
+
 async def _crawl(jobs, out: pathlib.Path, *, concurrency: int, wait_ms: int,
-                 grep: re.Pattern | None, profile: bool, every: int) -> dict:
+                 grep: re.Pattern | None, profile: bool, every: int,
+                 links: bool = False) -> dict:
     from playwright.async_api import async_playwright
     done = {"ok": 0, "err": 0, "skipped": 0}
     q: asyncio.Queue = asyncio.Queue()
@@ -512,13 +517,25 @@ async def _crawl(jobs, out: pathlib.Path, *, concurrency: int, wait_ms: int,
         while not q.empty():
             i, u = q.get_nowait()
             try:
-                await page.goto(u, wait_until="domcontentloaded", timeout=45000)
+                try:
+                    await page.goto(u, wait_until="domcontentloaded", timeout=45000)
+                except Exception as e:
+                    # A site that redirects by script (a location picker, an
+                    # age gate, http->https in JS) interrupts goto. The page it
+                    # went to is the one wanted, so read that instead of failing.
+                    if "interrupted by another navigation" not in str(e):
+                        raise
+                    await page.wait_for_load_state("domcontentloaded", timeout=45000)
                 await page.wait_for_timeout(wait_ms)
                 t = await page.inner_text("body")
                 if len(t) < 600:
                     await page.wait_for_timeout(wait_ms)
                     t = await page.inner_text("body")
                 (out / f"{i}.txt").write_text(page.url + "\n" + t)
+                if links:
+                    pairs = await page.evaluate(_LINKS_JS)
+                    seen = dict.fromkeys(f"{lab}\t{h}" for lab, h in pairs if h.startswith("http"))
+                    (out / f"{i}.links.tsv").write_text("\n".join(seen) + "\n")
                 if matches:
                     hits = [m.group(0).strip() for m in grep.finditer(t)][:12]
                     matches.write(json.dumps({"id": i, "url": u, "matches": hits}) + "\n")
@@ -550,12 +567,13 @@ async def _crawl(jobs, out: pathlib.Path, *, concurrency: int, wait_ms: int,
 
 
 def crawl(jobs, out: str, *, concurrency: int = 6, wait_ms: int = 5000,
-          grep: str | None = None, profile: bool = False, every: int = 25) -> dict:
+          grep: str | None = None, profile: bool = False, every: int = 25,
+          links: bool = False) -> dict:
     outp = pathlib.Path(out)
     outp.mkdir(parents=True, exist_ok=True)
     rx = re.compile(r"[^\n]{0,160}(?:" + grep + r")[^\n]{0,200}", re.I) if grep else None
     return asyncio.run(_crawl(jobs, outp, concurrency=concurrency, wait_ms=wait_ms,
-                              grep=rx, profile=profile, every=every))
+                              grep=rx, profile=profile, every=every, links=links))
 
 
 # --- one page, for collectors -------------------------------------------------

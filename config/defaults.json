@@ -133,6 +133,10 @@
     "vnc_port": 5993,
     "ws_port": 6093
   },
+  "places": {
+    "regions": [],
+    "_regions_comment": "Geofabrik extract paths for `herald places` (e.g. north-america/us/district-of-columbia). Downloaded into ledger/raw/places/ by `herald places update`; empty means no local places index."
+  },
   "surfaces": {},
     "rules": {
       "egress": "block",

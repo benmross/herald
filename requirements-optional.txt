@@ -9,3 +9,7 @@
 # their content with JavaScript after load. Pulls a ~400MB browser with it,
 # which is why a fresh install does not.
 playwright>=1.62
+
+# lib/herald/places.py -- reads OpenStreetMap .osm.pbf extracts into a local
+# places index (`herald places update`).
+osmium>=4.0

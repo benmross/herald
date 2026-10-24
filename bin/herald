@@ -1740,7 +1740,8 @@ def cmd_browse(args) -> int:
         print(f"crawling {len(jobs)} pages, {args.concurrency} at a time, into {args.out}",
               flush=True)
         r = browse.crawl(jobs, args.out, concurrency=args.concurrency, wait_ms=args.wait,
-                         grep=args.grep, profile=args.profile, every=args.every)
+                         grep=args.grep, profile=args.profile, every=args.every,
+                         links=args.links)
         print(f"done: {r['ok']} read, {r['err']} failed, {r['skipped']} already there, "
               f"{r['seconds']}s. One file per page, first line its final URL"
               + ("; matches.jsonl has the --grep hits." if args.grep else "."))
@@ -2044,6 +2045,60 @@ def cmd_apply(args) -> int:
     return 0
 
 
+def cmd_places(args) -> int:
+    from herald import places
+    if args.action == "update":
+        regs = args.region or places.regions()
+        if not regs:
+            print("herald places: no regions. Set places.regions, e.g. "
+                  "herald config set places.regions '[\"north-america/us/district-of-columbia\"]'",
+                  file=sys.stderr)
+            return 2
+        pbfs = []
+        for r in regs:
+            out = places.DIR / (r.replace("/", "_") + ".osm.pbf")
+            if args.no_download and out.exists():
+                pbfs.append(out)
+                continue
+            print(f"downloading {r}", file=sys.stderr)
+            pbfs.append(places.download(r))
+        print(f"{places.build(pbfs)} places indexed into {places.DB_PATH}")
+        return 0
+    try:
+        if args.action == "get":
+            con = places.connect()
+            rows = con.execute("SELECT * FROM places WHERE name LIKE ? LIMIT ?",
+                               (f"%{args.name}%", args.limit)).fetchall()
+            for r in rows:
+                print(json.dumps({**dict(r), "tags": json.loads(r["tags"])}, ensure_ascii=False))
+            return 0 if rows else 1
+        lat, lon, label = places.resolve(args.where)
+        when = None
+        if args.open_at:
+            when = (dt.datetime.now(config.tz()).replace(tzinfo=None) if args.open_at == "now"
+                    else dt.datetime.fromisoformat(args.open_at))
+        kinds = None if args.kind == "any" else tuple(args.kind.split(","))
+        rows = places.near(lat, lon, radius_m=args.radius, kinds=kinds, cuisine=args.cuisine,
+                           open_at=when, open_for_min=args.open_for,
+                           include_unknown=not args.known_only)
+    except (FileNotFoundError, LookupError) as e:
+        print(f"herald places: {e}", file=sys.stderr)
+        return 1
+    rows = rows[: args.limit]
+    if args.json:
+        for r in rows:
+            print(json.dumps(r, ensure_ascii=False))
+        return 0
+    print(f"# {len(rows)} near {label} ({lat:.5f}, {lon:.5f})", file=sys.stderr)
+    for r in rows:
+        state = {True: "open", False: "closed", None: "hours?"}.get(r.get("open"), "")
+        until = places.closes(r["opening_hours"], when) if when and r.get("open") else None
+        print("\t".join([f"{r['distance_m']}m", r["name"], r["kind"].split("=")[-1],
+                         r["cuisine"] or "", state + (f" to {until}" if until else ""),
+                         r["opening_hours"] or "", r["website"] or ""]))
+    return 0
+
+
 def cmd_find(args) -> int:
     from herald import find as find_mod
     q = find_mod.Query(
@@ -2343,6 +2398,30 @@ def main() -> int:
     dy.add_argument("--dry-run", action="store_true")
     dl.set_defaults(fn=cmd_deadline)
 
+    pl = sub.add_parser(
+        "places", help="OpenStreetMap places held locally: what is near, and open, where",
+        description="A local index of named places from Geofabrik OpenStreetMap extracts "
+                    "(places.regions). `near` filters by distance, kind, cuisine and opening_hours.")
+    pl_sub = pl.add_subparsers(dest="action", required=True)
+    pu = pl_sub.add_parser("update", help="download the extracts and rebuild the index")
+    pu.add_argument("--region", action="append", help="Geofabrik path; default places.regions")
+    pu.add_argument("--no-download", action="store_true", help="rebuild from extracts already here")
+    pn = pl_sub.add_parser("near", help="places near a point, a place name or an address")
+    pn.add_argument("where", help='"lat,lon", a name in the index, or an address')
+    pn.add_argument("--radius", type=float, default=1000, help="metres (default 1000)")
+    pn.add_argument("--kind", default=",".join(("restaurant", "fast_food", "cafe", "food_court", "pub", "bar")),
+                    help="comma list of amenity/shop values, or 'any'")
+    pn.add_argument("--cuisine")
+    pn.add_argument("--open-at", help="'now' or ISO local time, e.g. 2026-10-23T21:45")
+    pn.add_argument("--open-for", type=int, default=0, help="must still be open this many minutes later")
+    pn.add_argument("--known-only", action="store_true", help="drop places whose hours OSM does not give")
+    pn.add_argument("--limit", type=int, default=200)
+    pn.add_argument("--json", action="store_true")
+    pg = pl_sub.add_parser("get", help="every tag of places whose name matches")
+    pg.add_argument("name")
+    pg.add_argument("--limit", type=int, default=5)
+    pl.set_defaults(fn=cmd_places)
+
     fd = sub.add_parser(
         "find", help="locate, minus what has gone since the index",
         description="Search the nightly locate index, drop results that no longer exist, "
@@ -2554,6 +2633,7 @@ def main() -> int:
     x.add_argument("--profile", action="store_true",
                    help="use the signed-in profile browser instead of a clean one")
     x.add_argument("--every", type=int, default=25, help="print progress every N pages")
+    x.add_argument("--links", action="store_true", help="also write <id>.links.tsv (label<TAB>href) per page")
     bw.set_defaults(fn=cmd_browse)
 
     n = sub.add_parser("notify", help="push to the user's phone")
