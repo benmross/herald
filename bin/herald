@@ -775,7 +775,7 @@ def cmd_update(args) -> int:
         print(_c("  services were not restarted. `herald check` for the detail.",
                  WARN))
         return 1
-    print(_c(f"  {upstream.restart_services()}", DIM))
+    print(_c(f"  {result['restart']}", DIM))
     notify.tell(f"Herald updated to {release['tag']}",
                 (release["notes"] or "\n".join(release["commits"][:8]))[:1500],
                 priority="low", tags="arrow_up")

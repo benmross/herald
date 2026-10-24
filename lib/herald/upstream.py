@@ -391,10 +391,38 @@ def apply(target: str, report=None) -> dict:
         return {"ok": False, "error": (r.stderr or r.stdout).strip()[:400]}
     say(f"moved from {before} to {target}")
 
-    steps = reconcile(report=say)
+    # Every imported module above belongs to the release we started on. Loading
+    # new services or migrations into this process mixes versions, even when
+    # the new function exists on disk. Reconcile AND restart in one fresh
+    # interpreter, not just the invariant check.
+    worker = (
+        "import contextlib, json, sys; sys.path.insert(0, sys.argv[1]); "
+        "from herald import upstream; "
+        "\nwith contextlib.redirect_stdout(sys.stderr):\n"
+        "    result = upstream.finish_update()\n"
+        "print(json.dumps(result))\n"
+    )
+    r = subprocess.run([config.python(), "-c", worker,
+                        str(config.ROOT / "lib")],
+                       capture_output=True, text=True, cwd=str(config.ROOT))
+    if r.returncode != 0:
+        return {"ok": False,
+                "error": f"code moved to {target}, but finishing the update "
+                         f"failed: {(r.stderr or r.stdout).strip()[-800:]}"}
+    result = json.loads(r.stdout)
+    for step in result["steps"]:
+        say(step)
+    return {"ok": True, "from": before, "to": target, **result}
+
+
+def finish_update() -> dict:
+    """Post-fast-forward work, called only by the new release's interpreter."""
+    steps = reconcile()
     ok, output = check_invariants()
-    return {"ok": True, "from": before, "to": target, "steps": steps,
-            "checked": ok, "check_output": output}
+    result = {"steps": steps, "checked": ok, "check_output": output}
+    if ok:
+        result["restart"] = restart_services()
+    return result
 
 
 def restart_services(report=None) -> str:

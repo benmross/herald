@@ -39,6 +39,9 @@ class ModeAndHook(unittest.TestCase):
         self.home.mkdir()
         (self.home / "config.json").write_text("{}")
         git("init", "-q", "-b", "main", cwd=self.repo)
+        # A global core.hooksPath must never redirect this test into the user's
+        # real hooks. The foreign-hook case deliberately overwrites its target.
+        git("config", "core.hooksPath", ".git/hooks", cwd=self.repo)
         git("config", "user.email", "t@example.com", cwd=self.repo)
         git("config", "user.name", "T", cwd=self.repo)
         (self.repo / "a.txt").write_text("one\n")
@@ -125,6 +128,7 @@ class Releases(unittest.TestCase):
         self.repo.mkdir(); self.home.mkdir()
         (self.home / "config.json").write_text("{}")
         git("init", "-q", "-b", "main", cwd=self.repo)
+        git("config", "core.hooksPath", ".git/hooks", cwd=self.repo)
         git("config", "user.email", "t@example.com", cwd=self.repo)
         git("config", "user.name", "T", cwd=self.repo)
         for i in range(3):
@@ -250,3 +254,85 @@ class ABareCheckoutPasses(unittest.TestCase):
             self.assertEqual(run.returncode, 0,
                              msg="check.py failed on a fresh checkout, which is "
                                  f"what CI runs:\n{run.stdout[-2500:]}")
+
+
+class UpdateProcess(unittest.TestCase):
+    """After fast-forwarding, no post-update code may use the old imports."""
+
+    def setUp(self):
+        from herald import upstream
+        self.up = upstream
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = pathlib.Path(tmp.name)
+        package = self.root / "lib/herald"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        # The on-disk release has a function the running config module lacks.
+        # This is the exact failure reported when services gained a new setting.
+        (package / "config.py").write_text(
+            "import pathlib\nROOT = pathlib.Path(__file__).resolve().parents[2]\n"
+            "def new_release_setting(): return 'new release'\n")
+        self.worker = package / "upstream.py"
+        self.worker.write_text((ROOT / "lib/herald/upstream.py").read_text() + '''
+
+def reconcile(report=None):
+    import os
+    print('incidental output from setup')
+    return [config.new_release_setting(), str(os.getpid())]
+
+def check_invariants():
+    return True, 'invariants passed'
+
+def restart_services(report=None):
+    return 'restarted ' + config.new_release_setting()
+''')
+        for patch in (
+            mock.patch.object(self.up.config, "ROOT", self.root),
+            mock.patch.object(self.up.config, "python", return_value=sys.executable),
+            mock.patch.object(self.up, "current_release", return_value="v0.1.0"),
+            mock.patch.object(self.up, "local_changes", return_value={"modified": [], "commits": []}),
+            mock.patch.object(self.up, "_git", return_value=subprocess.CompletedProcess([], 0, "", "")),
+            mock.patch.object(self.up, "reconcile", side_effect=AssertionError("old reconcile")),
+            mock.patch.object(self.up, "restart_services", side_effect=AssertionError("old restart")),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_reconcile_and_restart_both_use_the_new_release(self):
+        reported = []
+        result = self.up.apply("v0.2.0", report=reported.append)
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["checked"])
+        self.assertEqual(result["from"], "v0.1.0")
+        self.assertEqual(result["to"], "v0.2.0")
+        self.assertEqual(result["steps"][0], "new release")
+        self.assertNotEqual(int(result["steps"][1]), os.getpid())
+        self.assertEqual(result["restart"], "restarted new release")
+        self.assertIn("new release", reported)
+
+    def test_failed_invariants_never_restart_services(self):
+        with self.worker.open("a") as f:
+            f.write("\ndef check_invariants(): return False, 'broken'\n"
+                    "def restart_services(report=None): raise AssertionError('must not restart')\n")
+        result = self.up.apply("v0.2.0")
+        self.assertTrue(result["ok"], result)
+        self.assertFalse(result["checked"])
+        self.assertEqual(result["check_output"], "broken")
+        self.assertNotIn("restart", result)
+
+    def test_post_update_crash_reports_that_the_code_already_moved(self):
+        with self.worker.open("a") as f:
+            f.write("\ndef reconcile(report=None): raise RuntimeError('setup failed')\n")
+        result = self.up.apply("v0.2.0")
+        self.assertFalse(result["ok"])
+        self.assertIn("code moved to v0.2.0", result["error"])
+        self.assertIn("setup failed", result["error"])
+
+    def test_failed_fast_forward_never_runs_post_update(self):
+        with mock.patch.object(self.up, "_git", return_value=subprocess.CompletedProcess(
+                [], 1, "", "cannot fast-forward")), \
+                mock.patch.object(self.up.subprocess, "run") as run:
+            result = self.up.apply("v0.2.0")
+        self.assertFalse(result["ok"])
+        run.assert_not_called()
