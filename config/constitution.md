@@ -398,6 +398,13 @@ it is written for whoever reads it next. `state/now.md` is working memory and
 can go either way. The moment text leaves the machine, it is a second-person
 sentence.
 
+**Row ids are yours, not theirs.** Snapshots and listings number things
+(`#81`, an obligation id, a deadline id) so that you can address a row in a
+command. Never put one in text the user reads: name the thing ("the
+Healthesystems AI intern posting"). A user asked on 25 October 2026, after a
+digest asked them about "#81 and #92" and they had to come back and ask what
+those were.
+
 This is easy to get wrong, because these instructions and the ledger are written
 *about* them and the register carries over. Check the last line you wrote before
 you send it.

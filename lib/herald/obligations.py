@@ -65,7 +65,7 @@ def _keyboard(oid: int) -> list[list[tuple[str, str]]]:
 
 def _card(row: dict, head: str) -> str:
     due = _when(row["due"])
-    lines = [f"**{head} #{row['id']}:** {row['text']}"]
+    lines = [f"**{head}:** {row['text']}"]
     if due:
         lines.append(f"Due {due}.")
     note = (row["notes"] or "").strip().splitlines()
@@ -131,7 +131,7 @@ def close(con, oid: int, status: str, why: str, *, tell: bool = True) -> dict | 
     con.commit()
     if tell:
         verb = "Closed" if status == "done" else "Dropped"
-        notify.telegram(f"**{verb} #{oid}:** {row['text']}\n{why}")
+        notify.telegram(f"**{verb}:** {row['text']}\n{why}")
     return row
 
 
@@ -194,7 +194,7 @@ def render(con, *, deadline_days: int = 7) -> str:
     for r in rows:
         due = _when(r["due"])
         flag = "⚠️ " if r["kind"] == "security" else ""
-        out.append(f"#{r['id']} {flag}{r['text']}" + (f" ({due})" if due else ""))
+        out.append(f"- {flag}{r['text']}" + (f" ({due})" if due else ""))
     if not rows:
         out.append("None open.")
     soon = deadlines.upcoming(con, deadline_days)
