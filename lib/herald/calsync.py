@@ -46,8 +46,10 @@ every change lands in the `actions` table and the next digest can report it.
 from __future__ import annotations
 
 import datetime as dt
+import json
+import re
 
-from . import gwrite
+from . import config, gwrite
 
 #: op names `plan` emits, in the order they are worth reading
 OPS = ("create", "update", "merge", "stamp", "cancel", "purge", "unchanged")
@@ -59,6 +61,76 @@ MAX_PURGES_PER_PASS = 60
 
 _COUNT_NAMES = {"create": "created", "update": "updated", "merge": "merged",
                 "stamp": "adopted", "cancel": "cancelled", "purge": "removed"}
+
+
+# Words that every fixture title carries and that say nothing about which
+# fixture it is. "[N]" and "(Exh.)" style tags reduce to these too.
+_COVER_STOP = {"vs", "v", "at", "the", "and", "of", "game", "n", "l", "w", "h",
+               "a", "exh", "exhibition"}
+
+
+def _cover_tokens(title: str | None) -> set[str]:
+    t = re.sub(r"\[[^\]]*\]", " ", (title or "").lower()).replace("'", "").replace("\u2019", "")
+    return {w for w in re.findall(r"[a-z0-9]+", t) if w not in _COVER_STOP}
+
+
+def _local(start: str, tz) -> tuple[dt.date, dt.datetime | None]:
+    if len(start) == 10:
+        return dt.date.fromisoformat(start), None
+    t = dt.datetime.fromisoformat(start.replace("Z", "+00:00"))
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=tz)
+    t = t.astimezone(tz)
+    return t.date(), t
+
+
+def covered_elsewhere(con, names: list[str] | None = None):
+    """A function saying which calendar the user already sees an event on.
+
+    `calendars.already_shown` names calendars the user keeps displayed whose
+    events nothing else should copy, such as an official fixture feed. On 25
+    Oct 2026 a campus events calendar carried a dozen games out of mail that
+    the user already saw on the athletics calendar beside it. The titles never
+    match exactly ("Maryland Football vs. Illinois (Halloween game)" against
+    "Maryland Football vs Illinois"), so this matches on the day, a start
+    within an hour when both have one, and at least three quarters of the
+    shown event's distinctive words appearing in the candidate's title.
+    Returns `match(title, start) -> calendar name or None`.
+    """
+    names = names if names is not None else (config.get("calendars.already_shown") or [])
+    if not names:
+        return lambda title, start: None
+    tz = config.tz()
+    rows = con.execute(f"""
+        SELECT ts, title, json_extract(data,'$.calendar') cal FROM facts
+         WHERE source='gcal' AND kind='event' AND ts >= date('now', '-2 days')
+           AND json_extract(data,'$.calendar') IN ({','.join('?' * len(names))})
+    """, tuple(names)).fetchall()
+    by_day: dict[dt.date, list] = {}
+    for r in rows:
+        try:
+            day, at = _local(r["ts"], tz)
+        except ValueError:
+            continue
+        toks = _cover_tokens(r["title"])
+        if len(toks) >= 2:
+            by_day.setdefault(day, []).append((at, toks, r["cal"]))
+
+    def match(title: str | None, start: str | None) -> str | None:
+        if not title or not start:
+            return None
+        try:
+            day, at = _local(start, tz)
+        except ValueError:
+            return None
+        mine = _cover_tokens(title)
+        for other_at, toks, cal in by_day.get(day, []):
+            if at and other_at and abs((at - other_at).total_seconds()) > 3600:
+                continue
+            if len(toks & mine) >= 0.75 * len(toks):
+                return cal
+        return None
+    return match
 
 
 def plan(live: list[dict], want: dict, cancelled: set[str],

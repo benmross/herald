@@ -58,6 +58,8 @@
     },
     "roles": {},
     "ignore": [],
+    "_already_shown_comment": "Calendars the user keeps displayed (an official fixture feed, say) whose events Herald should never copy onto a calendar it writes. Events found in mail and synced event lists both skip anything already on one of these. Names as Google shows them.",
+    "already_shown": [],
     "role_meanings": {
       "mine": "The user's own commitments. Evidence about them.",
       "feed": "Public events they could attend. Machine-populated, deliberately over-inclusive. NEVER evidence that they are enrolled in, a member of, or committed to anything.",

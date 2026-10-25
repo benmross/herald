@@ -645,7 +645,7 @@ def _event_calendar() -> str:
 def _write_calendar_events(events: list[dict]) -> int:
     """Put email-derived events on the event calendar, skipping any that a
     live event already covers by title and start."""
-    from herald import gwrite  # noqa: PLC0415
+    from herald import calsync, gwrite  # noqa: PLC0415
     cal_name = _event_calendar()
     cal_id = gwrite.calendar_id(cal_name)
     if not cal_id:
@@ -657,10 +657,14 @@ def _write_calendar_events(events: list[dict]) -> int:
     live = gwrite.calendar_window(cal_id, lo, lo + dt.timedelta(days=120))
     written = 0
     with db.session() as con:
+        shown = calsync.covered_elsewhere(con)
         for ev in events:
             start = (ev.get("start") or "").strip()
             title = (ev.get("title") or "").strip()
             if not start or not title:
+                continue
+            # Already on a calendar the user displays (calendars.already_shown).
+            if shown(title, start):
                 continue
             all_day = bool(ev.get("all_day")) or len(start) == 10
             nt = gwrite.norm_title(title)
