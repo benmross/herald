@@ -82,6 +82,7 @@ def profile_value(bank: dict, label: str):
 
 def resolve(bank: dict, label: str, company: str | None, answers: dict):
     """(value, found). Bank and per-application answers first, profile second."""
+    label = re.sub(r"\s*\*+\s*$", "", label.strip())
     if ap.has_answer(bank, label, company, answers):
         v, _ = ap.lookup(bank, label, company, answers)
         return v, True
@@ -140,6 +141,20 @@ SCAN_JS = r"""() => {
     });
     out.push({kind: 'buttonradio', label: txt(lab), required: !!lab && /required/.test(lab.className), options});
   });
+  // Oracle's select pills are ARIA radios without backing input elements
+  // (27 Oct 2026). Include them so required answers cannot disappear.
+  document.querySelectorAll('ul[role=radiogroup]').forEach((g, n) => {
+    const buttons = [...g.querySelectorAll('button[role=radio]')];
+    if (!buttons.length || !g.getBoundingClientRect().width) return;
+    const row = g.closest('.input-row');
+    const options = buttons.map((b, j) => {
+      const hx = 'pill-' + n + '-' + j;
+      b.setAttribute('data-hx', hx);
+      return {hx, label: txt(b), checked: b.getAttribute('aria-checked') === 'true'};
+    });
+    out.push({kind: 'buttonradio', label: g.getAttribute('aria-label') || '',
+      required: !!row && !!row.querySelector('.input-row__label--required'), options});
+  });
   els.forEach((e, i) => {
     if (e.closest('.ashby-application-form-input-yesno')) return;
     const type = (e.getAttribute('type') || e.tagName).toLowerCase();
@@ -170,8 +185,9 @@ SCAN_JS = r"""() => {
                     : kind === 'password' ? (e.value ? '(set)' : '') : (e.value || '')};
     if (kind === 'select') o.options = [...e.options].map(x => x.text.trim()).filter(x => x && !/^select/i.test(x));
     if (kind === 'combobox') {
-      const shown = txt(e.closest('[class*=control]') || e.parentElement);
-      o.value = shown && !/^select/i.test(shown) ? shown : (e.value || '');
+      const control = e.closest('[class*=control]');
+      const selected = control && control.querySelector('[class*=singleValue],[class*=single-value],[class*=multiValue]');
+      o.value = txt(selected) || e.value || '';
     }
     if (kind === 'file') {
       // Which upload is this? Look at the nearest heading-like text.
@@ -240,6 +256,32 @@ class Generic:
                 pass
             return True
         if k == "select":
+            el = self.loc(f)
+            if el.get_attribute("icimsdropdown-enabled") == "1":
+                # iCIMS loads native select choices only after its visible
+                # dropdown is opened (27 Oct 2026).
+                fid = el.get_attribute("id")
+                root = f["frame"]
+                root.locator('[id=' + json.dumps(fid + '_icimsDropdown') + ']').click()
+                box = root.locator('[id=' + json.dumps(fid + '_icimsDropdown_ctnr') + ']')
+                self.page.wait_for_timeout(500)
+                opts = box.locator('[role=option]:visible')
+                labels = opts.all_text_contents()
+                chosen = ap.best_option(value, labels)
+                search = box.locator('input.dropdown-search:visible')
+                if not chosen and search.count():
+                    term = plain(value).split('|')[0].split(',')[0]
+                    search.fill("")
+                    search.type(term, delay=30)
+                    self.page.wait_for_timeout(1200)
+                    labels = opts.all_text_contents()
+                    chosen = ap.best_option(value, labels)
+                if chosen:
+                    opts.nth(labels.index(chosen)).click()
+                    self.page.wait_for_timeout(400)
+                    return True
+                root.locator('[id=' + json.dumps(fid + '_icimsDropdown') + ']').click()
+                return False
             o = ap.best_option(value, f.get("options") or [])
             if not o:
                 return False
@@ -253,36 +295,50 @@ class Generic:
             if k == "buttonradio":
                 self.loc(f, hit["hx"]).click()
             else:
-                self.loc(f, hit["hx"]).check(force=True)
+                self._checked(f, hit["hx"], True)
             return True
         if k == "checks":
             wants = value if isinstance(value, list) else [value]
             if len(f["options"]) == 1 and isinstance(value, bool):
-                self.loc(f, f["options"][0]["hx"]).set_checked(value, force=True)
+                self._checked(f, f["options"][0]["hx"], value)
                 return True
             ok = False
             for w in wants:
                 o = ap.best_option(w, [x["label"] for x in f["options"]])
                 hit = next((x for x in f["options"] if x["label"] == o), None)
                 if hit:
-                    self.loc(f, hit["hx"]).set_checked(True, force=True)
+                    self._checked(f, hit["hx"], True)
                     ok = True
             return ok
         if k == "combobox":
             return self._combo(f, str(value))
         return False
 
+    def _checked(self, f, hx, checked):
+        el = self.loc(f, hx)
+        if el.is_checked() == checked:
+            return
+        fid = el.get_attribute("id")
+        label = f["frame"].locator('label[for=' + json.dumps(fid) + ']') if fid else None
+        if label is not None and label.count() and label.first.is_visible():
+            label.first.click()
+        else:
+            el.set_checked(checked, force=True)
+
     def _combo(self, f, want: str) -> bool:
         el = self.loc(f)
         el.click()
         self.page.wait_for_timeout(600)
-        opts = self.page.locator("[role=option]:visible")
+        cid = el.get_attribute("aria-controls")
+        root = f["frame"]
+        scope = root.locator('[id=' + json.dumps(cid) + ']') if cid else root.locator("body")
+        opts = scope.locator("[role=option]:visible, [role=gridcell]:visible")
 
         def pick():
             labels = [o.inner_text().strip() for o in opts.all()[:150]]
             o = ap.best_option(want, labels)
             if o:
-                opts.nth(labels.index(o)).click()
+                opts.nth(labels.index(o)).dispatch_event("click")
                 self.page.wait_for_timeout(300)
                 return True
             return False
@@ -507,6 +563,8 @@ class Workday:
         if value is None:
             return True
         b, k, p = self.box(f), f["kind"], self.page
+        if k in ("dropdown", "prompt") and f.get("value") and ap.best_option(value, [f["value"]]):
+            return True
         if k == "dropdown":
             button = b.locator('button[aria-haspopup="listbox"]').first
             button.dispatch_event("click")
@@ -549,7 +607,7 @@ class Workday:
                     o = next((x for x in labels if re.fullmatch(r"other", x, re.I)), None) if f["id"] == "source" else None
                 if o is None:
                     break
-                opts.nth(labels.index(o)).click()
+                opts.nth(labels.index(o)).dispatch_event("click")
                 p.wait_for_timeout(1200)
                 if sel.count() > before:
                     break
@@ -575,12 +633,24 @@ class Workday:
                 self.click(cb)
             return True
         if k == "date":
-            # Month/year spinbuttons under an overlay: focus and type, never click.
+            # Workday tracks the active segment through its display, not the
+            # hidden input's focus. Filling inputs directly can put the year
+            # into the day (F5's three-part date, 27 Oct 2026).
             parts = re.findall(r"\d+", str(value))
-            inputs = b.locator("input:visible").all()
+            inputs = b.locator('input[role="spinbutton"]').all()
+            if not inputs:
+                inputs = b.locator("input:visible").all()
             for inp, part in zip(inputs, parts):
-                inp.fill(str(int(part)), force=True)
-                inp.dispatch_event("blur")
+                segment = inp.get_attribute("aria-label")
+                display = b.locator('[data-automation-id=' + json.dumps('dateSection' + (segment or '') + '-display') + ']')
+                if display.count():
+                    display.click(force=True)
+                    p.keyboard.press("Control+a")
+                    p.keyboard.type(part, delay=40)
+                    p.keyboard.press("Tab")
+                else:
+                    inp.fill(str(int(part)), force=True)
+                    inp.dispatch_event("blur")
             return True
         if k == "file":
             p.locator("input[type=file]").first.set_input_files(self.resume)

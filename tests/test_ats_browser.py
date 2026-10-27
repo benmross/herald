@@ -50,6 +50,35 @@ class Widgets(unittest.TestCase):
         result = ats.Generic(self.page, {}, None, {}, resume="").fill()
         self.assertFalse(result["done"])
 
+    def test_oracle_required_pills_are_unanswered_until_selected(self):
+        self.page.set_content('''<div class="input-row">
+          <label class="input-row__label--required">Authorized?</label>
+          <ul role="radiogroup" aria-label="Authorized?">
+          <li><button role="radio" aria-checked="false"
+            onclick="this.setAttribute('aria-checked','true')">Yes</button></li>
+          <li><button role="radio" aria-checked="false">No</button></li>
+          </ul></div>''')
+        adapter = ats.Generic(self.page, {}, None, {}, resume="")
+        field = adapter.scan()[0]
+        self.assertTrue(field["required"])
+        self.assertFalse(any(o["checked"] for o in field["options"]))
+        self.assertTrue(adapter.set(field, "Yes"))
+        self.assertTrue(adapter.scan()[0]["options"][0]["checked"])
+
+    def test_combobox_label_is_not_a_selected_value(self):
+        self.page.set_content('''<div><label for="country">Country *</label>
+          <input id="country" role="combobox" required></div>''')
+        field = self.page.evaluate(ats.SCAN_JS)[0]
+        self.assertEqual(field["value"], "")
+
+    def test_hidden_radio_uses_its_visible_label(self):
+        self.page.set_content('''<fieldset><legend>Eligible?</legend>
+          <input type="radio" id="yes" name="eligible" style="display:none">
+          <label for="yes">Yes</label></fieldset>''')
+        adapter = ats.Generic(self.page, {}, None, {}, resume="")
+        self.assertTrue(adapter.set(adapter.scan()[0], "Yes"))
+        self.assertTrue(self.page.locator("#yes").is_checked())
+
 
 if __name__ == "__main__":
     unittest.main()
