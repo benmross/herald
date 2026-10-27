@@ -88,7 +88,12 @@ class Handler(BaseHTTPRequestHandler):
         parts=self.path.split('?')[0].strip('/').split('/')
         if parts and parts[0]=='groups':parts=parts[1:]
         if len(parts)<2 or parts[0]!='v':return None,None,None
-        token=parts[1];return token,browse.view(token),parts[2] if len(parts)>2 else ''
+        token=parts[1];rec=browse.view(token)
+        if rec and rec.get('group'):
+            try:
+                if bw.group_info(rec['group'])['state'] not in ('review','recovery'):rec=None
+            except LookupError:rec=None
+        return token,rec,parts[2] if len(parts)>2 else ''
     def info(self,rec):
         if rec.get('group'):
             return bw.group_info(rec['group'])['members']
@@ -126,11 +131,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send(409,{'message':'Select that application in the group before marking it submitted.'})
                 bw.mark_submitted(rec['group'],int(a['app']));return self.send(200,{'ok':True,'message':'Marked as submitted by you.'})
             if k=='return' and rec.get('group'):
-                DRIVER.reset(rec['workspace']);bw.return_group(rec['group']);browse.close_view(token)
+                if bw.group_info(rec['group'])['state']!='recovery':DRIVER.checkpoint(rec)
+                DRIVER.reset(rec['workspace']);browse.revoke_workspace_views(rec['workspace']);bw.return_group(rec['group'])
                 return self.send(200,{'ok':True,'message':'Returned for corrections; no application was submitted by Herald.'})
             if k=='done':
                 if rec.get('group'):
                     members=self.info(rec)
+                    if any(m['status'] not in ('submitted','rejected','closed','withdrawn') for m in members):
+                        raise bw.Busy('Some applications are still unsubmitted. Their tabs remain protected.')
+                    browse.revoke_workspace_views(rec['workspace'])
                     workspace=bw.finish_group(rec['group'])
                     session=DRIVER.sessions.get(rec['workspace'])
                     if session:

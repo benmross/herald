@@ -67,6 +67,23 @@ class Views(unittest.TestCase):
         self.assertIsNone(browse.view("../../etc/passwd"))
         self.assertIsNone(browse.view("A" * 32))
 
+    def test_return_revokes_all_workspace_links_and_disconnects_live_screen_first(self):
+        from herald import browser_workspaces as bw
+        with mock.patch.object(bw,'take_control'),mock.patch.object(bw,'ports',return_value={'vnc':5994,'display':94}),mock.patch.object(browse,'vnc_dir',return_value=self.tmp/'vnc'),mock.patch.object(browse,'vnc_enabled',return_value=True),mock.patch.object(browse.subprocess,'run',return_value=mock.Mock(returncode=0)) as disconnect,mock.patch.object(bw,'release_control') as release:
+            a=browse.new_view('one','sign in',10,workspace='example')
+            b=browse.new_view('two','sign in',10,workspace='example')
+            browse.close_view(a)
+            self.assertIsNone(browse.view(a));self.assertIsNone(browse.view(b))
+            self.assertIn('disconnect:all',disconnect.call_args.args[0])
+            release.assert_called_once_with('example')
+
+    def test_failed_screen_disconnect_keeps_human_ownership(self):
+        from herald import browser_workspaces as bw
+        with mock.patch.object(bw,'take_control'),mock.patch.object(bw,'ports',return_value={'vnc':5994,'display':94}),mock.patch.object(browse,'vnc_dir',return_value=self.tmp/'vnc'),mock.patch.object(browse,'vnc_enabled',return_value=True),mock.patch.object(browse.subprocess,'run',return_value=mock.Mock(returncode=1)),mock.patch.object(bw,'release_control') as release:
+            a=browse.new_view('one','sign in',10,workspace='example')
+            with self.assertRaises(RuntimeError):browse.close_view(a)
+            release.assert_not_called()
+
 
 class Jobs(unittest.TestCase):
     def test_both_forms(self):

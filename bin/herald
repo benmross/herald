@@ -1748,6 +1748,23 @@ def cmd_browse(args) -> int:
     from herald import browse  # noqa: PLC0415
 
     op = args.op
+    if op == 'login':
+        from herald import browser_workspaces as bw, notify
+        workspace=bw.name(args.workspace)
+        w=bw.get(workspace)
+        if w and w['state']=='human':
+            # An expired login link must be replaceable without taking a
+            # Playwright lease away from the human review controller.
+            records=[]
+            for path in browse.spool().glob('*.json'):
+                try:rec=json.loads(path.read_text())
+                except (OSError,ValueError):continue
+                if rec.get('workspace')==workspace and rec.get('tab')==args.tab:records.append(rec)
+            if not records:raise SystemExit('Use the exact tab id from the previous sign-in handoff.')
+            token=browse.new_view(args.tab,args.why,args.minutes,workspace=workspace)
+            sent=notify.telegram(f"Your browser is still reserved for you.\n{browse.view_link(token)}\n\n{args.why}",thread_id=notify._live_topic_thread())
+            print('A replacement sign-in link was sent.' if sent else 'The sign-in link could not be delivered; your browser remains protected.')
+            return 0 if sent else 1
     if op in ('workspaces', 'workspace'):
         from herald import browser_workspaces as bw
         if op == 'workspace':

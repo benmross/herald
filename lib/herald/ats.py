@@ -27,7 +27,7 @@ import re
 from urllib.parse import urlparse
 
 from . import apply as ap
-from . import config
+from . import config, browser_workspaces as bw
 from .application_checkpoints import PROTECTED_JS
 
 # Profile keys every applicant has, by question label. The values live in the
@@ -228,6 +228,8 @@ class Generic:
                     f['occurrence'] = counts.get(key, 0)
                     counts[key] = f['occurrence'] + 1
                     found.append(f)
+            except bw.Busy:
+                raise
             except Exception:
                 continue
         return found
@@ -281,6 +283,8 @@ class Generic:
             el.fill(plain(value))
             try:
                 el.press("Tab")
+            except bw.Busy:
+                raise
             except Exception:
                 pass
             return True
@@ -378,6 +382,8 @@ class Generic:
         term = re.sub(r"\s+", " ", re.sub(r"[\^$\\.*|()?\[\]+]", " ", want.split("|")[0]))[:28].strip()
         try:
             el.fill(term)
+        except bw.Busy:
+            raise
         except Exception:
             el.type(term, delay=30)
         for _ in range(10):
@@ -414,6 +420,8 @@ class Generic:
         for frame in self.page.frames if self.resume else []:
             try:
                 already = already or frame.evaluate("n=>document.body.innerText.includes(n)||[...document.querySelectorAll('input[type=file]')].some(e=>[...e.files].some(f=>f.name===n))", os.path.basename(self.resume))
+            except bw.Busy:
+                raise
             except Exception:
                 pass
         # Upload first, then read the form again: Ashby rebuilds the whole
@@ -431,6 +439,8 @@ class Generic:
                     self.set(f, "resume")
                     filled.append("resume")
                     self.page.wait_for_timeout(3000)
+                except bw.Busy:
+                    raise
                 except Exception as e:
                     failed.append(f"resume: {type(e).__name__}")
                 break
@@ -473,6 +483,8 @@ class Generic:
                 continue
             try:
                 ok = self.set(f, value)
+            except bw.Busy:
+                raise
             except Exception as e:
                 ok = False
                 failed.append(f"{label}: {type(e).__name__}")
@@ -489,6 +501,8 @@ class Generic:
         p = {"q": label, "kind": f["kind"], "required": bool(f.get("required"))}
         try:
             opts = self.options_of(f)
+        except bw.Busy:
+            raise
         except Exception:
             opts = []
         if opts:
@@ -583,6 +597,8 @@ class Workday:
         loc.scroll_into_view_if_needed()
         try:
             loc.click(timeout=4000)
+        except bw.Busy:
+            raise
         except Exception:
             bb = loc.bounding_box()
             self.page.mouse.click(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
@@ -860,6 +876,8 @@ class Workday:
                 if f and item.get(key) not in (None, ""):
                     try:
                         self.set(f, item[key])
+                    except bw.Busy:
+                        raise
                     except Exception:
                         raise
             added += 1
@@ -898,6 +916,8 @@ class Workday:
             if not self.scan() and not SUBMITTY.search(p.locator('[data-automation-id="pageFooterNextButton"]').first.inner_text() if p.locator('[data-automation-id="pageFooterNextButton"]').count() else ''):
                 try:
                     p.wait_for_function("() => [...document.querySelectorAll('[data-automation-id^=formField-]')].some(e=>e.getBoundingClientRect().width>0)", timeout=12000)
+                except bw.Busy:
+                    raise
                 except Exception:
                     return {'filled': filled, 'pending': [{'q': 'The application page did not finish loading. The saved checkpoint is preserved.', 'kind': 'action'}], 'failed': ['Page controls unavailable'], 'done': False, 'step': name}
             # The last step is not always Review (Expedia's 7 of 7 was the
@@ -935,12 +955,16 @@ class Workday:
                             o = self.options(f)
                             if o:
                                 q["options"] = o[:40]
+                        except bw.Busy:
+                            raise
                         except Exception:
                             pass
                         step_pending.append(q)
                     continue
                 try:
                     ok = self.set(f, v)
+                except bw.Busy:
+                    raise
                 except Exception as e:
                     ok = False
                     failed.append(f"{f['label']}: {type(e).__name__}")
@@ -1017,6 +1041,8 @@ def mirror_to_password_manager(context, host: str, email: str, pw: str, company:
         bw.wait_for_timeout(2000)
         bw.close()
         return True
+    except bw.Busy:
+        raise
     except Exception:
         return False
 

@@ -457,14 +457,37 @@ def close_view(token: str) -> None:
     path = spool() / f"{_hash(token)}.json"
     try:
         rec = json.loads(path.read_text())
-        rec["closed"] = time.time()
-        path.write_text(json.dumps(rec))
-        if rec.get('workspace') and not rec.get('group'):
-            from . import browser_workspaces as bw
-            bw.release_control(rec['workspace'])
-    except Exception:
-        pass
+    except (OSError,ValueError):
+        return
+    if rec.get('workspace'):
+        revoke_workspace_views(rec['workspace'])
+    from .application_checkpoints import atomic_json
+    rec['closed']=time.time();atomic_json(path,rec)
+    if rec.get('workspace') and not rec.get('group'):
+        from . import browser_workspaces as bw
+        bw.release_control(rec['workspace'])
     (vnc_dir() / _hash(token)).unlink(missing_ok=True)
+
+
+def revoke_workspace_views(workspace):
+    """Revoke every link and disconnect already-open screen connections.
+
+    Removing a websockify token alone does not close an existing WebSocket.
+    Do this before giving the desktop back to an automated writer.
+    """
+    from . import browser_workspaces as bw
+    from .application_checkpoints import atomic_json
+    for path in spool().glob('*.json'):
+        try:rec=json.loads(path.read_text())
+        except (OSError,ValueError):continue
+        if rec.get('workspace')!=workspace:continue
+        rec['closed']=time.time();atomic_json(path,rec)
+        (vnc_dir()/path.stem).unlink(missing_ok=True)
+    if vnc_enabled():
+        display=':'+str(bw.ports(workspace)['display'])
+        result=subprocess.run(['x11vnc','-display',display,'-R','disconnect:all','-sync'],capture_output=True,timeout=5)
+        if result.returncode:
+            raise RuntimeError('Screen connections could not be disconnected; workspace ownership remains protected.')
 
 
 # --- the live screen ------------------------------------------------------------
