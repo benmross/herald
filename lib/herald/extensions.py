@@ -20,18 +20,19 @@ So they moved out, into the same private directory as the ledger:
       skills/                  symlinked where sessions will load them
       hooks/hooks.json         hooks, merged into .claude/settings.json and .codex/hooks.json
       red.py                   red actions of its own, carried out only by lib/herald/red.py
+      telegram_commands.py     deterministic query commands in Telegram
       tests/                   run with the rest of the suite
 
 The manifest is **read, never imported**. Asking an extension what it provides
 must not mean running its code, or `herald status` on a machine with a broken
 extension would be a traceback instead of an answer.
 
-Nothing here is a plugin system in the ambitious sense: there is no API to
-program against beyond the one collectors and cycles already use, no hook
-points inside Herald, no versioned contract. An extension is just Herald's own
-directory layout, somewhere private, discovered rather than registered. That is
-enough to make one shareable -- it is a directory, so it is a git repo -- and
-small enough that nothing has to be maintained to keep it working.
+An extension follows Herald's own directory layout, somewhere private,
+discovered rather than registered. Collectors and cycles use their usual
+contracts; red actions and Telegram query commands have narrow registration
+interfaces. Those do not provide general callback interception or override
+built-in behavior. An extension is a directory, so it can be shared as a git
+repository without another packaging system.
 """
 
 from __future__ import annotations

@@ -26,10 +26,47 @@ $HERALD_HOME/extensions/<name>/
   skills/<name>/SKILL.md   symlinked where sessions load them
   hooks/hooks.json         shared hooks, synced into both CLIs' hook settings
   red.py                   red actions of its own, behind the same tap
+  telegram_commands.py     deterministic slash commands for ledger queries
   tests/                   run by `herald test`
 ```
 
 Every directory is optional. Most extensions are a manifest and one collector.
+
+## Telegram query commands
+
+An enabled extension can add slash commands without starting a model. Put
+`telegram_commands.py` beside its manifest:
+
+```python
+def tasks(con, argument):
+    rows = con.execute(
+        "SELECT title FROM facts WHERE source='gtasks' AND kind='task' "
+        "AND json_extract(data,'$.status')='needsAction' ORDER BY ts, title"
+    ).fetchall()
+    return "\n".join(row["title"] for row in rows) or "You have no open tasks."
+
+COMMANDS = {"/tasks": tasks}
+```
+
+The handler receives a query-only SQLite connection and the text following the
+command, and returns plain text. `/tasks@your_bot today` passes `today`. Your
+reply appears in the topic that asked. The bridge checks the sender against
+your configured owner before invoking a handler. Exceptions produce an error
+reply and never fall back to a model turn.
+
+Names follow Telegram's lowercase command convention and cannot replace a
+built-in command or `/compact`. If two enabled extensions claim the same name,
+neither gets it. A broken import affects only its extension. Commands are
+loaded once when the bridge starts; restart it after changing or enabling an
+extension. They are unavailable inside a private conversation because their
+code runs outside its sandbox.
+
+This interface is for queries. Handlers must not start models, ask for taps,
+or write files or services. It supplies no callback registration, so an
+extension cannot intercept `approve:` or root callbacks through it. The
+query-only connection catches accidental database writes; installed extension
+code remains trusted Python and can open other connections. It is not a
+sandbox for untrusted code.
 
 ```bash
 herald ext new tides          # scaffold one

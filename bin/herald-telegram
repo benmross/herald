@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, obligations, sessioninfo, study, tglocation, tgsessions, tgtext, think  # noqa: E402
+from herald import activity, approvals, config, db, obligations, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
 from herald import private as private_mod, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -121,8 +121,8 @@ DEBUG_COMMANDS = ("/debug", "/session", "/context")
 # The open obligations and this week's deadlines, read straight from the
 # ledger. Asking what you owe should not cost a model turn.
 OBLIGATION_COMMANDS = ("/obligations",)
-# Every command the bridge answers itself. Anything else that starts with a
-# slash is text for the model.
+# Built-in commands the bridge answers itself. Extensions register query
+# commands separately; unknown slash words are refused before reaching a model.
 SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private")
 COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
             *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, "/models", "/usage")
@@ -152,6 +152,8 @@ def unknown_command(text: str) -> str:
     first = (text or "").strip().split(None, 1)[0] if (text or "").strip() else ""
     word = first.lower().split("@")[0]
     if not re.fullmatch(r"/[a-z0-9_-]+", word) or word in COMMANDS or word in ENGINE_COMMANDS_PASSED:
+        return ""
+    if word in tgcommands.commands((*COMMANDS, *ENGINE_COMMANDS_PASSED)):
         return ""
     skills = {d.name.lower() for base in (config.ROOT / ".claude" / "skills", config.ROOT / ".agents" / "skills")
               if base.is_dir() for d in base.iterdir()}
@@ -1648,13 +1650,51 @@ def _handle_usage(update: dict, key: str, state: dict) -> None:
     send(msg["chat"]["id"], tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
 
 
+def _handle_extension_command(update: dict, key: str) -> bool:
+    msg = update.get("message") or update.get("edited_message") or {}
+    text = msg.get("text") or ""
+    word = tgcommands.word(text)
+    if not word or word in COMMANDS or word in ENGINE_COMMANDS_PASSED:
+        return False
+    owner = config.secret("telegram.user_id")
+    if owner is None or (msg.get("from") or {}).get("id") != owner:
+        return False
+    command = tgcommands.commands((*COMMANDS, *ENGINE_COMMANDS_PASSED)).get(word)
+    if command is None:
+        return False
+    if key in _private:
+        # Installed extension code runs outside the private session's sandbox.
+        send(msg["chat"]["id"], "Extension commands are unavailable in a private session.",
+             msg.get("message_thread_id"), markup=False)
+        return True
+    args = text.strip().split(None, 1)
+    with _lock_for(key):
+        try:
+            with db.session() as con:
+                con.execute("PRAGMA query_only=ON")
+                try:
+                    answer = command.handler(con, args[1] if len(args) > 1 else "")
+                    if not isinstance(answer, str):
+                        raise TypeError("a Telegram command must return text")
+                finally:
+                    con.execute("PRAGMA query_only=OFF")
+        except Exception as exc:
+            print(f"telegram: {command.extension} {word} failed ({type(exc).__name__})",
+                  file=sys.stderr)
+            answer = f"The {word} command failed. Check the bridge log."
+    send(msg["chat"]["id"], answer or "Nothing to show.",
+         msg.get("message_thread_id"), markup=False)
+    return True
+
+
 def _handle_unknown_command(update: dict) -> None:
     """Refuse a command nothing answers, and never start a turn for it."""
     msg = update.get("message") or {}
     if (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
         return
     word = unknown_command(msg.get("text") or "")
-    near = difflib.get_close_matches(word, [*COMMANDS, *ENGINE_COMMANDS_PASSED], n=1, cutoff=0.6)
+    near = difflib.get_close_matches(word, [*COMMANDS, *ENGINE_COMMANDS_PASSED,
+        *tgcommands.commands((*COMMANDS, *ENGINE_COMMANDS_PASSED))], n=1, cutoff=0.6)
     hint = f" Did you mean {near[0]}?" if near else ""
     send(msg["chat"]["id"], f"{word} isn't a command, so nothing was sent to the session.{hint}",
          msg.get("message_thread_id"), markup=False)
@@ -2040,6 +2080,8 @@ def _dispatch(update: dict, state: dict) -> None:
             _handle_obligations(update)
         elif command_word((update.get("message") or {}).get("text") or "") == "/models":
             _handle_models(update, state)
+        elif _handle_extension_command(update, key):
+            pass
         elif unknown_command((update.get("message") or {}).get("text") or ""):
             _handle_unknown_command(update)
         elif _study_text(update, state):
@@ -2068,6 +2110,9 @@ def main() -> int:
     if not config.secret("telegram.bot_token"):
         print("no telegram.bot_token in config/secrets.json", file=sys.stderr)
         return 1
+
+    # Load trusted extension code before handling any private conversation.
+    tgcommands.commands((*COMMANDS, *ENGINE_COMMANDS_PASSED))
 
     # A private session's pointer was in the memory of the process this one
     # replaces, so whatever it left behind can no longer be reached. Delete it.
