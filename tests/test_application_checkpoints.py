@@ -14,6 +14,7 @@ class Recovery(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=pathlib.Path(self.tmp.name)
         self.patches=[mock.patch.object(config,'HOME',self.root),mock.patch.object(config,'LEDGER',self.root/'ledger'),mock.patch.object(config,'DB_PATH',self.root/'facts.db'),mock.patch.object(bw,'admit')]
+        self.patches.append(mock.patch.object(config,'link_ledger',return_value=None))
         for p in self.patches:p.start()
         try:
             from playwright.sync_api import sync_playwright

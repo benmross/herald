@@ -1,5 +1,6 @@
 """Process ownership, durable review protection and restart invalidation."""
 import multiprocessing
+import time
 import pathlib
 import sys
 import tempfile
@@ -18,11 +19,18 @@ def try_lease(workspace, queue):
         queue.put('busy')
 
 
+def hold_account(queue):
+    with bw.account_lease('https://tenant.example/role-one'):
+        queue.put('held')
+        time.sleep(30)
+
+
 class Workspaces(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = pathlib.Path(self.tmp.name)
         self.patches = [mock.patch.object(config, 'HOME', root),
+                        mock.patch.object(config, 'link_ledger', return_value=None),
                         mock.patch.object(config, 'LEDGER', root/'ledger'),
                         mock.patch.object(config, 'DB_PATH', root/'facts.db'),
                         mock.patch.object(bw, 'available_memory_mb', return_value=12000)]
@@ -115,3 +123,16 @@ class Workspaces(unittest.TestCase):
             self.assertIsNone(bw.ready_group(w,partial=True))
             self.assertEqual(bw.get(w)['state'],'agent')
         self.assertIsNotNone(bw.ready_group(w,partial=True))
+
+    def test_account_lease_survives_different_urls_and_releases_after_process_death(self):
+        if 'fork' not in multiprocessing.get_all_start_methods():self.skipTest('flock/fork test')
+        ctx=multiprocessing.get_context('fork');q=ctx.Queue()
+        p=ctx.Process(target=hold_account,args=(q,));p.start()
+        try:
+            self.assertEqual(q.get(timeout=2),'held')
+            with self.assertRaises(bw.Busy):
+                with bw.account_lease('https://tenant.example/role-two',timeout=0):pass
+            with bw.account_lease('https://other.example/role',timeout=0):pass
+        finally:
+            p.terminate();p.join(3)
+        with bw.account_lease('https://tenant.example/role-two',timeout=0):pass
