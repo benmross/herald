@@ -22,6 +22,7 @@ presses only Next / Save and Continue, and refuses on the last step.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from urllib.parse import urlparse
 
@@ -127,7 +128,20 @@ SCAN_JS = r"""() => {
     return '';
   };
   const out = []; const groups = {};
+  // Ashby yes/no fields use buttons; their backing checkbox loses the
+  // distinction between No and unanswered (27 Oct 2026).
+  document.querySelectorAll('.ashby-application-form-input-yesno').forEach((g, n) => {
+    const wrap = g.closest('.ashby-application-form-field-entry');
+    const lab = wrap && wrap.querySelector('label');
+    const options = [...g.querySelectorAll('button[data-option]')].map((b, j) => {
+      const hx = 'ashby-' + n + '-' + j;
+      b.setAttribute('data-hx', hx);
+      return {hx, label: txt(b), checked: b.getAttribute('aria-pressed') === 'true'};
+    });
+    out.push({kind: 'buttonradio', label: txt(lab), required: !!lab && /required/.test(lab.className), options});
+  });
   els.forEach((e, i) => {
+    if (e.closest('.ashby-application-form-input-yesno')) return;
     const type = (e.getAttribute('type') || e.tagName).toLowerCase();
     if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'search') return;
     if (e.getAttribute('aria-hidden') === 'true' && type !== 'file') return;
@@ -195,9 +209,9 @@ class Generic:
         return f["frame"].locator(f'[data-hx="{hx if hx is not None else f["hx"]}"]').first
 
     def options_of(self, f) -> list[str]:
-        if f.get("options") and f["kind"] != "radio" and f["kind"] != "checks":
+        if f.get("options") and f["kind"] not in ("radio", "checks", "buttonradio"):
             return f["options"]
-        if f["kind"] in ("radio", "checks"):
+        if f["kind"] in ("radio", "checks", "buttonradio"):
             return [o["label"] for o in f["options"]]
         if f["kind"] == "combobox":
             el = self.loc(f)
@@ -231,12 +245,15 @@ class Generic:
                 return False
             self.loc(f).select_option(label=o)
             return True
-        if k == "radio":
+        if k in ("radio", "buttonradio"):
             o = ap.best_option(value, [x["label"] for x in f["options"]])
             hit = next((x for x in f["options"] if x["label"] == o), None)
             if not hit:
                 return False
-            self.loc(f, hit["hx"]).check(force=True)
+            if k == "buttonradio":
+                self.loc(f, hit["hx"]).click()
+            else:
+                self.loc(f, hit["hx"]).check(force=True)
             return True
         if k == "checks":
             wants = value if isinstance(value, list) else [value]
@@ -287,6 +304,22 @@ class Generic:
 
     def fill(self) -> dict:
         filled, pending, failed = [], [], []
+        # iCIMS career pages link to a separate account/form host. This is
+        # navigation into the form, never the form's submit control.
+        links = self.page.get_by_role("link", name="Apply", exact=True)
+        if links.count():
+            target = links.first.get_attribute("href") or ""
+            if "icims.com/jobs/" in target and "/login" in target:
+                self.page.goto(target, wait_until="domcontentloaded")
+                self.page.wait_for_timeout(4000)
+        # Ashby overview pages have no form. Follow their Application link,
+        # never the final submit button (observed 27 Oct 2026).
+        if "jobs.ashbyhq.com" in urlparse(self.page.url).netloc and not self.page.url.rstrip("/").endswith("/application"):
+            self.page.goto(self.page.url.rstrip("/") + "/application", wait_until="domcontentloaded")
+            self.page.wait_for_timeout(4000)
+        if not self.scan():
+            return {"filled": [], "pending": [{"q": "Application form is not visible", "kind": "action"}],
+                    "failed": [], "done": False}
         # Never upload twice. Greenhouse clears its file input once a file is
         # attached, so on a refill the first empty file input was the cover
         # letter's, and the resume went there (23 and 24 Oct 2026). If the
@@ -328,7 +361,7 @@ class Generic:
                 continue
             if not label:
                 continue
-            already = (f.get("value") not in (None, "")) if k not in ("radio", "checks") else \
+            already = (f.get("value") not in (None, "")) if k not in ("radio", "checks", "buttonradio") else \
                 any(o["checked"] for o in f["options"])
             if already:
                 continue
@@ -346,7 +379,10 @@ class Generic:
                 filled.append(label)
             elif f.get("required"):
                 pending.append(self._pending(f, label, note=f"stored answer {value!r} matched no option"))
-        return {"filled": filled, "pending": pending, "failed": failed, "done": True}
+        final = self.page.get_by_role("button", name=re.compile(r"^Submit( Application)?$|^Send Application$", re.I))
+        if not final.count():
+            pending.append({"q": "Final application form is not visible", "kind": "action"})
+        return {"filled": filled, "pending": pending, "failed": failed, "done": bool(final.count())}
 
     def _pending(self, f, label, note=None) -> dict:
         p = {"q": label, "kind": f["kind"], "required": bool(f.get("required"))}
@@ -393,7 +429,8 @@ WD_SCAN = r"""() => {
       value = inp.type === 'password' ? (inp.value ? '(set)' : '') : inp.value; }
     const req = /\*/.test((f.querySelector('label, legend') || {}).innerText || '');
     f.setAttribute('data-wd-i', i);
-    out.push({i, id, label: lab, kind, value, options, required: req});
+    const occurrence = out.filter(x => x.id === id).length;
+    out.push({i, id, occurrence, label: lab, kind, value, options, required: req});
   });
   return out;
 }"""
@@ -426,7 +463,9 @@ class Workday:
         return (int(m.group(1)), int(m.group(2)), m.group(3).strip()) if m else (0, 0, "")
 
     def box(self, f):
-        return self.page.locator(f'[data-wd-i="{f["i"]}"]')
+        # Country changes rebuild Workday fields and move their scan indices.
+        # Tenant field ids survive the rebuild (DIRECTV, 27 Oct 2026).
+        return self.page.locator('[data-automation-id=' + json.dumps('formField-' + f['id']) + ']').nth(f.get('occurrence', 0))
 
     def click(self, loc):
         # Workday lays a transparent click_filter div over its buttons, so a
@@ -447,9 +486,13 @@ class Workday:
             return f["options"]
         b = self.box(f)
         if f["kind"] == "dropdown":
-            self.click(b.locator('button[aria-haspopup="listbox"]').first)
+            button = b.locator('button[aria-haspopup="listbox"]').first
+            button.dispatch_event("click")
             self.page.wait_for_timeout(600)
-            o = [x.inner_text().strip() for x in self.page.locator("[role=option]:visible").all()]
+            if not self.page.locator('[role=option]:not([data-automation-id="selectedItem"]):visible').count():
+                button.dispatch_event("click")
+                self.page.wait_for_timeout(400)
+            o = [x.inner_text().strip() for x in self.page.locator('[role=option]:not([data-automation-id="selectedItem"]):visible').all()]
             self.page.keyboard.press("Escape")
             return [x for x in o if x and not re.match(r"^select one$", x, re.I)]
         if f["kind"] == "prompt":
@@ -465,15 +508,19 @@ class Workday:
             return True
         b, k, p = self.box(f), f["kind"], self.page
         if k == "dropdown":
-            self.click(b.locator('button[aria-haspopup="listbox"]').first)
+            button = b.locator('button[aria-haspopup="listbox"]').first
+            button.dispatch_event("click")
             p.wait_for_timeout(600)
-            opts = p.locator("[role=option]:visible")
+            opts = p.locator('[role=option]:not([data-automation-id="selectedItem"]):visible')
+            if not opts.count():
+                button.dispatch_event("click")
+                p.wait_for_timeout(400)
             labels = [x.inner_text().strip() for x in opts.all()]
             o = ap.best_option(value, [x for x in labels if not re.match(r"^select one$", x, re.I)])
             if not o:
                 p.keyboard.press("Escape")
                 return False
-            opts.nth(labels.index(o)).click()
+            opts.nth(labels.index(o)).dispatch_event("click")
             p.wait_for_timeout(400)
             return True
         if k == "prompt":
@@ -499,7 +546,7 @@ class Workday:
                     labels = [x.inner_text().strip() for x in opts.all()[:300]]
                     o = ap.best_option(w, labels)
                 if o is None:
-                    o = next((x for x in labels if re.fullmatch(r"other", x, re.I)), labels[0] if labels else None)
+                    o = next((x for x in labels if re.fullmatch(r"other", x, re.I)), None) if f["id"] == "source" else None
                 if o is None:
                     break
                 opts.nth(labels.index(o)).click()
@@ -530,11 +577,10 @@ class Workday:
         if k == "date":
             # Month/year spinbuttons under an overlay: focus and type, never click.
             parts = re.findall(r"\d+", str(value))
-            inputs = b.locator("input[role=spinbutton], input").all()
+            inputs = b.locator("input:visible").all()
             for inp, part in zip(inputs, parts):
-                inp.focus()
-                p.keyboard.type(part, delay=40)
-            p.keyboard.press("Tab")
+                inp.fill(str(int(part)), force=True)
+                inp.dispatch_event("blur")
             return True
         if k == "file":
             p.locator("input[type=file]").first.set_input_files(self.resume)
@@ -635,10 +681,17 @@ class Workday:
         around it. A section that already has entries is left alone.
         """
         p = self.page
-        if any(f["id"] in fields for f in self.scan()):
-            return 0
+        first_id = next(iter(fields))
+        existing = sum(f["id"] == first_id for f in self.scan())
         added = 0
-        for item in items:
+        for index, item in enumerate(items):
+            if index < existing:
+                fs = [f for f in self.scan() if f["id"] in fields and f.get("occurrence", 0) == index]
+                for fid, key in fields.items():
+                    f = next((x for x in fs if x["id"] == fid), None)
+                    if f and item.get(key) not in (None, ""):
+                        self.set(f, item[key])
+                continue
             tagged = p.evaluate("""(sec) => { let hit = null;
               document.querySelectorAll('[data-automation-id="add-button"]').forEach(btn => {
                 let n = btn;
@@ -652,14 +705,14 @@ class Workday:
                 break
             self.click(p.locator(f'[data-wd-add="{section}"]').first)
             p.wait_for_timeout(1500)
-            fs = [f for f in self.scan() if f["id"] in fields and not f["value"]]
+            fs = [f for f in self.scan() if f["id"] in fields and f.get("occurrence", 0) == index]
             for fid, key in fields.items():
                 f = next((x for x in fs if x["id"] == fid), None)
                 if f and item.get(key) not in (None, ""):
                     try:
                         self.set(f, item[key])
                     except Exception:
-                        pass
+                        raise
             added += 1
         return added
 
@@ -702,7 +755,11 @@ class Workday:
                               "startDate": "start", "endDate": "end", "roleDescription": "description"})
                 self.entries("Websites", [{"url": u} for u in self.bank.get("profile", {}).get("urls", [])],
                              {"url": "url"})
-                if p.locator("input[type=file]").count() and "uploaded" not in self.body():
+                self.entries("Education", self.bank.get("education", []),
+                             {"school": "school", "degree": "degree", "fieldOfStudy": "major",
+                              "firstYearAttended": "start_year", "lastYearAttended": "end_year",
+                              "gradeAverage": "gpa"})
+                if p.locator("input[type=file]").count() and "successfully uploaded" not in self.body().lower():
                     p.locator("input[type=file]").first.set_input_files(self.resume)
                     p.wait_for_timeout(4000)
                     filled.append("resume")
@@ -728,6 +785,12 @@ class Workday:
                     ok = False
                     failed.append(f"{f['label']}: {type(e).__name__}")
                 (filled if ok else failed).append(f["label"] if ok else f"{f['label']}: no option for {v!r}")
+                if not ok and f["required"]:
+                    q = {"q": f["label"], "kind": f["kind"], "required": True, "step": name}
+                    opts = self.options(f)
+                    if opts:
+                        q["options"] = opts
+                    step_pending.append(q)
             pending += step_pending
             if step_pending:
                 return {"filled": filled, "pending": pending, "failed": failed, "done": False, "step": name}
@@ -740,7 +803,7 @@ class Workday:
             self.click(nxt.first)
             p.wait_for_timeout(5000)
             nc, _, nn = self.step()
-            if nc == cur and not re.search(r"Review", self.body()[:3000]):
+            if nc == cur:
                 errs = [e.inner_text().strip()[:160] for e in p.locator('[data-automation-id="errorMessage"]:visible').all()]
                 failed += errs or [f"stuck on {name}"]
                 return {"filled": filled, "pending": pending, "failed": failed, "done": False, "step": name}

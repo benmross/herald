@@ -334,7 +334,11 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
         # Workday moves the tab to .../apply/applyManually, so match on the
         # posting's URL as a prefix; an exact match opened a second tab per run.
         base = url.split("#")[0].split("?")[0].rstrip("/")
-        page = next((pg for pg in s.pages() if pg.url.split("?")[0].startswith(base)), None)
+        from urllib.parse import urlparse
+        req = re.search(r"_([A-Za-z0-9-]+)$", base) if kind == "workday" else None
+        page = next((pg for pg in s.pages() if pg.url.split("?")[0].startswith(base)
+                     or (req and urlparse(pg.url).netloc == urlparse(url).netloc
+                         and req.group(0) in pg.url)), None)
         if page is None:
             page = s.ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -348,7 +352,7 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
         result.update(app=app_id, tab=s.tab_id(page), company=company, ats=kind,
                       title=title or page.title()[:80])
     with db.session() as con:
-        status = "filled" if result.get("done") and not result["pending"] else "filling"
+        status = "filled" if result.get("done") and not result["pending"] and not result.get("failed") else "filling"
         set_state(con, app_id, status=status, pending=result["pending"])
         if kind == "workday":
             from urllib.parse import urlparse
@@ -393,11 +397,11 @@ def snapshot(con, app_id: int) -> int:
             k = f["kind"]
             if not label or k in ("file", "password"):
                 continue
-            if k in ("radio", "checks"):
+            if k in ("radio", "checks", "buttonradio"):
                 on = [o["label"] for o in f["options"] if o["checked"]]
                 if not on:
                     continue
-                value = ("^" + re.escape(on[0]) + "$") if k == "radio" else \
+                value = ("^" + re.escape(on[0]) + "$") if k in ("radio", "buttonradio") else \
                     ["^" + re.escape(x) + "$" for x in on]
             else:
                 v = (f.get("value") or "").strip()

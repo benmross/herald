@@ -1972,7 +1972,7 @@ def cmd_apply(args) -> int:
     from herald import apply as ap  # noqa: PLC0415
 
     def show(r):
-        mark = "ready for review" if r.get("done") and not r["pending"] else "waiting on answers"
+        mark = "ready for review" if r.get("done") and not r["pending"] and not r.get("failed") else "waiting on answers"
         print(f"#{r['app']} {r['company']}: {r['title'][:60]} ({r['ats']}, tab {r['tab']}) {mark}; "
               f"{len(r['filled'])} filled" + (f", step {r['step']}" if r.get("step") else ""))
         for f in r["failed"]:
