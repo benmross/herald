@@ -253,9 +253,9 @@ def _answer(bank, q, company, answers):
         v = answers[key]
         # An earlier session saved many routine answers per application. One
         # that says the same as the profile is routine; one that differs is
-        # exactly what the person should see ("BEN ROSS", 27 Oct 2026).
+        # exactly what the person should see (a name saved in capitals, 27 Oct 2026).
         # Identity fields (name, email, links) always come from the profile:
-        # an old per-application copy is how "BEN ROSS" reached three forms.
+        # an old per-application copy is how a capitalised name reached three forms.
         if gsrc == "profile" or (gsrc and _same(q, v, general)):
             return general, gsrc
         q["general"] = _display(q, general) if gsrc else None
