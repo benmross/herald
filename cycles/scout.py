@@ -81,6 +81,19 @@ IMAGE_DIR_KEEP_DAYS = 3
 SCHEMA = {
     "type": "object",
     "properties": {
+        "posting_decisions": {
+            "type": "array",
+            "description": "One decision for every internship posting shown, using its review_id. A posting without a recorded reason remains unreviewed.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "decision": {"type": "string", "enum": ["tracked", "rejected", "deferred"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["review_id", "decision", "reason"],
+            },
+        },
         "push_now": {
             "type": "array",
             "description": "Opportunities worth interrupting for right now. "
@@ -139,7 +152,7 @@ SCHEMA = {
         "opened": {"type": "integer"},
         "rejected": {"type": "integer"},
     },
-    "required": ["summary", "opened", "rejected"],
+    "required": ["summary", "opened", "rejected", "posting_decisions"],
 }
 
 INSTRUCTIONS = f"""\
@@ -181,6 +194,14 @@ and say why in the journal.
 
 For each candidate, decide: is this a real opportunity for *this* person?
 
+Return a posting_decisions entry for EVERY internship posting shown, using
+its review_id. Name the specific eligibility condition or fit reason when
+rejecting one. A regional or employer-wide assumption is not a reason to
+reject an individual posting. Use tracked for a new or existing opportunity,
+rejected for a settled decision, and deferred when evidence is missing.
+Unanswered or deferred postings remain queued. Do not claim eligibility is
+absent just because a title does not name a first-year programme.
+
 Apply the ranking rules in `goals.md`, and these, which hold for anyone:
 
 - **Eligibility is real.** A posting {THEY} cannot apply to is noise, and
@@ -208,6 +229,15 @@ postings on an aggregator and not one of its own. Once a day at most (on the
 first pass of the day, not the second), search the web for whether any of them
 have opened a round, and open a row when one has. Do not repeat a search you
 already did today; the journal says what you checked.
+
+**Discover beyond the watchlist.** Once a week, use the journal to avoid
+repeating the same search and look for employers not yet tracked. Search
+across the person's preferred regions and fields, including ordinary
+companies with software or AI teams rather than only technology employers.
+Check primary employer job boards as well as the crowdsourced feeds. Record
+which sources and employers you checked, their dates, and any coverage gaps.
+For a promising employer whose rounds the feeds miss, add a concrete watched
+page so its next opening does not depend on a chance web search.
 
 For each one that survives, insert a row:
 
@@ -300,6 +330,27 @@ def _seen(con) -> set[str]:
         return set(json.loads(row["cursor"]))
     except (json.JSONDecodeError, TypeError):
         return set()
+
+
+def reviewed_ids(con, shown_ids: set[str], decisions: list[dict]) -> set[str]:
+    """Remember mail as before; postings need an explicit, durable decision."""
+    postings = {r[0] for r in con.execute(
+        "SELECT external_id FROM facts WHERE source='internships' AND kind='posting'")}
+    settled = set(shown_ids) - postings
+    for item in decisions:
+        key = item.get("review_id")
+        reason = str(item.get("reason") or "").strip()
+        decision = item.get("decision")
+        if key not in shown_ids or key not in postings or not reason:
+            continue
+        if decision not in ("tracked", "rejected", "deferred"):
+            continue
+        db.put_fact(con, "scout_review", "decision", external_id=key,
+                    ts=db.now(), title=decision, body=reason,
+                    data={"decision": decision, "reason": reason})
+        if decision != "deferred":
+            settled.add(key)
+    return settled
 
 
 def _remember(con, ids: set[str]) -> None:
@@ -528,6 +579,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
         for r in shown:
             d = json.loads(r["data"] or "{}")
             out.append(f"- **{r['title']}** — {r['body'] or 'location n/a'}")
+            out.append(f"    review_id: {r['external_id']}")
             out.append(f"    {d.get('category')} · matched on "
                        f"{', '.join(d.get('why') or [])} · {d.get('url')}")
         if len(new_postings) > len(shown):
@@ -702,6 +754,16 @@ def main() -> int:
             " ('opportunities','internships')"
             " AND kind IN ('candidate','posting')")}
         seen = _seen(con)
+        # Legacy seen sets recorded exposure, not a decision. Audit those
+        # postings once under the explicit-reason contract; settled decisions
+        # thereafter stay cheap. DIRECTV was shown in September but surfaced
+        # only in October after another feed rediscovered it.
+        reviewed = {r[0] for r in con.execute(
+            "SELECT external_id FROM facts WHERE source='scout_review' AND kind='decision'"
+            " AND title IN ('tracked','rejected')")}
+        postings = {r[0] for r in con.execute(
+            "SELECT external_id FROM facts WHERE source='internships' AND kind='posting'")}
+        seen -= postings - reviewed
         fresh = ids - seen
         snapshot, shown_ids = build_snapshot(con, fresh)
         # Volume is no longer a proxy for substance: every message is a
@@ -773,7 +835,7 @@ def main() -> int:
         # held back is still unseen and must come round again -- which is why
         # build_snapshot reports its own ids rather than the caller guessing
         # them from a sorted list that was never the display order.
-        _remember(con, seen | shown_ids)
+        _remember(con, seen | reviewed_ids(con, shown_ids, payload.get("posting_decisions") or []))
         live = con.execute(
             "SELECT COUNT(*) FROM opportunities WHERE status IN"
             " ('new','surfaced','interested')").fetchone()[0]
