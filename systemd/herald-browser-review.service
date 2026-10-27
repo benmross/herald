@@ -1,0 +1,17 @@
+[Unit]
+Description=Herald browser review groups
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-browser-review
+Restart=on-failure
+RestartSec=3
+MemoryMax=1G
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

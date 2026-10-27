@@ -1,0 +1,18 @@
+[Unit]
+Description=Herald browser workspace %i
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-browser-worker %i
+Restart=on-failure
+RestartSec=5
+MemoryMax={{BROWSER_WORKER_MEMORY_MAX}}
+NoNewPrivileges=true
+# HTTP/controller restarts never stop this independent service.
+
+[Install]
+WantedBy=default.target

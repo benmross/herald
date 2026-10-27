@@ -113,6 +113,29 @@
     "off": [],
     "_off_comment": "Rule names to skip, e.g. [\"staccato\", \"label_colon\"]. `herald prose --rules` lists them."
   },
+  "apply": {
+    "bank": "documents/career/answers.json",
+    "bitwarden_extension_id": null,
+    "max_step_failures": 2
+  },
+  "browser": {
+    "executable": null,
+    "cdp_port": 9333,
+    "headed": true,
+    "display": 93,
+    "sandbox": false,
+    "vnc": true,
+    "screen": "820x1180",
+    "display_max": "2560x1600",
+    "vnc_port": 5993,
+    "ws_port": 6093,
+    "batch_size": 10,
+    "max_workspaces": 2,
+    "minimum_available_mb": 2048,
+    "memory_max": "6G",
+    "worker_memory_max": "3G",
+    "review_port": 8794
+  },
   "safety": {
     "_comment": "Herald's own safety rules, applied by tools/guard.py before every hooked tool call on every engine. Each rule is block, warn or off; `herald safety allow <rule>` lifts one for ten minutes on a tap. See lib/herald/safety.py.",
     "engine_mode": "auto",

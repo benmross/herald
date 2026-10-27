@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""One persistent browser/display per workspace, independent of review HTTP."""
+import importlib.machinery
+import importlib.util
+import pathlib
+import signal
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / 'lib'))
+from herald import browse, browser_workspaces as bw
+
+
+def main():
+    workspace = bw.name(sys.argv[1])
+    if workspace == 'default' or not bw.get(workspace):
+        raise SystemExit('a registered workspace is required')
+    loader = importlib.machinery.SourceFileLoader('herald_browser_host', str(ROOT / 'bin/herald-browser'))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    host = mod.Chrome(workspace, serve_ws=False)
+    host.start()
+    while True:
+        if not browse.alive(workspace):
+            # The next Session invalidates old ready claims using the new browser id.
+            host.start()
+        host.screen()
+        time.sleep(3)
+
+
+if __name__ == '__main__':
+    main()

@@ -179,6 +179,36 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 
 -- What the digest has already told the user.
+-- Browser ownership and checkpoints survive agent and browser restarts.
+CREATE TABLE IF NOT EXISTS browser_workspaces (
+    id TEXT PRIMARY KEY, slot INTEGER NOT NULL UNIQUE, state TEXT NOT NULL,
+    created_at TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
+    browser_id TEXT, human_until REAL, last_error TEXT
+);
+CREATE TABLE IF NOT EXISTS application_browser (
+    app_id INTEGER PRIMARY KEY REFERENCES applications(id),
+    workspace TEXT NOT NULL REFERENCES browser_workspaces(id),
+    tab TEXT, generation INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS application_checkpoints (
+    id INTEGER PRIMARY KEY, app_id INTEGER NOT NULL REFERENCES applications(id),
+    ts TEXT NOT NULL, workspace TEXT NOT NULL, generation INTEGER NOT NULL,
+    stage TEXT NOT NULL, payload TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_application_checkpoint ON application_checkpoints(app_id, id DESC);
+CREATE TABLE IF NOT EXISTS application_attempts (
+    app_id INTEGER PRIMARY KEY REFERENCES applications(id), fingerprint TEXT NOT NULL,
+    failures INTEGER NOT NULL DEFAULT 0, error TEXT, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS application_review_groups (
+    id TEXT PRIMARY KEY, workspace TEXT NOT NULL REFERENCES browser_workspaces(id),
+    created_at TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'review'
+);
+CREATE TABLE IF NOT EXISTS application_review_members (
+    group_id TEXT NOT NULL REFERENCES application_review_groups(id),
+    app_id INTEGER NOT NULL REFERENCES applications(id), PRIMARY KEY(group_id, app_id)
+);
+
 --
 -- A briefing is supposed to tell them what the user does not know. Without this, every
 -- morning re-reports the same exam three weeks running because it is still on

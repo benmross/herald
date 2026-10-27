@@ -49,6 +49,8 @@ def platform_name() -> str:
 def render(text: str) -> str:
     return (text.replace("{{ROOT}}", str(config.ROOT))
                 .replace("{{HOME}}", str(config.HOME))
+                .replace("{{BROWSER_MEMORY_MAX}}", str(config.get("browser.memory_max", "6G")))
+                .replace("{{BROWSER_WORKER_MEMORY_MAX}}", str(config.get("browser.worker_memory_max", "3G")))
                 .replace("{{GOOGLE}}", str(google.credentials_dir())))
 
 
@@ -128,6 +130,7 @@ SYSTEMD_UNITS = [
     ("herald-watchdog.timer", "restarts anything that stops working", True),
     ("herald-secrets.service", "the page a secret is pasted into", False),  # if a URL is set
     ("herald-browser.service", "the signed-in browser and its phone view", False),  # if a URL is set
+    ("herald-browser-review.service", "isolated application review groups", False),
 ]
 
 

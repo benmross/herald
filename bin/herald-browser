@@ -95,7 +95,9 @@ frame(); setInterval(()=>{ if(!busy && !document.hidden){busy=true; frame();} },
 class Chrome:
     """Starts and restarts the profile browser."""
 
-    def __init__(self):
+    def __init__(self, workspace=None, *, serve_ws=True):
+        self.workspace = workspace
+        self.serve_ws = serve_ws
         self.proc = None
         self.xvfb = None
         self.display = None
@@ -104,13 +106,14 @@ class Chrome:
         self.clip = browse.screen_size()
 
     def start(self) -> None:
-        if browse.alive():
+        if browse.alive(self.workspace):
             return  # something (a session's `ensure`) already started one
         env = dict(os.environ)
         headed = bool(config.get("browser.headed", True)) and shutil.which("Xvfb")
         if headed:
             if self.xvfb is None or self.xvfb.poll() is not None:
-                self.display = f":{int(config.get('browser.display', 93))}"
+                from herald import browser_workspaces as bw
+                self.display = f":{bw.ports(self.workspace)['display']}" if self.workspace else f":{int(config.get('browser.display', 93))}"
                 self.xvfb = subprocess.Popen(
                     ["Xvfb", self.display, "-screen", "0",
                      "{}x{}x24".format(*browse.display_max()), "-nolisten", "tcp"],
@@ -118,10 +121,10 @@ class Chrome:
                 time.sleep(1)
             env["DISPLAY"] = self.display
         log = open(browse.home() / "chrome.log", "ab")
-        self.proc = subprocess.Popen(browse.chrome_args(headless=not headed), env=env,
+        self.proc = subprocess.Popen(browse.chrome_args(headless=not headed, workspace=self.workspace), env=env,
                                      stdout=log, stderr=log, stdin=subprocess.DEVNULL)
         for _ in range(60):
-            if browse.alive():
+            if browse.alive(self.workspace):
                 return
             time.sleep(0.25)
 
@@ -136,11 +139,11 @@ class Chrome:
         log = open(browse.home() / "screen.log", "ab")
         if self.vnc is None or self.vnc.poll() is not None:
             self.vnc = subprocess.Popen(
-                ["x11vnc", "-display", self.display, "-rfbport", str(browse.vnc_port()),
+                ["x11vnc", "-display", self.display, "-rfbport", str(browse.vnc_port(self.workspace)),
                  "-localhost", "-nopw", "-forever", "-shared", "-quiet", "-noxdamage",
                  "-clip", "{}x{}+0+0".format(*self.clip)],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL)
-        if self.ws is None or self.ws.poll() is not None:
+        if self.serve_ws and (self.ws is None or self.ws.poll() is not None):
             d = browse.vnc_dir()
             d.mkdir(parents=True, exist_ok=True)
             os.chmod(d, 0o700)
@@ -169,7 +172,7 @@ class Chrome:
 
     def watch(self) -> None:
         while True:
-            if not browse.alive():
+            if not browse.alive(self.workspace):
                 self.start()
             self.screen()
             browse.prune_views()

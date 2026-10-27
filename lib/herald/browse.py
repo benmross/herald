@@ -120,16 +120,23 @@ def home() -> pathlib.Path:
     return config.HOME / "browser"
 
 
-def profile_dir() -> pathlib.Path:
-    return home() / "profile"
+def profile_dir(workspace=None) -> pathlib.Path:
+    from . import browser_workspaces as bw
+    workspace = bw.name(workspace)
+    if workspace == "default":
+        return home() / "profile"
+    # Keep all authentication state beneath the existing protected profile path.
+    return home() / "profile" / "herald-workspaces" / workspace
 
 
-def cdp_port() -> int:
-    return int(config.get("browser.cdp_port", 9333))
+def cdp_port(workspace=None) -> int:
+    from . import browser_workspaces as bw
+    workspace = bw.name(workspace)
+    return int(config.get("browser.cdp_port", 9333)) if workspace == "default" else bw.ports(workspace)['cdp']
 
 
-def cdp_url() -> str:
-    return f"http://127.0.0.1:{cdp_port()}"
+def cdp_url(workspace=None) -> str:
+    return f"http://127.0.0.1:{cdp_port(workspace)}"
 
 
 def view_port() -> int:
@@ -151,12 +158,12 @@ def executable() -> str:
         return p.chromium.executable_path
 
 
-def chrome_args(*, headless: bool) -> list[str]:
-    profile_dir().mkdir(parents=True, exist_ok=True)
+def chrome_args(*, headless: bool, workspace=None) -> list[str]:
+    profile_dir(workspace).mkdir(parents=True, exist_ok=True, mode=0o700)
     args = [executable(),
-            f"--remote-debugging-port={cdp_port()}",
+            f"--remote-debugging-port={cdp_port(workspace)}",
             "--remote-debugging-address=127.0.0.1",
-            f"--user-data-dir={profile_dir()}",
+            f"--user-data-dir={profile_dir(workspace)}",
             "--no-first-run", "--no-default-browser-check",
             "--disable-features=Translate,MediaRouter",
             "--password-store=basic",
@@ -187,18 +194,27 @@ def screen_size() -> tuple[int, int]:
         return 820, 1180
 
 
-def alive() -> bool:
+def alive(workspace=None) -> bool:
     try:
-        with urllib.request.urlopen(cdp_url() + "/json/version", timeout=2) as r:
+        with urllib.request.urlopen(cdp_url(workspace) + "/json/version", timeout=2) as r:
             return r.status == 200
     except Exception:
         return False
 
 
-def ensure() -> None:
+def ensure(workspace=None) -> None:
     """Make sure the profile browser is up, starting a headless one if not."""
-    if alive():
+    from . import browser_workspaces as bw
+    workspace = bw.name(workspace)
+    if alive(workspace):
         return
+    if workspace != "default":
+        bw.start(workspace)
+        for _ in range(60):
+            if alive(workspace):
+                return
+            time.sleep(0.25)
+        raise RuntimeError('browser worker has not started')
     if view_base():
         # The service owns the browser on this install (headed, with the live
         # screen). Give it time to come up rather than racing it with a
@@ -227,13 +243,26 @@ def ensure() -> None:
 class Session:
     """One connection to the profile browser, for one command."""
 
-    def __init__(self):
+    def __init__(self, workspace=None, *, human=False, timeout=8):
+        from . import browser_workspaces as bw
         from playwright.sync_api import sync_playwright
-        ensure()
-        self._pw = sync_playwright().start()
-        self.browser = self._pw.chromium.connect_over_cdp(cdp_url())
-        self.ctx = self.browser.contexts[0] if self.browser.contexts \
-            else self.browser.new_context()
+        self.workspace = bw.name(workspace)
+        self._lease = bw.lease(self.workspace, human=human, timeout=timeout)
+        self._lease.__enter__()
+        self._pw = None
+        try:
+            ensure(self.workspace)
+            with urllib.request.urlopen(cdp_url(self.workspace) + '/json/version', timeout=3) as r:
+                version = json.load(r)
+            bw.note_browser(self.workspace, version['webSocketDebuggerUrl'].rsplit('/', 1)[-1])
+            self._pw = sync_playwright().start()
+            self.browser = self._pw.chromium.connect_over_cdp(cdp_url(self.workspace))
+            self.ctx = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+        except BaseException:
+            if self._pw:
+                self._pw.stop()
+            self._lease.__exit__(None, None, None)
+            raise
 
     def close(self) -> None:
         # Over CDP, close() disconnects; the browser and its tabs stay.
@@ -245,6 +274,9 @@ class Session:
             self._pw.stop()
         except Exception:
             pass
+        if self._lease:
+            self._lease.__exit__(None, None, None)
+            self._lease = None
 
     def __enter__(self):
         return self
@@ -341,12 +373,16 @@ def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def new_view(tab: str, why: str, minutes: int = 30) -> str:
+def new_view(tab: str, why: str, minutes: int = 30, *, workspace=None, group=None) -> str:
     """A link that lets the user drive one tab. Returns the token."""
     token = _random.token_urlsafe(24)
     spool().mkdir(parents=True, exist_ok=True)
     rec = {"tab": tab, "why": why[:300], "created": time.time(),
            "expires": time.time() + max(5, min(minutes, 240)) * 60}
+    if workspace is not None:
+        from . import browser_workspaces as bw
+        bw.take_control(workspace, review=bool(group))
+        rec.update(workspace=workspace, group=group)
     path = spool() / f"{_hash(token)}.json"
     path.write_text(json.dumps(rec))
     os.chmod(path, 0o600)
@@ -358,7 +394,7 @@ def new_view(tab: str, why: str, minutes: int = 30) -> str:
         d.mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o700)
         f = d / _hash(token)
-        f.write_text(f"{token}: 127.0.0.1:{vnc_port()}\n")
+        f.write_text(f"{token}: 127.0.0.1:{vnc_port(workspace)}\n")
         os.chmod(f, 0o600)
     return token
 
@@ -382,6 +418,9 @@ def close_view(token: str) -> None:
         rec = json.loads(path.read_text())
         rec["closed"] = time.time()
         path.write_text(json.dumps(rec))
+        if rec.get('workspace') and not rec.get('group'):
+            from . import browser_workspaces as bw
+            bw.release_control(rec['workspace'])
     except Exception:
         pass
     (vnc_dir() / _hash(token)).unlink(missing_ok=True)
@@ -403,8 +442,10 @@ def vnc_dir() -> pathlib.Path:
     return config.HOME / "run" / "browser-vnc"
 
 
-def vnc_port() -> int:
-    return int(config.get("browser.vnc_port", 5993))
+def vnc_port(workspace=None) -> int:
+    from . import browser_workspaces as bw
+    workspace = bw.name(workspace)
+    return int(config.get("browser.vnc_port", 5993)) if workspace == 'default' else bw.ports(workspace)['vnc']
 
 
 def ws_port() -> int:
@@ -438,6 +479,9 @@ def view_link(token: str) -> str | None:
     base = view_base()
     if not base:
         return None
+    rec = view(token)
+    if rec and rec.get('workspace'):
+        return f"{base}/groups/v/{token}"
     path = str(config.get("surfaces.browser_view.vnc_path") or "").strip("/")
     if vnc_enabled() and path:
         # The fit page measures the window it is opened in, sizes the browser

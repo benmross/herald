@@ -11,7 +11,7 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-browser
 Restart=always
 RestartSec=10
-MemoryMax=3G
+MemoryMax={{BROWSER_MEMORY_MAX}}
 NoNewPrivileges=true
 
 [Install]
