@@ -124,6 +124,17 @@ def best_option(want, options: list[str]) -> str | None:
     exact = [o for o in options if norm(o) == norm(want)]
     if len(exact) == 1:
         return exact[0]
+    branches = _top_level_branches(want)
+    if len(branches) > 1:
+        # A stored alternation is a preference order ("careers site|company
+        # website|job board|other"). Taken as one regex, a form offering both
+        # "Corporate Website" and "Job Board Website" matched twice and got
+        # nothing (F5, 27 Oct 2026). Try each branch in order instead.
+        for b in branches:
+            hit = best_option(b, options)
+            if hit:
+                return hit
+        return None
     try:
         full = [o for o in options if re.fullmatch(want, o, re.I)]
         if len(full) == 1:
@@ -136,6 +147,35 @@ def best_option(want, options: list[str]) -> str | None:
     except re.error:
         pass
     return None
+
+
+def _top_level_branches(pattern: str) -> list[str]:
+    """Split a regex on | outside any group or character class."""
+    out, depth, cls, cur, esc = [], 0, False, "", False
+    for ch in pattern:
+        if esc:
+            cur += ch
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            cur += ch
+            continue
+        if cls:
+            cls = ch != "]"
+        elif ch == "[":
+            cls = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            out.append(cur)
+            cur = ""
+            continue
+        cur += ch
+    out.append(cur)
+    return [b for b in out if b.strip()]
 
 
 # --- the applications table ----------------------------------------------------

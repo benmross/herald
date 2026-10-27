@@ -2038,6 +2038,46 @@ def cmd_apply(args) -> int:
             print(f"   ? {q['q'][:150]}" + (f"  [{' | '.join(q['options'][:12])}]" if q.get("options") else "")
                   + ("" if q.get("required") else "  (optional)"))
 
+    if args.op in ("packets", "desk", "worker", "check", "close", "show"):
+        from herald import packets
+        if args.op == "worker":
+            return packets.worker()
+        if args.op == "check":
+            ok, why = packets.check_ready(args.id)
+            print(json.dumps({"ok": ok, "why": why}))
+            return 0
+        if args.op == "close":
+            packets._close_tab(args.id)
+            return 0
+        if args.op == "show":
+            print(json.dumps({"tab": packets.show(args.id)}))
+            return 0
+        if args.op == "desk":
+            url = packets.desk_url(packets.desk_token())
+            if not url:
+                raise SystemExit("set surfaces.browser_view.url first")
+            if args.print:
+                print(url)
+            else:
+                from herald import notify
+                notify.telegram("Your application desk. Review answers here, approve, then submit each form when it shows as ready:\n" + url)
+                print("sent")
+            return 0
+        with db.session() as con:
+            marks = ",".join("?" * len(ap.DONE))
+            ids = args.ids or [r[0] for r in con.execute(
+                f"SELECT id FROM applications WHERE status NOT IN ({marks}) ORDER BY id", ap.DONE)]
+        for i in ids:
+            try:
+                p = packets.build(i, refresh=args.refresh)
+            except Exception as e:
+                print(f"#{i}: {type(e).__name__}: {str(e)[:200]}")
+                continue
+            flags = [q["flag"] for q in p["questions"]]
+            print(f"#{i} {p['state']:<9} {p['source'] or '':<10} {len(flags):>3} questions, "
+                  f"{flags.count('review')} to read, {flags.count('missing')} missing"
+                  + (f" | {p['blockers'][0][:90]}" if p['blockers'] else ""))
+        return 0
     if args.op == "fill":
         for url in args.urls:
             try:
@@ -2671,6 +2711,18 @@ def main() -> int:
     x = ay_sub.add_parser("code", help="newest verification code or link from the inbox")
     x.add_argument("--minutes", type=int, default=15); x.add_argument("--hint")
     x.add_argument("--wait", type=int, default=0)
+    x = ay_sub.add_parser("packets", help="build or refresh application packets (the desk's data)")
+    x.add_argument("ids", nargs="*", type=int, help="default: every open application")
+    x.add_argument("--refresh", action="store_true", help="rebuild even approved or ready packets")
+    x = ay_sub.add_parser("desk", help="send yourself the review desk link (revokes the old one)")
+    x.add_argument("--print", action="store_true", help="print the link instead of sending it")
+    ay_sub.add_parser("worker", help="fill approved packets one at a time (started by the desk)")
+    x = ay_sub.add_parser("check", help="is a ready application's form still live? (JSON)")
+    x.add_argument("id", type=int)
+    x = ay_sub.add_parser("show", help="bring an application's tab to the front, opening it if needed")
+    x.add_argument("id", type=int)
+    x = ay_sub.add_parser("close", help="close a submitted application's tab")
+    x.add_argument("id", type=int)
     ay.set_defaults(fn=cmd_apply)
 
     wt = sub.add_parser("watch", help="recheck a page until an opportunity opens")

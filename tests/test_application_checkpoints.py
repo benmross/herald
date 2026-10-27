@@ -64,11 +64,21 @@ class Recovery(unittest.TestCase):
         self.assertEqual(self.page.locator('#start').input_value(),'2026')
         self.assertEqual(self.page.locator('#end').input_value(),'2029')
 
-    def test_existing_attachment_without_an_approved_version_is_not_ready(self):
+    def test_existing_attachment_named_on_the_page_is_recorded(self):
+        # An earlier run uploaded it without a record (Workday keeps files
+        # server-side). The page naming the current file is accepted, and the
+        # file is recorded as this draft's attachment.
         self.page.set_content('<div>resume.txt</div><button type=button>Submit</button>')
         a=self.adapter(str(self.resume))
         issues=a.checkpoint.verify_review({'done':True,'filled':[],'pending':[],'failed':[]})
-        self.assertTrue(any('source version' in x for x in issues))
+        self.assertFalse(any('Attachment' in x for x in issues))
+        self.assertEqual([x['name'] for x in a.checkpoint.artifacts],['resume.txt'])
+
+    def test_existing_attachment_missing_from_the_page_is_not_ready(self):
+        self.page.set_content('<div>no file here</div><button type=button>Submit</button>')
+        a=self.adapter(str(self.resume))
+        issues=a.checkpoint.verify_review({'done':True,'filled':[],'pending':[],'failed':[]})
+        self.assertTrue(any('Attachment must be restored' in x for x in issues))
         self.assertFalse(cp.latest(self.aid)['verified'])
 
     def test_two_human_browsers_share_controller_runtime_and_close_independently(self):

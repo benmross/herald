@@ -777,26 +777,80 @@ class Workday:
         email = self.bank.get("profile", {}).get("email")
         pw_fields = p.locator("input[type=password]:visible")
         if acct and acct.get("created", True) is True:
-            # Go to the tenant's own login page rather than toggling the
-            # create-account form: on 24 Oct 2026 the toggle left the email in
-            # the wrong box and the sign-in failed. The redirect brings the
-            # browser back to this application afterwards.
-            from urllib.parse import quote, urlparse
-            u = urlparse(getattr(self, 'application_url', p.url))
-            parts = [x for x in u.path.split("/") if x]
-            site = "/".join(parts[:2]) if parts and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]) else parts[0]
-            back = u.path if "/apply" in u.path else u.path.rstrip("/") + "/apply/applyManually"
-            p.goto(f"{u.scheme}://{u.netloc}/{site}/login?redirect={quote(back, safe='')}",
-                   wait_until="domcontentloaded")
-            p.wait_for_timeout(4000)
-            p.locator('input[data-automation-id="email"]').first.fill(acct["email"])
-            p.locator('input[data-automation-id="password"]').first.fill(acct["password"])
-            btn = p.locator('[data-automation-id="signInSubmitButton"]')
-            self.click(btn.first if btn.count() else p.get_by_role("button", name="Sign In").first)
-            p.wait_for_timeout(6000)
-            if p.locator('input[data-automation-id="password"]:visible').count():
+            return self.sign_in(acct)
+        return self.create_account(acct, email, pw_fields)
+
+    def signed_out(self) -> bool:
+        """An expired Workday session still shows the form, empty and with a
+        Sign In button in the header; the saved draft only appears after
+        signing in (27 Oct 2026: DIRECTV and F5 filled from blank)."""
+        p = self.page
+        try:
+            head = p.locator('[data-automation-id="utilityButtonSignIn"]:visible')
+            if head.count():
+                return True
+            return bool(p.get_by_role("button", name=re.compile(r"^Sign In$")).count()
+                        and not p.locator("input[type=password]:visible").count())
+        except bw.Busy:
+            raise
+        except Exception:
+            return False
+
+    def dismiss_cookies(self):
+        p = self.page
+        for name in (r"^Accept Cookies$", r"^Accept All( Cookies)?$", r"^Accept$", r"^I Accept$"):
+            b = p.get_by_role("button", name=re.compile(name, re.I))
+            if b.count() and b.first.is_visible():
+                try:
+                    b.first.click(timeout=3000)
+                    p.wait_for_timeout(800)
+                except bw.Busy:
+                    raise
+                except Exception:
+                    pass
+                return
+
+    def sign_in(self, acct) -> str:
+        p = self.page
+        # Go to the tenant's own login page rather than toggling the
+        # create-account form: on 24 Oct 2026 the toggle left the email in
+        # the wrong box and the sign-in failed. The redirect brings the
+        # browser back to this application afterwards.
+        from urllib.parse import quote, urlparse
+        u = urlparse(getattr(self, 'application_url', p.url))
+        parts = [x for x in u.path.split("/") if x]
+        site = "/".join(parts[:2]) if parts and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]) else parts[0]
+        back = u.path if "/apply" in u.path else u.path.rstrip("/") + "/apply/applyManually"
+        p.goto(f"{u.scheme}://{u.netloc}/{site}/login?redirect={quote(back, safe='')}",
+               wait_until="domcontentloaded")
+        try:
+            p.locator('input[data-automation-id="password"]').first.wait_for(state="visible", timeout=15000)
+        except bw.Busy:
+            raise
+        except Exception:
+            return "sign-in failed: the sign-in page did not load"
+        # A cookie banner over the button swallowed the click on ICF
+        # (27 Oct 2026), and the unchanged page read as a rejected password.
+        self.dismiss_cookies()
+        p.locator('input[data-automation-id="email"]').first.fill(acct["email"])
+        p.locator('input[data-automation-id="password"]').first.fill(acct["password"])
+        btn = p.locator('[data-automation-id="signInSubmitButton"]')
+        self.click(btn.first if btn.count() else p.get_by_role("button", name="Sign In").first)
+        try:
+            p.locator('input[data-automation-id="password"]').first.wait_for(state="hidden", timeout=20000)
+        except bw.Busy:
+            raise
+        except Exception:
+            err = p.locator('[data-automation-id="errorMessage"]:visible, [role=alert]:visible')
+            said = err.first.inner_text()[:160] if err.count() else ""
+            if re.search(r"password|credential|invalid|incorrect|locked", said, re.I):
                 return "sign-in failed: the stored password was not accepted"
-            return "signed in"
+            return "sign-in failed: the page did not respond" + (f" ({said})" if said else "")
+        p.wait_for_timeout(3000)
+        return "signed in"
+
+    def create_account(self, acct, email, pw_fields) -> str:
+        p = self.page
         if not pw_fields.count() >= 2:
             ca = p.locator('[data-automation-id="createAccountLink"]:visible, button:has-text("Create Account"):visible')
             if ca.count():
@@ -902,13 +956,27 @@ class Workday:
                 self.click(manual.first)
                 p.wait_for_timeout(4000)
         acct = self.account_step()
+        if not acct and self.signed_out() and (ap.account(self.host) or {}).get("created", True) is True \
+                and ap.account(self.host):
+            acct = self.sign_in(ap.account(self.host))
+            if acct == "signed in":
+                # The redirect lands on the application; Workday offers the
+                # saved draft there, possibly behind Apply / Apply Manually.
+                p.wait_for_timeout(2000)
+                for sel in ('[data-automation-id="adventureButton"]:visible', '[data-automation-id="applyManually"]:visible'):
+                    b = p.locator(sel)
+                    if b.count() and not p.locator('[data-automation-id^="formField-"]').count():
+                        self.click(b.first)
+                        p.wait_for_timeout(3000)
         if acct:
             filled.append(f"account: {acct}")
             if "waiting" in acct:
                 return {"filled": filled, "pending": [{"q": "verify the account from your email", "kind": "action"}],
                         "failed": failed, "done": False}
-            if 'failed' in acct:
+            if 'password was not accepted' in acct:
                 return {'filled': filled, 'pending': [{'q': 'Sign in yourself; the saved credentials were rejected. They will not be retried automatically.', 'kind': 'action'}], 'failed': ['Stored sign-in rejected'], 'done': False}
+            if 'failed' in acct:
+                return {'filled': filled, 'pending': [{'q': 'Sign-in did not complete: ' + acct.split(': ', 1)[-1], 'kind': 'action'}], 'failed': [], 'done': False}
         for _ in range(10):
             cur, total, name = self.step()
             if not total:

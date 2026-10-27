@@ -208,6 +208,19 @@ CREATE TABLE IF NOT EXISTS application_review_members (
     group_id TEXT NOT NULL REFERENCES application_review_groups(id),
     app_id INTEGER NOT NULL REFERENCES applications(id), PRIMARY KEY(group_id, app_id)
 );
+-- The application as data (lib/herald/packets.py): questions, approved
+-- answers and where each came from. Reviewed before any form is filled.
+CREATE TABLE IF NOT EXISTS application_packets (
+    app_id      INTEGER PRIMARY KEY REFERENCES applications(id),
+    state       TEXT NOT NULL DEFAULT 'draft',
+    source      TEXT,                 -- api | checkpoint | none
+    questions   TEXT,                 -- JSON list
+    blockers    TEXT,                 -- JSON list of plain sentences
+    priority    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL,
+    approved_at TEXT,
+    filled_at   TEXT
+);
 
 --
 -- A briefing is supposed to tell them what the user does not know. Without this, every

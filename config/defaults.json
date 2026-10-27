@@ -116,7 +116,8 @@
   "apply": {
     "bank": "documents/career/answers.json",
     "bitwarden_extension_id": null,
-    "max_step_failures": 2
+    "max_step_failures": 2,
+    "ready_limit": 8
   },
   "browser": {
     "executable": null,
@@ -143,7 +144,8 @@
     "apply": {
     "_comment": "`herald apply` (lib/herald/apply.py): bank is the answer bank's path under the ledger. bitwarden_extension_id, if set, mirrors every new application-site login into the Bitwarden extension installed in the profile browser; Herald keeps its own copy in secrets.json under accounts.* either way.",
     "bank": "documents/career/answers.json",
-    "bitwarden_extension_id": null
+    "bitwarden_extension_id": null,
+    "_ready_comment": "ready_limit: how many filled forms the packet worker (lib/herald/packets.py) leaves open at their final page before it waits for you to submit some. Each is a live tab, and the browser's memory is finite."
   },
   "browser": {
     "_comment": "`herald browse`: the profile browser lives in $HERALD_HOME/browser. executable null means Playwright's Chromium. headed runs it inside Xvfb when installed, which sign-in pages trust more. sandbox stays off until an AppArmor profile allows Chromium's user namespaces (Ubuntu 23.10+).",

@@ -40,6 +40,52 @@ setInterval(async()=>{const r=await fetch(B+'/status');if(!r.ok){document.queryS
 </script>'''
 
 
+# The review desk (lib/herald/packets.py): packets, not tabs.
+DESK = r'''<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content=noindex><title>Applications</title><style>
+body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#141414;color:#e8e8e8;display:flex;height:100vh}
+#list{width:320px;overflow:auto;border-right:1px solid #2a2a2a;padding:8px}#main{flex:1;overflow:auto;padding:16px 24px}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#999;margin:14px 4px 6px}
+.item{padding:7px 8px;border-radius:6px;cursor:pointer}.item:hover{background:#222}.item.on{background:#2d2d2d}
+.item small{display:block;color:#999}h1{font-size:20px;margin:0 0 2px}.sub{color:#999;margin-bottom:12px}
+.q{margin:10px 0 14px}.q label{display:block;color:#ccc;margin-bottom:4px}.q .why{font-size:12px;color:#d9a441}
+textarea,input,select{width:100%;box-sizing:border-box;font:inherit;background:#1e1e1e;color:#eee;border:1px solid #3a3a3a;border-radius:6px;padding:7px}
+textarea{min-height:90px}button{font:inherit;padding:8px 14px;border:0;border-radius:6px;background:#e8e8e8;color:#141414;cursor:pointer;margin-right:6px}
+button.alt{background:#333;color:#eee}.bar{position:sticky;top:0;background:#141414;padding:8px 0 10px;border-bottom:1px solid #2a2a2a;margin-bottom:8px}
+.block{background:#3a2a12;color:#f0d8a8;padding:8px 10px;border-radius:6px;margin:8px 0}details{margin-top:18px}summary{cursor:pointer;color:#aaa}
+.routine{display:grid;grid-template-columns:minmax(200px,40%) 1fr;gap:4px 14px;font-size:14px;margin-top:8px}.routine div:nth-child(odd){color:#999}
+#msg{color:#9cd29c;margin-left:8px}a{color:#9cc3ff}
+</style>
+<div id=list></div><div id=main><p class=sub>Pick an application on the left.</p></div>
+<script>
+const B=location.pathname.replace(/\/$/,'');let cur=null,data=[],dirty={};
+const GROUPS=[['ready','Ready to submit'],['review','To review'],['draft','Needs answers'],['approved','Queued to fill'],['filling','Filling now'],['blocked','Stopped'],['submitted','Submitted'],['skipped','Skipped or closed']];
+const el=(t,a={},...k)=>{const e=document.createElement(t);for(const[x,y]of Object.entries(a)){if(x==='on')e.onclick=y;else if(x==='text')e.textContent=y;else e.setAttribute(x,y)}for(const c of k)if(c!=null)e.append(c);return e};
+async function api(p,body){const r=await fetch(B+p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
+function list(){const L=document.querySelector('#list');L.replaceChildren();for(const[s,name]of GROUPS){const xs=data.filter(d=>d.state===s);if(!xs.length)continue;L.append(el('h3',{text:name+' ('+xs.length+')'}));for(const d of xs){const n=d.state==='draft'?d.missing+' to answer':d.state==='review'?(d.review?d.review+' to read':'nothing unusual'):d.blockers[0]||'';L.append(el('div',{class:'item'+(cur===d.id?' on':''),on:()=>show(d.id)},el('b',{text:d.company||'?'}),' ',el('span',{text:(d.title||'').slice(0,60)}),el('small',{text:n})))}}}
+async function refresh(){data=await api('/data');list();if(cur){const d=data.find(x=>x.id===cur);if(d&&d.state!==shown)show(cur)}}
+let shown=null;
+function input(q){const v=q.display==null?'':q.display;let e;if(q.options&&q.options.length&&q.kind!=='checks'){e=el('select',{},el('option',{value:'',text:'(no answer)'}),...q.options.map(o=>el('option',{value:o,text:o})));e.value=Array.isArray(v)?v[0]||'':v}else if(q.kind==='textarea'||String(v).length>90){e=el('textarea');e.value=Array.isArray(v)?v.join(', '):v}else{e=el('input');e.value=Array.isArray(v)?v.join(', '):v}e.oninput=()=>{dirty[q.key]=e.value};return e}
+async function show(id){cur=id;dirty={};const p=await api('/p/'+id);shown=p.state;list();const M=document.querySelector('#main');M.replaceChildren();
+ const bar=el('div',{class:'bar'});const msg=el('span',{id:'msg'});
+ const save=async()=>{if(Object.keys(dirty).length){await api('/act',{k:'edit',id,values:dirty});dirty={}}};
+ if(['review','draft','blocked','ready'].includes(p.state))bar.append(el('button',{on:async()=>{await save();const r=await api('/act',{k:'approve',id});msg.textContent=r.message;refresh();show(id)}},p.state==='ready'?'Fill again':'Approve and fill'));
+ if(p.state==='ready'){bar.append(el('button',{on:async()=>{msg.textContent='Checking the form is still live...';const r=await api('/act',{k:'open',id});msg.textContent=r.message;if(r.link){live=true;window.open(r.link,'herald-live')}refresh()}},'Open form to submit'));bar.append(el('button',{class:'alt',on:async()=>{const r=await api('/act',{k:'submitted',id});msg.textContent=r.message;live=false;refresh()}},'I submitted it'))}
+ if(p.state==='blocked')bar.append(el('button',{class:'alt',on:async()=>{msg.textContent='Opening...';const r=await api('/act',{k:'show',id});msg.textContent=r.message;if(r.link)window.open(r.link,'herald-live')}},'Open in browser to fix'));
+ bar.append(el('button',{class:'alt',on:async()=>{await save();msg.textContent='Saved.';refresh()}},'Save edits'));
+ if(!['submitted','skipped'].includes(p.state))bar.append(el('button',{class:'alt',on:async()=>{if(confirm('Skip this application?')){await api('/act',{k:'skip',id});refresh()}}},'Skip'));
+ bar.append(msg);
+ M.append(el('h1',{text:p.company+' — '+(p.title||'')}),el('div',{class:'sub'},el('a',{href:p.url,target:'_blank',rel:'noreferrer',text:'Posting'}),' · '+p.ats+' · '+p.state+' · questions from '+(p.source==='api'?'the employer API':'the saved form')),bar);
+ for(const b of p.blockers||[])M.append(el('div',{class:'block',text:b}));
+ const need=p.questions.filter(q=>q.flag!=='routine');if(need.length)M.append(el('h3',{text:'Needs you'}));
+ for(const q of need){const why=q.flag==='missing'?'No answer yet':q.kind==='textarea'?'Written for this application':q.general!=null?'Differs from your profile ('+q.general+')':q.source==='draft'?'From the old form, not your profile':'Answered for this employer only';M.append(el('div',{class:'q'},el('label',{text:q.label+(q.required?' *':'')}),el('div',{class:'why',text:why}),input(q)))}
+ const rt=p.questions.filter(q=>q.flag==='routine');if(rt.length){const g=el('div',{class:'routine'});for(const q of rt){g.append(el('div',{text:q.label}),el('div',{text:q.kind==='file'?'resume (attached when filling)':(q.display==null?'(blank)':String(q.display))}))}M.append(el('details',{},el('summary',{text:rt.length+' routine answers from your profile and answer bank'}),g))}
+}
+let live=false;setInterval(()=>{if(live)api('/act',{k:'live'})},30000);
+refresh();setInterval(refresh,8000);
+</script>'''
+
+
 class Driver:
     def __init__(self):self.sessions={};self.playwright=None
     def session(self,workspace):
@@ -101,7 +147,64 @@ class Handler(BaseHTTPRequestHandler):
         if rec.get('group'):
             return bw.group_info(rec['group'])['members']
         return [{'id':None,'company':'Browser','title':rec['why'],'tab':rec['tab']}]
+    def desk(self):
+        """(token ok, rest of path) for /groups/desk/<token>/..., else None."""
+        parts=self.path.split('?')[0].strip('/').split('/')
+        if parts and parts[0]=='groups':parts=parts[1:]
+        if len(parts)<2 or parts[0]!='desk':return None
+        from herald import packets
+        if not packets.desk_ok(parts[1]):return False
+        return parts[2:]
+    def desk_get(self,rest):
+        from herald import packets,db
+        if not rest:return self.send(200,DESK,'text/html; charset=utf-8')
+        if rest==['data']:
+            with db.session() as c:return self.send(200,json.dumps(packets.summary(c)))
+        if len(rest)==2 and rest[0]=='p' and rest[1].isdigit():
+            from herald import apply
+            p=packets.load(int(rest[1]))
+            if not p:return self.send(404,{'message':'No packet'})
+            with db.session() as c:a=apply.get(c,int(rest[1]))
+            return self.send(200,json.dumps({**p,'company':a['company'],'title':a['title'],'url':a['url'],'ats':a['ats']}))
+        return self.send(404,{'message':'Not found'})
+    def desk_post(self):
+        from herald import packets
+        n=int(self.headers.get('Content-Length','0'))
+        if n<0 or n>200000:return self.send(400,{'message':'Too large'})
+        a=json.loads(self.rfile.read(n));k=a.get('k');i=int(a.get('id') or 0)
+        try:
+            if k=='live':packets.touch_desk();return self.send(200,{'ok':True})
+            if k=='edit':packets.edit(i,{str(x):str(y) for x,y in (a.get('values') or {}).items()});return self.send(200,{'message':'Saved.'})
+            if k=='approve':packets.approve(i);return self.send(200,{'message':'Approved. Herald is filling the form; it moves to Ready to submit when it reaches the final page.'})
+            if k=='skip':packets.skip(i);return self.send(200,{'message':'Skipped.'})
+            if k=='submitted':packets.submitted(i,close=False);packets.start_closer(i);return self.send(200,{'message':'Recorded as submitted.'})
+            if k=='show':
+                import subprocess
+                packets.touch_desk()
+                out=subprocess.run([sys.executable,str(config.ROOT/'bin'/'herald'),'apply','show',str(i)],capture_output=True,text=True,timeout=120)
+                try:tab=json.loads(out.stdout.strip().splitlines()[-1])['tab']
+                except (ValueError,IndexError,KeyError):return self.send(200,{'message':'The browser could not open it.'})
+                token=browse.new_view(tab,'Fix what stopped Herald (sign in, CAPTCHA, a field), then press "Fill again" on the desk.',60)
+                return self.send(200,{'message':'Opened in a new window.','link':browse.view_link(token)})
+            if k=='open':
+                packets.touch_desk()
+                # Playwright runs in its own process: this server may already
+                # hold a sync Playwright for review groups.
+                import subprocess
+                out=subprocess.run([sys.executable,str(config.ROOT/'bin'/'herald'),'apply','check',str(i)],capture_output=True,text=True,timeout=120)
+                try:res=json.loads(out.stdout.strip().splitlines()[-1])
+                except (ValueError,IndexError):res={'ok':False,'why':'the check failed to run'}
+                ok,why=res['ok'],res.get('why')
+                if not ok:return self.send(200,{'message':'Not shown: '+why+'. Herald is refilling it now; it returns to Ready to submit in a few minutes.'})
+                b=bw.binding(i);token=browse.new_view(b['tab'],'Submit this application, then press "I submitted it" on the desk.',60)
+                return self.send(200,{'message':'Opened in a new window. Press Submit there.','link':browse.view_link(token)})
+        except SystemExit as e:return self.send(409,{'message':str(e)})
+        except Exception as e:return self.send(500,{'message':'That failed ('+type(e).__name__+'). Nothing was submitted.'})
+        return self.send(400,{'message':'Unknown action'})
     def do_GET(self):
+        d=self.desk()
+        if d is False:return self.send(404,{'message':'This link has expired.'})
+        if d is not None:return self.desk_get(d)
         token,rec,sub=self.route()
         if not rec:return self.send(404,{'message':'This link has expired. Your review tabs remain protected.'})
         try:
@@ -122,6 +225,9 @@ class Handler(BaseHTTPRequestHandler):
             DRIVER.reset(rec['workspace']);return self.send(503,{'message':'Browser unavailable. Your checkpoints and group are preserved.'})
         return self.send(404,{'message':'Not found'})
     def do_POST(self):
+        d=self.desk()
+        if d is False:return self.send(404,{'message':'This link has expired.'})
+        if d==['act']:return self.desk_post()
         token,rec,sub=self.route()
         if not rec or sub!='act':return self.send(404,{'message':'Link expired; review ownership is preserved.'})
         try:
