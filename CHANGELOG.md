@@ -2,6 +2,37 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.4: 26 October 2026
+
+- Separate conversation answers from permission to perform an action
+- Approve the complete literal text before opening a GitHub issue
+- Let enabled extensions answer Telegram queries without a model turn
+- Refuse invalid task write tiers before touching Google
+- Require explicit user requests for task completion and new lists
+- Resolve the "primary" calendar alias before checking its role
+- Keep row ids out of what the user reads
+- Keep events off calendars when the user already displays them elsewhere
+- Keep Google Tasks facts consistent with deletions and successful writes
+- Finish updates with imports from the release now on disk
+- Do not end a resumed turn on a notification left by the last one
+- Never attach the resume twice
+- Give a profile link only to fields that ask for one
+- Sign back into Workday through its login page, and find its start chooser anywhere
+- Stop reading application confirmations as rejections
+- Filter OSM tags in C++ before Python sees them, and resolve names to the closest match
+- Add herald places: a local OpenStreetMap index for "what is near, and open"
+- Size the live view to the viewer's window, and snapshot forms before a restart
+- Add the herald-apply skill, and let browse fields see shadow DOM
+- Mark applications submitted or rejected from their mail
+- Add herald apply: fill job applications from an answer bank, never submit
+- Let an apply button that opens a form through the submit guard
+- Re-tag form fields when a page re-renders and drops their handles
+- Open sign-in links on a live remote screen when noVNC is installed
+- Keep the browser view alive when a frame fails
+- Watch pages until an opportunity opens, and push the moment one does
+- Add herald browse: one real browser on the server, a skill for it, and a phone view for sign-ins
+- Refuse mistyped Telegram commands; accept an idle Claude session window
+
 ## v0.4.3: 21 October 2026
 
 - Commit before writing through a second connection
