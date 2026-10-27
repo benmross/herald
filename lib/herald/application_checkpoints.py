@@ -115,6 +115,11 @@ def matches(field, want):
     from . import apply, ats
     if want is None or protected(field):return True
     actual=read_value(field);kind=field['kind']
+    if re.search(r'location|\bcity\b',field.get('label',''),re.I) and kind in ('text','combobox'):
+        # Location boxes autocomplete: "College Park, Maryland" is kept as
+        # "College Park, Maryland, United States" (Ashby, 27 Oct 2026).
+        want_words=set(re.findall(r'[a-z]+',normalize(ats.plain(want))))
+        return bool(want_words) and want_words<=set(re.findall(r'[a-z]+',normalize(actual)))
     if kind in ('select','dropdown','combobox','prompt'):
         return bool(actual) and apply.best_option(want,[str(actual)]) is not None
     if kind in ('radio','buttonradio'):
@@ -137,6 +142,12 @@ class Recorder:
         self.generation=bw.get(workspace)['generation']
         old=latest(app_id)
         self.writes=dict(old['payload'].get('writes',{})) if old else {}
+        if old and not getattr(adapter,'carries_writes',False):
+            # A single-page form is written in full on every run, so a write
+            # from an earlier run only lingers to fail review against the new
+            # answers (Amplify, 27 Oct 2026). Multi-page adapters set
+            # carries_writes: their earlier pages are not visited again.
+            self.writes={}
         self.artifacts=list(old['payload'].get('artifacts',[])) if old else []
         self.errors=[]
         self.history=dict(old['payload'].get('field_history',{})) if old else {}
@@ -218,7 +229,9 @@ class Recorder:
         if not result.get('done') or result.get('pending') or result.get('failed'):
             return ['Application has not reached a clean review page.']
         fields=self.adapter.scan()
-        if self.page.locator('input:invalid:visible,select:invalid:visible,textarea:invalid:visible,[aria-invalid=true]:visible').count():
+        # File inputs are left out: Ashby empties a required file input after
+        # the upload it shows (27 Oct 2026). Attachments are checked below.
+        if self.page.locator('input:not([type=file]):invalid:visible,select:invalid:visible,textarea:invalid:visible,[aria-invalid=true]:not([type=file]):visible').count():
             failures.append('The review page contains invalid fields.')
         for f in fields:
             if protected(f):continue

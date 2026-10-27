@@ -18,15 +18,17 @@ form:
   bin/herald-browser-review at /groups/desk). Routine answers from the
   profile collapse into one line; essays, guesses and anything new are shown
   in full and editable.
-- **Filling happens after approval, one application at a time,** by the
-  `herald apply worker` process. Approved answers are written into the
+- **A complete packet is filled at once, one application at a time,** by
+  the `herald apply worker` process, and reviewed at Ready beside the live
+  form. An edit on the desk sends it back to be filled again. Approved
+  answers are written into the
   application's own answers, which the adapters read before the bank, so the
   form receives exactly what was approved.
 - **Submitting stays with the person.** The desk shows the live form at its
   final page; they press Submit there and record it.
 
-States: draft (a required answer is missing), review (complete, awaiting
-the person), approved (queued for filling), filling, ready (the form is on
+States: draft (a required answer is missing), review (edited by the
+person, waiting for them to fill it again), approved (queued for filling), filling, ready (the form is on
 its final page and verified), blocked (filling stopped, with reasons),
 submitted, skipped.
 """
@@ -416,10 +418,15 @@ def build(app_id, *, refresh=False):
         # the whole application. Fill first; the person reviews at ready.
         state, missing = "approved", []
     else:
-        state = "draft" if missing else "review"
+        # Complete packets are filled straight away: the person reviews the
+        # answers and the live form together, at Ready, and submits there.
+        # A separate approval step only added a wait (27 Oct 2026).
+        state = "draft" if missing else "approved"
     with db.session() as con:
         _save(con, app_id, state=state, source=source, questions=questions,
-              **({"approved_at": db.now(), "blockers": ["Herald fills this form first to learn all "
+              **({"approved_at": db.now(), "blockers": []} if state == "approved" and source == "api"
+                 and not (old and old["state"] == "approved") else
+                 {"approved_at": db.now(), "blockers": ["Herald fills this form first to learn all "
                   "its questions; review them when it is ready."]} if state == "approved" and source != "api"
                  and not (old and old["state"] == "approved") else
                  {} if state in ("blocked", "ready", "approved") and old else

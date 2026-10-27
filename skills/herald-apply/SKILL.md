@@ -16,21 +16,28 @@ application. Read the person's own rules for what else is allowed
 
 ## The loop
 
+The person reviews **packets on the desk**, never live tabs (since 27 Oct
+2026, `lib/herald/packets.py`). A packet is the application as data: each
+question, its answer, and where the answer came from. Tabs are short-lived:
+a form is filled when its packet is approved and waits at its final page
+only until the person submits it.
+
 ```bash
-herald apply fill <url> [<url> ...] [--opp <opportunity id>]   # opens, fills, records
-herald apply pending                                           # every unanswered question, one block
-herald apply answer answers.json                               # store them, refill those applications
-herald apply list                                              # status of everything
+herald apply fill <url> [--opp <id>]   # record a new application (or let the worker open it)
+herald apply packets [ids]             # build packets: Greenhouse/Ashby questions come from their APIs
+herald apply pending                   # every unanswered question, one block
+herald apply answer answers.json --no-refill   # store answers; then `herald apply packets <ids>`
+herald apply worker                    # fill approved packets one at a time (the desk starts it)
+herald apply desk                      # send the person the desk link
+herald apply list                      # status of everything
 ```
 
-1. **Preflight, then fill in groups.** Check the exact requisition is open,
-   fits the person's requirements, and is not already applied to. Pilot one
-   application on each unfamiliar platform before expanding. `fill` allocates
-   separate persistent workspaces, with at most ten applications each. Ten
-   verified drafts trigger a protected group link automatically; a shorter
-   final group is handed over when the batch finishes. While the person
-   reviews one workspace, another session can fill a different workspace.
-   Resource limits pause new work without discarding existing drafts.
+1. **Preflight, then build packets.** Check the exact requisition is open,
+   fits the person's requirements, and is not already applied to. `packets`
+   marks a posting closed when its API says so. A Greenhouse or Ashby packet
+   is complete before any browser opens; answer what it lists as missing.
+   Any other system has no question API, so its packet starts approved and
+   the worker fills it first; the packet is rebuilt from what the fill wrote.
 2. **Answer everything pending in one `answer` call.** A JSON list:
 
    ```json
@@ -48,14 +55,16 @@ herald apply list                                              # status of every
    - `keep: app` for one-offs. `"a": null` means leave it blank on purpose.
    - For a choice, `a` is a regex or words matched against the options;
      a list ticks several.
-3. The refill that `answer` runs reaches the end of the form or lists the
-   next batch (multi-page Workday forms reveal questions page by page).
-   Repeat until every line says ready for review.
-4. Use the automatic group handoff or `herald apply review <ids...>`.
-   Reissue a link with `herald apply review --group <group>`.
-   Only current verified checkpoints qualify. The person switches between
-   applications in the group selector, submits on each employer's page,
-   and records that with “I submitted this”. Herald never submits.
+3. Rebuild the packets you answered (`herald apply packets <ids>`). A
+   packet with nothing missing moves to review. Do not approve on the
+   person's behalf: approval on the desk is their review.
+4. Send the desk link (`herald apply desk`). On the desk they read only the
+   answers that need them, approve, and the worker fills. When a form is
+   Ready, "Open form to submit" checks the employer session is still live
+   (refilling it if not), shows the live form, and they press Submit there
+   and record it with "I submitted it". A Stopped form has a plain reason;
+   "Open in browser to fix" lets them do a sign-in or CAPTCHA themselves.
+   Herald never submits.
 
 ## Checkpoints and ownership
 
@@ -72,8 +81,7 @@ Password, SSN, captcha and verification-code values are excluded in the page
 before scanning. They must never enter the bank, logs or debug screenshots.
 `herald apply snapshot` captures open drafts without filling or submitting.
 
-After a browser restart, old review claims are invalidated. Return the group
-for corrections, then refill and verify it before handing it over again.
+After a browser restart, a ready packet is checked again before the person sees it, and refilled if its form was lost.
 Two identical failures stop automatic retries; use `refill --retry` only
 after fixing the adapter or completing the access step. Never repeatedly
 retry a rejected password. A checkpoint preserves what was observed; it

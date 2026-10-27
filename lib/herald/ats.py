@@ -111,6 +111,9 @@ SCAN_JS = r"""() => {
     if (!t) t = e.getAttribute('aria-label') || '';
     if (!t) { const l = e.closest('label'); if (l) t = txt(l); }
     if (!t && root.host) t = root.host.getAttribute('label') || '';
+    // Ashby's date box has only a placeholder ("Pick date..."); its question
+    // is the field's own label (27 Oct 2026).
+    if (!t && e.getAttribute('type') !== 'radio' && e.getAttribute('type') !== 'checkbox') t = questionOf(e);
     if (!t) t = e.getAttribute('placeholder') || '';
     return t.trim();
   };
@@ -370,6 +373,12 @@ class Generic:
         def pick():
             labels = [o.inner_text().strip() for o in opts.all()[:150]]
             o = ap.best_option(want, labels)
+            if not o and re.search(r"location|\bcity\b", f.get("label", ""), re.I):
+                # A place search returns "College Park, Maryland, United
+                # States" for "College Park, Maryland": take the first
+                # suggestion holding every word asked for (27 Oct 2026).
+                words = set(re.findall(r"[a-z]+", plain(want).lower()))
+                o = next((x for x in labels if words and words <= set(re.findall(r"[a-z]+", x.lower()))), None)
             if o:
                 opts.nth(labels.index(o)).dispatch_event("click")
                 self.page.wait_for_timeout(300)
@@ -481,6 +490,15 @@ class Generic:
                 if f.get("required") or k == "textarea":
                     pending.append(self._pending(f, label))
                 continue
+            if k in ("radio", "checks", "buttonradio", "select") and not f.get("required") and value is not None:
+                # An optional choice whose stored answer names none of its
+                # options was found by a borrowed label: Ashby's SMS-consent
+                # box reads as "Mobile Number" and was sent the phone number
+                # (27 Oct 2026). Leave it alone.
+                opts = [o["label"] if isinstance(o, dict) else o for o in f.get("options") or []]
+                wants = value if isinstance(value, list) else [value]
+                if not isinstance(value, bool) and not any(ap.best_option(w, opts) for w in wants):
+                    continue
             try:
                 ok = self.set(f, value)
             except bw.Busy:
@@ -567,6 +585,7 @@ WD_IDS = {
 
 
 class Workday:
+    carries_writes = True
     name = "workday"
 
     def __init__(self, page, bank, company, answers, *, resume: str):
