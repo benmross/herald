@@ -432,6 +432,8 @@ def tasklist_create(con, *, actor: str, title: str, user_request: str) -> dict:
 def _task_status(con, *, actor: str, list_name: str, task_id: str,
                  status: str, user_statement: str, tier: str) -> dict:
     statement = _task_user_request(user_statement)
+    if tier not in ("green", "amber"):
+        raise ValueError("private task changes must be green or amber")
     svc = google.service("tasks", "v1")
     lid = _tasklist_id(svc, list_name)
     if not lid:

@@ -182,6 +182,13 @@ class Tasks(unittest.TestCase):
             gwrite.tasklist_create(self.con, actor="test", title="Daily", user_request="")
         google.service.assert_not_called()
 
+    def test_bad_task_tier_is_refused_before_google_access(self):
+        for tier in ("red", "orange"):
+            with self.assertRaises(ValueError):
+                gwrite.task_complete(self.con, actor="test", list_name="Tasks", task_id="old",
+                                      user_statement="done", tier=tier)
+        google.service.assert_not_called()
+
     def test_cycles_cannot_complete_reopen_or_create_lists_even_with_a_quote(self):
         with mock.patch.dict(os.environ, {"HERALD_ACTOR": "dawn"}):
             for fn in (gwrite.task_complete, gwrite.task_reopen):
