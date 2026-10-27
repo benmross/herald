@@ -54,10 +54,11 @@ import base64
 import contextvars
 import importlib.util
 import json
+import re
 import sys
 from email.message import EmailMessage
 
-from . import approvals, db, google, mailfmt, notify, private
+from . import approvals, config, db, google, mailfmt, notify, private, tgtext
 
 TAP_TIMEOUT = 600
 
@@ -195,11 +196,39 @@ def _perform_pr(p: dict) -> tuple[str, str]:
     return (f"opened PR '{p['title'][:60]}' on {p['repo']}", url or f"github:{p['repo']}")
 
 
+def _render_issue(p: dict) -> str:
+    repo, title, body = (p.get(k) for k in ("repo", "title", "body"))
+    if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+        raise ValueError("issue-open needs a GitHub repository as owner/repo")
+    if not isinstance(title, str) or not title.strip() or any(ord(c) < 32 for c in title):
+        raise ValueError("an issue needs a nonempty, single-line title")
+    if not isinstance(body, str):
+        raise ValueError("an issue needs a body string")
+    text = (f"Open this GitHub issue?\n\nRepository: https://github.com/{repo}\n"
+            f"Title: {title}\n\n{body}")
+    # Unlike mail/PR previews, the whole issue must be visible before approval.
+    # Refuse rather than silently lose the end through notify.ask's size cap.
+    if len(text.encode("utf-16-le")) // 2 > tgtext.LIMIT:
+        raise ValueError("the complete issue approval exceeds one Telegram message; shorten the body")
+    return text
+
+
+def _perform_issue(p: dict) -> tuple[str, str]:
+    from . import ghpr  # noqa: PLC0415
+    _render_issue(p)
+    url = ghpr.run(["gh", "issue", "create", "--repo", f"github.com/{p['repo']}",
+                    "--title", p["title"], "--body-file", "-"],
+                   cwd=str(config.ROOT), stdin=p["body"]).strip()
+    return (f"opened issue '{p['title'][:60]}' on {p['repo']}",
+            url.splitlines()[-1] if url else f"github:{p['repo']}")
+
+
 KINDS = {
     "mail.send": (_render_mail, _perform_mail),
     "drill": (_render_drill, _perform_drill),
     "safety.allow": (_render_safety_allow, _perform_safety_allow),
     "github.pr": (_render_pr, _perform_pr),
+    "github.issue": (_render_issue, _perform_issue),
 }
 
 
@@ -277,12 +306,17 @@ def request(kind: str, payload: dict, *, actor: str,
     """File the approval and put it on the user's phone. Returns its id."""
     private.refuse("A red action")
     text = render(kind, payload)
-    target = payload.get("to") if kind == "mail.send" else (
-        payload.get("target") if kind not in KINDS or kind == "github.pr" else None)
+    if kind == "github.issue":
+        target = payload.get("repo")
+    elif kind == "mail.send":
+        target = payload.get("to")
+    else:
+        target = payload.get("target") if kind not in KINDS or kind == "github.pr" else None
     approval_id = approvals.request(actor=actor, kind=kind, target=target,
                                     summary=text.splitlines()[0], payload=payload)
+    display = {"plain": True} if kind == "github.issue" else {}
     if not notify.ask(approval_id, text, yes="Yes, do it", no="No",
-                      thread_id=thread_id):
+                      thread_id=thread_id, **display):
         # An approval nobody can see is an approval that will only ever expire.
         # Say so now rather than letting the caller wait out the timeout.
         with db.session() as con:

@@ -259,6 +259,60 @@ class PullRequests(RedTier):
         self.assertEqual(self.actions()[-1]["approval_id"], i)
 
 
+class Issues(RedTier):
+    PAYLOAD = {"repo": "org/proj", "title": "Keep the literal title",
+               "body": "[visible label](https://example.com/hidden-target)\n**literal body**\n"}
+
+    def test_issue_renderer_shows_the_complete_exact_text(self):
+        text = red.render("github.issue", self.PAYLOAD)
+        self.assertIn("https://github.com/org/proj", text)
+        self.assertIn(self.PAYLOAD["title"], text)
+        self.assertTrue(text.endswith(self.PAYLOAD["body"]))
+
+    def test_incomplete_malformed_or_oversized_issues_are_refused(self):
+        for changes in ({"repo": "--evil"}, {"title": "a\nb"}, {"body": None},
+                        {"title": ""}, {"body": "x" * 4000}, {"body": "😀" * 2000}):
+            with self.assertRaises(ValueError):
+                red.render("github.issue", {**self.PAYLOAD, **changes})
+
+    def test_issue_creation_needs_a_tap_and_cannot_reuse_one(self):
+        from herald import ghpr
+        with mock.patch.object(ghpr, "run", return_value="https://github.com/org/proj/issues/8\n") as run:
+            pending = self.add("pending", "github.issue", self.PAYLOAD)
+            with self.assertRaises(PermissionError):
+                red.execute(pending)
+            run.assert_not_called()
+            approved = self.add("approved", "github.issue", self.PAYLOAD)
+            result = red.execute(approved)
+            with self.assertRaises(PermissionError):
+                red.execute(approved)
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], ["gh", "issue", "create", "--repo", "github.com/org/proj",
+                                               "--title", self.PAYLOAD["title"], "--body-file", "-"])
+        self.assertEqual(run.call_args.kwargs["stdin"], self.PAYLOAD["body"])
+        self.assertEqual(result["ref"], "https://github.com/org/proj/issues/8")
+        self.assertEqual(self.actions()[-1]["approval_id"], approved)
+
+    def test_issue_request_uses_literal_display(self):
+        with mock.patch.object(red.approvals, "request", return_value=1) as request, \
+                mock.patch.object(red.notify, "ask", return_value=True) as ask:
+            red.request("github.issue", self.PAYLOAD, actor="test", thread_id=9)
+        self.assertTrue(ask.call_args.kwargs["plain"])
+        self.assertEqual(ask.call_args.kwargs["thread_id"], 9)
+        self.assertEqual(request.call_args.kwargs["target"], "org/proj")
+
+    def test_plain_display_neither_formats_nor_truncates_the_issue(self):
+        from herald import notify
+        text = red.render("github.issue", self.PAYLOAD)
+        with mock.patch.object(notify, "_telegram_chat_id", return_value=1), \
+                mock.patch.object(notify, "_telegram_api", return_value={"ok": True}) as api:
+            self.assertTrue(notify.ask(1, text, plain=True, thread_id=9))
+            self.assertEqual(api.call_args.kwargs["text"], text)
+            self.assertNotIn("parse_mode", api.call_args.kwargs)
+            with self.assertRaises(ValueError):
+                notify.ask(1, "x" * 4000, plain=True)
+
+
 class ApprovalTopic(unittest.TestCase):
     """An approval asked from a Telegram turn lands in that turn's topic."""
 

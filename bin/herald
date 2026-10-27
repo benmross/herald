@@ -1465,6 +1465,19 @@ def cmd_act(args) -> int:
                 payload[key] = getattr(args, key)
         result = red.run("mail.send", payload, actor=args.actor,
                          timeout=args.timeout, thread_id=args.telegram_thread)
+    elif args.kind == "issue-open":
+        try:
+            body = pathlib.Path(args.body_file).expanduser().read_text()
+            payload = {"repo": args.repo, "title": args.title, "body": body}
+            rendered = red.render("github.issue", payload)
+        except (OSError, ValueError) as exc:
+            print(f"cannot prepare the issue: {exc}", file=sys.stderr)
+            return 1
+        if args.show:
+            print(rendered)
+            return 0
+        result = red.run("github.issue", payload, actor=args.actor,
+                         timeout=args.timeout, thread_id=args.telegram_thread)
     elif args.kind == "pr-open":
         # The payload is read from the checkout itself, so the tap shows the
         # branch as it is, with its commit hash, and the performer refuses to
@@ -2285,6 +2298,12 @@ def main() -> int:
     ms.add_argument("--cc")
     ms.add_argument("--thread-id", help="Gmail thread to reply within")
     ms.add_argument("--in-reply-to", help="Message-ID header being replied to")
+    issue = act_sub.add_parser("issue-open", parents=[common],
+                               help="red: file a GitHub issue after a tap on its exact text")
+    issue.add_argument("--repo", required=True, help="GitHub owner/repo")
+    issue.add_argument("--title", required=True)
+    issue.add_argument("--body-file", required=True)
+    issue.add_argument("--show", action="store_true", help="preview without asking or posting")
     pr = act_sub.add_parser("pr-open", parents=[common],
                             help="red: push a branch and open a GitHub pull request, "
                                  "only after the user taps yes")

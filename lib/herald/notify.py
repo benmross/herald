@@ -425,7 +425,7 @@ def telegram_document(path, *, caption: str | None = None,
 
 
 def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
-        no: str = "No", thread_id: int | None = None) -> bool:
+        no: str = "No", thread_id: int | None = None, plain: bool = False) -> bool:
     """Put a red-tier action in front of the user as two buttons.
 
     Pairs with lib/herald/approvals.py: this only asks. The tap is recorded by
@@ -446,9 +446,14 @@ def ask(approval_id: int, text: str, *, yes: str = "Yes, do it",
         # worse than Updates.
         thread_id = _resolve(_own_topic_thread(chat_id))
     extra = {"message_thread_id": thread_id} if thread_id else {}
+    if plain:
+        if len(text.encode("utf-16-le")) // 2 > tgtext.LIMIT:
+            raise ValueError("a literal approval cannot be truncated")
+    else:
+        extra["parse_mode"] = "HTML"
     resp = _telegram_api(
         "sendMessage", chat_id=chat_id,
-        text=tgtext.to_html(text[:tgtext.LIMIT]), parse_mode="HTML",
+        text=text if plain else tgtext.to_html(text[:tgtext.LIMIT]),
         link_preview_options={"is_disabled": True},
         reply_markup={"inline_keyboard": [[
             {"text": yes, "callback_data": f"approve:{approval_id}"},

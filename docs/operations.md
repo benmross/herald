@@ -135,6 +135,41 @@ their sign-in commands: `claude auth login` or `codex login`. It asks the CLIs
 for authentication status and never reads their credential files. A failure
 affects that provider; it never switches to the other one.
 
+## Google Tasks changes
+
+Interactive sessions can use `gwrite.task_complete` and `task_reopen` with
+`list_name`, Google's `task_id`, and a `user_statement` quoting your explicit
+instruction. `tasklist_create` takes `title` and `user_request` quoting your
+request for a new list. All take the existing database connection and `actor`.
+They record an action and immediately update task facts from Google's response.
+Assigned tasks that may affect Docs or Chat collaborators are refused.
+
+These functions refuse a background cycle identified by `HERALD_ACTOR`.
+They are not exposed through `herald amber`. Cycles must never infer completion
+from deadlines, silence or other activity, or create lists on their own. The
+quoted statement is an audit requirement, not proof of identity: a session
+must use the user's actual words. Private sessions refuse all three writes.
+
+## GitHub issues
+
+Prepare an issue in a file and preview it without posting:
+
+```bash
+herald act issue-open --repo owner/repo --title 'Describe the failure' \
+  --body-file /path/to/issue.md --show
+```
+
+Run the same command without `--show` to request an approval tap. It displays
+the repository, exact title and whole body as literal text, then posts the
+stored payload through `red.py` only after approval. Changing the body file
+after requesting approval does not change the stored request. A failure
+consumes the approval rather than allowing a retry with an old tap.
+
+The whole approval must fit one Telegram message. Longer issues are refused
+before a request is sent; shorten the body rather than approving a truncated
+preview. This command currently targets GitHub.com and uses your local `gh`
+login. Adding the command does not publish anything by itself.
+
 ## Subscription usage
 
 `herald usage` and Telegram's `/usage` show subscription percentages and reset
