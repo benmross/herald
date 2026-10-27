@@ -1028,18 +1028,18 @@ def mirror_to_password_manager(context, host: str, email: str, pw: str, company:
     if not ext:
         return False
     try:
-        bw = context.new_page()
-        bw.goto(f"chrome-extension://{ext}/popup/index.html#/add-cipher?type=1",
+        vault_page = context.new_page()
+        vault_page.goto(f"chrome-extension://{ext}/popup/index.html#/add-cipher?type=1",
                 wait_until="domcontentloaded")
-        bw.wait_for_timeout(2500)
-        bw.get_by_label("Item name", exact=False).first.fill(f"{company or host} (job applications)")
-        bw.get_by_label("Username", exact=False).first.fill(email)
-        bw.get_by_label("Password", exact=False).first.fill(pw)
-        uri = bw.get_by_label("Website (URI)", exact=False)
-        (uri if uri.count() else bw.get_by_label("URI", exact=False)).first.fill(f"https://{host}")
-        bw.get_by_role("button", name="Save").first.click()
-        bw.wait_for_timeout(2000)
-        bw.close()
+        vault_page.wait_for_timeout(2500)
+        vault_page.get_by_label("Item name", exact=False).first.fill(f"{company or host} (job applications)")
+        vault_page.get_by_label("Username", exact=False).first.fill(email)
+        vault_page.get_by_label("Password", exact=False).first.fill(pw)
+        uri = vault_page.get_by_label("Website (URI)", exact=False)
+        (uri if uri.count() else vault_page.get_by_label("URI", exact=False)).first.fill(f"https://{host}")
+        vault_page.get_by_role("button", name="Save").first.click()
+        vault_page.wait_for_timeout(2000)
+        vault_page.close()
         return True
     except bw.Busy:
         raise

@@ -84,6 +84,12 @@ class Store(unittest.TestCase):
 
 
 class NoPasswords(unittest.TestCase):
+    def test_password_manager_failure_does_not_break_local_account_recovery(self):
+        context=mock.Mock()
+        context.new_page.return_value.goto.side_effect=RuntimeError('Extension unavailable')
+        with mock.patch.object(ats.config,'get',return_value='example-extension'):
+            self.assertFalse(ats.mirror_to_password_manager(context,'jobs.example','ada@example.org','fixture-only','Example'))
+
     def test_choices_must_be_unambiguous(self):
         self.assertIsNone(ap.best_option('Computer Science',['Computer Science and Engineering','Computer Science and Mathematics']))
         self.assertIsNone(ap.best_option('No',['Not specified','Not applicable']))
