@@ -212,10 +212,13 @@ where a rule in a prompt is not enough, `lib/herald/approvals.py` is the
 mechanism: the actor writes what it wants to do into the `approvals` table, the
 user taps yes or no on their phone, and only then does the actor carry it out.
 
-The surface that collects the tap never performs the action (the process that
-asked is the one that acts), so a session cannot approve itself by reaching the
-approving code, and an approval nobody consumes expires. The bundled iMessage
-extension's send path is the first user.
+The surface that collects the tap never performs the action: the process that
+asked is the one that acts, and an approval nobody consumes expires. The
+normal callback path accepts only the configured owner's Telegram user id.
+This separation prevents accidental execution in the bridge; it does not
+isolate approvals from a process running as the same Unix user. That process
+can edit the approvals database and access the main bot's credentials. The
+bundled iMessage extension's send path is the first user.
 
 ## Safety rules, owned by Herald rather than the engine
 
@@ -600,8 +603,12 @@ to describe its own request. One tap is one action: `execute` claims the
 approval atomically, and a failed action still consumes it so an old tap cannot
 be replayed.
 
-The guard is a tripwire, not a sandbox. The tap is the only
-part a determined or fooled session cannot produce.
+The guard is a tripwire, not a sandbox. Non-root approvals protect the normal
+execution path from mistakes and misleading input. A determined process with
+the user's filesystem access can bypass them by changing their state or the
+code that performs them. Root approvals use a separate bot and root-owned
+daemon for this reason. See [answer buttons and approvals](approval-questions.md)
+for the distinction between conversation input and permission to act.
 
 ## The rules a session reads
 
