@@ -319,6 +319,19 @@ def _in_history(bank, value):
     return False
 
 
+IDENTITY = re.compile(r"^((legal|full|preferred|first|last|given|family|middle)\s*)*name$|^sur ?name$|"
+                      r"^(e-?mail|email address)$|^(mobile |cell )?phone( number)?$|^mobile number$|"
+                      r"^linkedin|^github|^(personal )?website$|^portfolio")
+
+
+def _identity(key):
+    return bool(IDENTITY.search(ap.norm(key)))
+
+
+def _edited(old, key):
+    return any(q.get("source") == "you" and ap.norm(q["label"]) == key for q in (old or {}).get("questions", []))
+
+
 def _same(q, a, b):
     return _canon(_display(q, a)) == _canon(_display(q, b))
 
@@ -399,6 +412,18 @@ def build(app_id, *, refresh=False):
             return _load(con, app_id)
     bank = ap.load_bank()
     answers = ap.app_answers(row)
+    # Identity fields (name, email, phone, links) come from the profile. An
+    # old per-application copy wins in the adapters, which read application
+    # answers first, so it is deleted rather than merely hidden: the desk
+    # showed the profile name while three forms received a capitalised one
+    # (27 Oct 2026).
+    stale = [k for k in answers if _identity(k) and not _edited(old, k)]
+    if stale:
+        for k in stale:
+            answers.pop(k)
+        with db.session() as con:
+            con.execute("UPDATE applications SET answers=? WHERE id=?",
+                        (json.dumps(answers, ensure_ascii=False), app_id))
     edits = {q["key"]: q for q in (old or {}).get("questions", []) if q.get("source") == "you"}
     questions = []
     for q in got["questions"]:
@@ -603,28 +628,16 @@ def fill(app_id):
         _close_tab(app_id)
         return
     problems = [q["q"] for q in r.get("pending", [])] + list(r.get("failed", []))
-    try:
-        refreshed = _from_checkpoint(app_id)
-        if refreshed and refreshed["questions"] and load(app_id)["source"] != "api":
-            bank, row2 = ap.load_bank(), None
-            with db.session() as con:
-                row2 = ap.get(con, app_id)
-            qs = []
-            for q in refreshed["questions"]:
-                v, src = _answer(bank, q, row2["company"], ap.app_answers(row2))
-                q.update(answer=v, source=src)
-                q["display"] = _display(q, v)
-                q["flag"] = _flag(q)
-                qs.append(q)
-            with db.session() as con:
-                _save(con, app_id, questions=qs, source="checkpoint")
-    except Exception as e:  # the fill result stands even if the summary fails
-        print("  packet refresh failed:", type(e).__name__, flush=True)
     with db.session() as con:
         if r.get("done") and not problems:
             _save(con, app_id, state="ready", filled_at=db.now(), blockers=[])
         else:
             _save(con, app_id, state="blocked", blockers=problems or ["The form did not reach its final page."])
+    try:
+        # Show what the form now holds, not what the packet assumed.
+        build(app_id)
+    except Exception as e:  # the fill result stands even if the summary fails
+        print("  packet refresh failed:", type(e).__name__, flush=True)
     if not (r.get("done") and not problems):
         # A stopped form keeps nothing a tab is needed for: its checkpoint
         # holds the answers and the desk reopens it on demand. Leaving every
