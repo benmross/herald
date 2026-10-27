@@ -105,7 +105,8 @@ Do these, in this order:
    [--due YYYY-MM-DD] --notes "<source>" --fact <id>`, which also shows it to
    {THEM} with Keep / Done / Drop; never insert into the table directly, because
    a row added that way is one {THEY} never hear about. Check for duplicates first.
-   Close one only on evidence (a sent reply, a payment that arrived) with
+   Mark one done only when the user explicitly says it is finished. Do not
+   infer completion from a sent reply, payment, deadline or silence. Use
    `herald obligation done <id> --why "<evidence>"` or `drop`, which tells {THEM}.
    - **A dated course item is not an obligation.** A quiz, exam or due date goes
      on the calendar: `herald deadline add "<title>" --kind quiz|test|due

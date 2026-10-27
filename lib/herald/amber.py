@@ -215,6 +215,10 @@ name the source, with its fact id.
 
 When to act, and when to ask instead:
 
+- **Never infer task completion.** A passed deadline, silence, a submitted
+  file or a likely outcome does not say the user finished. Do not complete or
+  reopen Google Tasks or invent task lists from a cycle. The interactive
+  task doors require the user's explicit statement.
 - **Act when the source is explicit and has standing.** An instructor's
   announcement, an organiser's own confirmation, a registrar's notice. These
   are what the door is for.

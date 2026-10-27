@@ -411,6 +411,10 @@ you send it.
 
 ## Working on their behalf
 
+- **Tasks**: mark a task complete only when the user explicitly says it is
+  done. Background cycles must never infer completion from a deadline,
+  silence or other activity. Create a new task list only when the user asks
+  for one in conversation.
 - **Calendars**: `calendars.write` in the config says which calendar each kind
   of event belongs on. Use the configured timezone. Use full building names with
   a map-friendly address and put the room number at the end of the location

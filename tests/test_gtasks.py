@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import os
 import sqlite3
 import sys
 import unittest
@@ -150,6 +151,99 @@ class Tasks(unittest.TestCase):
             gwrite.task_create(self.con, actor="test", list_name="Tasks", title="New")
         self.assertEqual(self.con.execute("SELECT count(*) FROM facts").fetchone()[0], 0)
         self.assertEqual(self.con.execute("SELECT count(*) FROM actions").fetchone()[0], 0)
+
+    def test_new_list_records_explicit_request_and_is_immediately_visible(self):
+        self.svc.tasklists.return_value.insert.return_value.execute.return_value = {
+            "id": "new-list", "title": "Daily"}
+        result = gwrite.tasklist_create(self.con, actor="test", title="Daily",
+                                        user_request="make me a daily tasks list")
+        self.assertEqual(result["id"], "new-list")
+        self.assertEqual(self.con.execute(
+            "SELECT title FROM facts WHERE kind='list'").fetchone()[0], "Daily")
+        action = self.con.execute("SELECT * FROM actions").fetchone()
+        self.assertEqual(action["kind"], "tasklist.create")
+        self.assertEqual(action["tier"], "green")
+        self.assertIn("make me a daily tasks list", action["summary"])
+
+    def test_duplicate_list_is_refused_before_a_write(self):
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            gwrite.tasklist_create(self.con, actor="test", title="Tasks",
+                                   user_request="make a Tasks list")
+        self.svc.tasklists.return_value.insert.assert_not_called()
+
+    def test_task_completion_requires_an_explicit_statement_before_google_access(self):
+        with self.assertRaisesRegex(ValueError, "do not infer"):
+            gwrite.task_complete(self.con, actor="test", list_name="Tasks", task_id="old",
+                                  user_statement=" ")
+        google.service.assert_not_called()
+
+    def test_new_list_requires_an_explicit_request(self):
+        with self.assertRaises(ValueError):
+            gwrite.tasklist_create(self.con, actor="test", title="Daily", user_request="")
+        google.service.assert_not_called()
+
+    def test_cycles_cannot_complete_reopen_or_create_lists_even_with_a_quote(self):
+        with mock.patch.dict(os.environ, {"HERALD_ACTOR": "dawn"}):
+            for fn in (gwrite.task_complete, gwrite.task_reopen):
+                with self.assertRaises(PermissionError):
+                    fn(self.con, actor="session", list_name="Tasks", task_id="old",
+                       user_statement="done")
+            with self.assertRaises(PermissionError):
+                gwrite.tasklist_create(self.con, actor="session", title="Daily", user_request="create it")
+        google.service.assert_not_called()
+
+    def test_complete_then_reopen_updates_google_and_facts_without_duplicates(self):
+        self.seed()
+        self.svc.tasks.return_value.get.return_value.execute.return_value = {
+            "id": "old", "title": "Work", "status": "needsAction"}
+        self.svc.tasks.return_value.patch.return_value.execute.return_value = {
+            "id": "old", "title": "Work", "status": "completed", "completed": "now"}
+        gwrite.task_complete(self.con, actor="test", list_name="Tasks", task_id="old",
+                              user_statement="I finished Work")
+        self.assertEqual(self.task()[1]["status"], "completed")
+        self.assertEqual(self.task()[1]["completed"], "now")
+        patch = self.svc.tasks.return_value.patch.call_args.kwargs
+        self.assertEqual(patch["body"]["status"], "completed")
+        self.assertTrue(patch["body"]["completed"])
+        self.svc.tasks.return_value.get.return_value.execute.return_value = {
+            "id": "old", "title": "Work", "status": "completed", "completed": "now"}
+        self.svc.tasks.return_value.patch.return_value.execute.return_value = {
+            "id": "old", "title": "Work", "status": "needsAction"}
+        gwrite.task_reopen(self.con, actor="test", list_name="Tasks", task_id="old",
+                           user_statement="reopen Work")
+        self.assertEqual(self.task()[1]["status"], "needsAction")
+        self.assertIsNone(self.task()[1]["completed"])
+        self.assertEqual(self.svc.tasks.return_value.patch.call_args.kwargs["body"],
+                         {"status": "needsAction", "completed": None})
+        self.assertEqual([r[0] for r in self.con.execute("SELECT kind FROM actions")],
+                         ["task.complete", "task.reopen"])
+
+    def test_already_completed_is_a_readback_not_another_write(self):
+        self.svc.tasks.return_value.get.return_value.execute.return_value = {
+            "id": "old", "title": "Work", "status": "completed"}
+        gwrite.task_complete(self.con, actor="test", list_name="Tasks", task_id="old",
+                              user_statement="finished Work")
+        self.svc.tasks.return_value.patch.assert_not_called()
+        self.assertEqual(self.task()[1]["status"], "completed")
+        self.assertEqual(self.con.execute("SELECT count(*) FROM actions").fetchone()[0], 0)
+
+    def test_assigned_and_deleted_tasks_are_refused(self):
+        for extra in ({"assignmentInfo": {"contextType": "DOCUMENT"}}, {"deleted": True}):
+            self.svc.tasks.return_value.get.return_value.execute.return_value = {
+                "id": "old", "status": "needsAction", **extra}
+            with self.assertRaises((PermissionError, ValueError)):
+                gwrite.task_complete(self.con, actor="test", list_name="Tasks", task_id="old",
+                                      user_statement="done")
+        self.svc.tasks.return_value.patch.assert_not_called()
+
+    def test_new_task_doors_are_refused_in_private_sessions(self):
+        with mock.patch.dict(os.environ, {"HERALD_PRIVATE": "1"}):
+            with self.assertRaises(gwrite.private.Refused):
+                gwrite.tasklist_create(self.con, actor="test", title="Daily", user_request="make it")
+            for fn in (gwrite.task_complete, gwrite.task_reopen):
+                with self.assertRaises(gwrite.private.Refused):
+                    fn(self.con, actor="test", list_name="Tasks", task_id="old", user_statement="done")
+        google.service.assert_not_called()
 
 
 if __name__ == "__main__":

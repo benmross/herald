@@ -41,6 +41,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import hashlib
+import os
 import re
 from email.message import EmailMessage
 
@@ -397,12 +398,91 @@ def _tasklist_id(svc, name: str) -> str | None:
             return None
 
 
+def _task_user_request(statement: str) -> str:
+    """Require an interactive request, retained in the audit row.
+
+    This is a caller contract, not authentication of the quoted statement.
+    Cycles only get amber.task_create; they cannot use these interactive doors.
+    """
+    if os.environ.get("HERALD_ACTOR"):
+        raise PermissionError("task completion and new lists require an interactive request")
+    if not isinstance(statement, str) or not statement.strip():
+        raise ValueError("quote the user's explicit request; do not infer it")
+    return statement.strip()
+
+
+def tasklist_create(con, *, actor: str, title: str, user_request: str) -> dict:
+    """Create a list only on an explicit conversational request, never a cycle."""
+    request = _task_user_request(user_request)
+    title = title.strip()
+    if not title:
+        raise ValueError("a task list needs a title")
+    svc = google.service("tasks", "v1")
+    if _tasklist_id(svc, title):
+        raise ValueError(f"a Google Tasks list named {title!r} already exists")
+    result = svc.tasklists().insert(body={"title": title}).execute()
+    _log(con, actor, "green", "tasklist.create", title,
+         f"created task list '{title[:60]}'. User request: {request}",
+         f"gtask-list:{result['id']}")
+    db.put_fact(con, "gtasks", "list", external_id=result["id"], title=result["title"])
+    con.commit()
+    return result
+
+
+def _task_status(con, *, actor: str, list_name: str, task_id: str,
+                 status: str, user_statement: str, tier: str) -> dict:
+    statement = _task_user_request(user_statement)
+    svc = google.service("tasks", "v1")
+    lid = _tasklist_id(svc, list_name)
+    if not lid:
+        raise ValueError(f"no Google Tasks list named {list_name!r}")
+    if not task_id or "::" in task_id:
+        raise ValueError("task_id must be Google's task id within the named list")
+    existing = svc.tasks().get(tasklist=lid, task=task_id).execute()
+    if existing.get("deleted"):
+        raise ValueError("the task has been deleted")
+    # Assigned tasks may be visible in Docs or Chat to other people.
+    if existing.get("assignmentInfo"):
+        raise PermissionError("assigned tasks are not private Google Tasks")
+    if existing.get("status") == status:
+        gtasks.store_task(con, list_id=lid, list_name=list_name, task=existing)
+        con.commit()
+        return existing
+    body = {"status": status, "completed": (
+        dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+        if status == "completed" else None)}
+    task = svc.tasks().patch(tasklist=lid, task=task_id, body=body).execute()
+    verb = "completed" if status == "completed" else "reopened"
+    action = "complete" if status == "completed" else "reopen"
+    _log(con, actor, tier, f"task.{action}", list_name,
+         f"{verb} task '{existing.get('title', '')[:60]}'. User statement: {statement}",
+         f"gtask:{lid}:{task_id}")
+    gtasks.store_task(con, list_id=lid, list_name=list_name, task=task)
+    con.commit()
+    return task
+
+
+def task_complete(con, *, actor: str, list_name: str, task_id: str,
+                  user_statement: str, tier: str = "amber") -> dict:
+    """Complete a private task after the user explicitly says it is done."""
+    return _task_status(con, actor=actor, list_name=list_name, task_id=task_id,
+                        status="completed", user_statement=user_statement, tier=tier)
+
+
+def task_reopen(con, *, actor: str, list_name: str, task_id: str,
+                user_statement: str, tier: str = "amber") -> dict:
+    """Reopen a private task on the user's explicit request."""
+    return _task_status(con, actor=actor, list_name=list_name, task_id=task_id,
+                        status="needsAction", user_statement=user_statement, tier=tier)
+
+
 def task_create(con, *, actor: str, list_name: str, title: str,
                 notes: str | None = None, due: str | None = None,
                 tier: str = "amber") -> dict:
     """Add a task to one of the user's lists. `due` is a bare ISO date.
 
-    The list must already exist: creating lists is their taxonomy, not ours.
+    The list must already exist. For an explicitly requested new list, call
+    tasklist_create first; background cycles cannot invent lists.
     """
     svc = google.service("tasks", "v1")
     lid = _tasklist_id(svc, list_name)
