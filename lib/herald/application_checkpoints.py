@@ -228,6 +228,8 @@ class Recorder:
         bad=[v for v in self.writes.values() if not v.get('verified')]
         if bad:failures.append('Some field writes have not passed readback verification.')
         # Only boolean attachment evidence leaves the page; never save its body text.
+        if self.adapter.resume and not self.artifacts:
+            failures.append('The attachment source version has not been verified for this draft.')
         names=[x['name'] for x in self.artifacts]
         evidence=[False for _ in names]
         for frame in self.page.frames:

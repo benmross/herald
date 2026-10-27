@@ -1,13 +1,14 @@
 """Real local forms: row identities, remounts, uploads and restart recovery."""
 import json
 import pathlib
+import socket
 import sys
 import tempfile
 import unittest
 from unittest import mock
 
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'lib'))
-from herald import apply, ats, application_checkpoints as cp, browser_workspaces as bw, config, db
+from herald import apply, ats, application_checkpoints as cp, browser_workspaces as bw, browse, config, db
 
 
 class Recovery(unittest.TestCase):
@@ -63,6 +64,37 @@ class Recovery(unittest.TestCase):
         self.assertEqual(len(payload['writes']),2)
         self.assertEqual(self.page.locator('#start').input_value(),'2026')
         self.assertEqual(self.page.locator('#end').input_value(),'2029')
+
+    def test_existing_attachment_without_an_approved_version_is_not_ready(self):
+        self.page.set_content('<div>resume.txt</div><button type=button>Submit</button>')
+        a=self.adapter(str(self.resume))
+        issues=a.checkpoint.verify_review({'done':True,'filled':[],'pending':[],'failed':[]})
+        self.assertTrue(any('source version' in x for x in issues))
+        self.assertFalse(cp.latest(self.aid)['verified'])
+
+    def test_two_human_browsers_share_controller_runtime_and_close_independently(self):
+        other=bw.create()['id'];workspaces=[self.workspace,other]
+        browsers=[];urls={};sessions=[]
+        try:
+            for workspace in workspaces:
+                with socket.socket() as sock:
+                    sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+                browsers.append(self.pw.chromium.launch(headless=True,args=['--remote-debugging-port='+str(port)]))
+                urls[workspace]='http://127.0.0.1:'+str(port)
+                bw.take_control(workspace,review=True)
+            with mock.patch.object(browse,'ensure'),mock.patch.object(browse,'cdp_url',side_effect=lambda w:urls[w]):
+                for i,workspace in enumerate(workspaces):
+                    s=browse.Session(workspace,human=True,playwright=self.pw)
+                    sessions.append(s)
+                    page=s.ctx.new_page();page.set_content('<input id=n>');page.locator('#n').fill(str(i))
+                sessions[0].close();sessions.pop(0)
+                self.assertEqual(sessions[0].pages()[-1].locator('#n').input_value(),'1')
+                sessions[0].close();sessions.clear()
+                # Closing borrowed sessions must not stop the shared runtime.
+                self.assertTrue(self.browser.is_connected())
+        finally:
+            for s in sessions:s.close()
+            for browser in browsers:browser.close()
 
     def test_checkpoint_survives_actual_browser_loss_and_restores_attachment(self):
         html='''<label for=n>First name</label><input id=n required>

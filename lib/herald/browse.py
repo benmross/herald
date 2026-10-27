@@ -248,7 +248,7 @@ def ensure(workspace=None) -> None:
 class Session:
     """One connection to the profile browser, for one command."""
 
-    def __init__(self, workspace=None, *, human=False, timeout=8):
+    def __init__(self, workspace=None, *, human=False, timeout=8, playwright=None):
         from . import browser_workspaces as bw
         from playwright.sync_api import sync_playwright
         self.workspace = bw.name(workspace)
@@ -259,12 +259,13 @@ class Session:
         self._lease = bw.lease(self.workspace, human=human, timeout=timeout)
         self._lease.__enter__()
         self._pw = None
+        self._owns_playwright = playwright is None
         try:
             ensure(self.workspace)
             with urllib.request.urlopen(cdp_url(self.workspace) + '/json/version', timeout=3) as r:
                 version = json.load(r)
             bw.note_browser(self.workspace, version['webSocketDebuggerUrl'].rsplit('/', 1)[-1])
-            self._pw = sync_playwright().start()
+            self._pw = playwright or sync_playwright().start()
             self.browser = self._pw.chromium.connect_over_cdp(cdp_url(self.workspace))
             self.ctx = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
             if self.workspace != 'default' and not self.ctx.cookies():
@@ -274,7 +275,7 @@ class Session:
                     # never in application checkpoints or tool output.
                     self.ctx.add_cookies(json.loads(auth.read_text()))
         except BaseException:
-            if self._pw:
+            if self._pw and self._owns_playwright:
                 self._pw.stop()
             self._lease.__exit__(None, None, None)
             raise
@@ -293,7 +294,7 @@ class Session:
         except Exception:
             pass
         try:
-            self._pw.stop()
+            if self._owns_playwright:self._pw.stop()
         except Exception:
             pass
         if self._lease:

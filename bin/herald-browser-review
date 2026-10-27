@@ -41,10 +41,13 @@ setInterval(async()=>{const r=await fetch(B+'/status');if(!r.ok){document.queryS
 
 
 class Driver:
-    def __init__(self):self.sessions={}
+    def __init__(self):self.sessions={};self.playwright=None
     def session(self,workspace):
         if workspace not in self.sessions:
-            s=browse.Session(workspace,human=True,timeout=1)
+            if self.playwright is None:
+                from playwright.sync_api import sync_playwright
+                self.playwright=sync_playwright().start()
+            s=browse.Session(workspace,human=True,timeout=1,playwright=self.playwright)
             try:
                 from herald import db
                 with db.session() as c:
