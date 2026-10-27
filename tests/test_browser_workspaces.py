@@ -105,6 +105,15 @@ class Workspaces(unittest.TestCase):
         bw.create()
         with self.assertRaises(bw.Capacity):bw.create()
 
+    def test_other_platforms_keep_default_browser_without_losing_existing_workers(self):
+        with mock.patch.object(bw,'managed_workers',return_value=False):
+            self.assertEqual(bw.choose(1,'https://jobs.example/role'),'default')
+            self.assertIsNone(bw.ready_group('default',partial=True))
+            with self.assertRaises(bw.Busy):bw.start('example')
+            w=bw.create()['id'];aid=self.app(w,41)
+            with self.assertRaises(bw.Busy):bw.choose(aid,'https://jobs41.example/41')
+            self.assertEqual(bw.binding(aid)['workspace'],w)
+
     def test_ten_verified_drafts_are_handed_over_without_affecting_next_worker(self):
         w=bw.create()['id'];other=bw.create()['id']
         for n in range(1,10):self.app(w,n)

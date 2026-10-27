@@ -11,6 +11,8 @@ import fcntl
 import os
 import re
 import socket
+import shutil
+import platform
 import subprocess
 import time
 import uuid
@@ -25,6 +27,10 @@ class Busy(RuntimeError):
 
 class Capacity(Busy):
     pass
+
+
+def managed_workers():
+    return platform.system() == 'Linux' and shutil.which('systemctl') is not None
 
 
 def name(value=None):
@@ -119,6 +125,11 @@ def bind(app_id, workspace, tab, generation=None):
 
 def choose(app_id, url):
     old = binding(app_id)
+    if not managed_workers():
+        if old and old['workspace']!='default':
+            raise Busy('This draft belongs to a managed worker unavailable on this platform; its checkpoints are preserved.')
+        assert_agent('default',url)
+        return 'default'
     if old and old['workspace'] != 'default':
         assert_agent(old['workspace'], url)
         return old['workspace']
@@ -210,6 +221,8 @@ def note_browser(workspace, browser_id):
 def start(workspace):
     if workspace == 'default':
         return
+    if not managed_workers():
+        raise Busy('Independent browser workers require Linux systemd services.')
     admit()
     r = subprocess.run(['systemctl', '--user', 'start', 'herald-browser-worker@' + name(workspace) + '.service'], capture_output=True, text=True, timeout=20)
     if r.returncode:
@@ -217,6 +230,7 @@ def start(workspace):
 
 
 def ready_group(workspace, *, partial=False, app_ids=None):
+    if not managed_workers():return None
     # A different session may still be filling this workspace. Never take a
     # partly active desktop away or publish a group behind its writer's back.
     if not get(workspace) or get(workspace)['state'] != 'agent':

@@ -417,6 +417,10 @@ def _hash(token: str) -> str:
 
 def new_view(tab: str, why: str, minutes: int = 30, *, workspace=None, group=None) -> str:
     """A link that lets the user drive one tab. Returns the token."""
+    from . import browser_workspaces as bw
+    if workspace is not None and not bw.managed_workers():
+        if group:raise RuntimeError('Managed review groups require Linux systemd services.')
+        workspace=None  # Preserve the existing viewer on other platforms.
     token = _random.token_urlsafe(24)
     spool().mkdir(parents=True, exist_ok=True)
     rec = {"tab": tab, "why": why[:300], "created": time.time(),

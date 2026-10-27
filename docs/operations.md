@@ -299,11 +299,15 @@ setting `browser.sandbox` to true turns it back on.
 
 ## Application browser recovery
 
+Managed workers and group review currently require Linux with systemd.
+Other platforms retain the original default browser and checkpointed filling.
+
 Application workers are separate `herald-browser-worker@<workspace>.service`
 instances. Each owns its profile, display and Chromium process. The review
 HTTP controller (`herald-browser-review.service`, localhost 8794 by default)
 can restart without killing those browsers. Install and enable it alongside
 the original browser service. On a Tailscale Serve installation, add:
+
 
 ```bash
 tailscale serve --bg --https=8449 --set-path /groups http://127.0.0.1:8794
