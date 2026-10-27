@@ -88,6 +88,30 @@ def calendar_id(name: str) -> str | None:
             return None
 
 
+def primary_calendar_name() -> str | None:
+    """The display name of the account's primary calendar.
+
+    Google accepts "primary" as an id, but calendars.roles is keyed by display
+    name, and the primary calendar's display name is the account address.
+    """
+    with db.session() as con:
+        row = con.execute(
+            "SELECT title FROM facts WHERE source='gcal' AND kind='calendar'"
+            " AND json_extract(data, '$.primary') = 1").fetchone()
+    if row:
+        return row[0]
+    page = None
+    svc = calendar_service()
+    while True:
+        resp = svc.calendarList().list(pageToken=page, maxResults=250).execute()
+        for cal in resp.get("items", []):
+            if cal.get("primary"):
+                return cal.get("summary")
+        page = resp.get("nextPageToken")
+        if not page:
+            return None
+
+
 def field_hash(body: dict) -> str:
     parts = [
         body.get("summary", ""),

@@ -37,6 +37,12 @@ class Calendars(unittest.TestCase):
                 with self.assertRaises(amber.Refused, msg=name):
                     amber.calendar(name)
 
+    def test_primary_alias_resolves_to_its_display_name(self):
+        with mock.patch.object(amber.config, "get", _get), \
+                mock.patch.object(amber.gwrite, "primary_calendar_name", lambda: "Mine"), \
+                mock.patch.object(amber.gwrite, "calendar_id", lambda n: "cal-" + n):
+            self.assertEqual(amber.calendar("primary"), "cal-Mine")
+
 
 class Privacy(unittest.TestCase):
     def test_other_attendee_refused(self):

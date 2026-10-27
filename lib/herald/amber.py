@@ -54,6 +54,10 @@ def _why(why: str) -> str:
 
 def calendar(name: str) -> str:
     """Resolve a calendar the user owns, or refuse."""
+    if name == "primary":
+        # calendars.write.default ships as "primary", but roles are keyed by
+        # display name, so the alias was refused as having no role at all.
+        name = gwrite.primary_calendar_name() or name
     role = (config.get("calendars.roles") or {}).get(name)
     if name in (config.get("calendars.ignore") or []):
         role = "ignored"          # outranks roles, as it does in the gcal collector
