@@ -197,6 +197,12 @@ def note_browser(workspace, browser_id):
         if changed:
             c.execute('UPDATE browser_workspaces SET generation=generation+1,last_error=? WHERE id=?', ('Browser restarted; recovery and verification required.', workspace))
             c.execute("UPDATE application_review_groups SET state='recovery' WHERE workspace=? AND state='review'", (workspace,))
+            c.execute("""UPDATE applications SET status='filling',
+              pending=json_insert(coalesce(pending,'[]'),'$[#]',json_object(
+                'q','Browser restarted; restore the saved checkpoint and verify this draft before review.',
+                'kind','action','required',json('true')))
+              WHERE status='filled' AND id IN
+                (SELECT app_id FROM application_browser WHERE workspace=?)""",(workspace,))
         c.execute('UPDATE browser_workspaces SET browser_id=? WHERE id=?', (browser_id, workspace))
     return changed
 

@@ -81,6 +81,10 @@ class Workspaces(unittest.TestCase):
         bw.note_browser(w,'first');bw.note_browser(w,'second')
         self.assertEqual(bw.group_info(group)['state'],'recovery')
         self.assertEqual(bw.get(w)['generation'],1)
+        with db.session() as c:
+            row=apply.get(c,aid)
+            self.assertEqual(row['status'],'filling')
+            self.assertIn('Browser restarted',row['pending'])
 
     def test_review_is_atomic_and_same_account_cannot_be_written(self):
         w=bw.create()['id'];aid=self.app(w);group=bw.ready_group(w,partial=True)
