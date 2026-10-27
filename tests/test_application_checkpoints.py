@@ -4,6 +4,7 @@ import pathlib
 import socket
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -14,22 +15,20 @@ from herald import apply, ats, application_checkpoints as cp, browser_workspaces
 class Recovery(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.root=pathlib.Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
         self.patches=[mock.patch.object(config,'HOME',self.root),mock.patch.object(config,'LEDGER',self.root/'ledger'),mock.patch.object(config,'DB_PATH',self.root/'facts.db'),mock.patch.object(bw,'admit')]
         self.patches.append(mock.patch.object(config,'link_ledger',return_value=None))
-        for p in self.patches:p.start()
+        for p in self.patches:
+            p.start();self.addCleanup(p.stop)
         try:
             from playwright.sync_api import sync_playwright
-            self.pw=sync_playwright().start();self.browser=self.pw.chromium.launch(headless=True)
+            self.pw=sync_playwright().start();self.addCleanup(self.pw.stop)
+            self.browser=self.pw.chromium.launch(headless=True)
+            self.addCleanup(lambda:self.browser.close())
         except Exception as e:self.skipTest(str(e).splitlines()[0])
         self.page=self.browser.new_page();self.workspace=bw.create()['id']
         with db.session() as c:self.aid=apply.record(c,url='https://jobs.example/role',company='Example')
         self.resume=self.root/'resume.txt';self.resume.write_text('Approved resume version one')
-
-    def tearDown(self):
-        if hasattr(self,'browser'):self.browser.close()
-        if hasattr(self,'pw'):self.pw.stop()
-        for p in reversed(self.patches):p.stop()
-        self.tmp.cleanup()
 
     def adapter(self,resume=''):
         a=ats.Generic(self.page,{'profile':{'first_name':'Ada'}},'Example',{},resume=resume)
@@ -138,3 +137,23 @@ class Recovery(unittest.TestCase):
         with self.assertRaises(ValueError):cp.artifact_path({**info,'path':'/etc/passwd'})
         pathlib.Path(info['path']).write_text('tampered')
         with self.assertRaises(ValueError):cp.artifact_path(info)
+
+
+class FixtureCleanup(unittest.TestCase):
+    def test_unavailable_chromium_restores_patches_when_setup_skips(self):
+        original_home=config.HOME;original_admit=bw.admit;original_link=config.link_ledger
+        api=types.ModuleType('playwright.sync_api')
+        pw=mock.Mock()
+        pw.chromium.launch.side_effect=RuntimeError('Chromium is unavailable')
+        api.sync_playwright=mock.Mock()
+        api.sync_playwright.return_value.start.return_value=pw
+        with mock.patch.dict(sys.modules,{'playwright':types.ModuleType('playwright'),'playwright.sync_api':api}):
+            case=Recovery('test_secret_values_never_cross_scan_or_checkpoint')
+            result=unittest.TestResult();case.run(result)
+        self.assertEqual(len(result.skipped),1)
+        self.assertEqual(result.errors,[])
+        self.assertIs(config.HOME,original_home)
+        self.assertIs(bw.admit,original_admit)
+        self.assertIs(config.link_ledger,original_link)
+        pw.stop.assert_called_once_with()
+        self.assertFalse(case.root.exists())

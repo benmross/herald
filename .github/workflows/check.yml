@@ -23,6 +23,10 @@ jobs:
         env:
           HERALD_HOME: ${{ runner.temp }}/herald-home
         run: ./venv/bin/python tools/check.py
+      - name: Install browser test dependencies
+        run: |
+          ./venv/bin/pip install --quiet playwright
+          ./venv/bin/python -m playwright install --with-deps chromium
       - name: Tests
         env:
           HERALD_HOME: ${{ runner.temp }}/herald-home
