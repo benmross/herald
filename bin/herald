@@ -1748,13 +1748,21 @@ def cmd_browse(args) -> int:
     from herald import browse  # noqa: PLC0415
 
     op = args.op
+    if op in ('workspaces', 'workspace'):
+        from herald import browser_workspaces as bw
+        if op == 'workspace':
+            print(bw.create(args.name)['id'])
+        else:
+            for w in bw.all_workspaces():
+                print(f"{w['id']}  {w['state']}  generation {w['generation']}")
+        return 0
     if op == "crawl":
         jobs = browse.read_jobs(args.urls)
         print(f"crawling {len(jobs)} pages, {args.concurrency} at a time, into {args.out}",
               flush=True)
         r = browse.crawl(jobs, args.out, concurrency=args.concurrency, wait_ms=args.wait,
                          grep=args.grep, profile=args.profile, every=args.every,
-                         links=args.links)
+                         links=args.links,workspace=args.workspace)
         print(f"done: {r['ok']} read, {r['err']} failed, {r['skipped']} already there, "
               f"{r['seconds']}s. One file per page, first line its final URL"
               + ("; matches.jsonl has the --grep hits." if args.grep else "."))
@@ -1771,18 +1779,27 @@ def cmd_browse(args) -> int:
         print(text[:args.max])
         return 0
 
-    with browse.Session() as s:
+    with browse.Session(getattr(args,'workspace',None)) as s:
         if op == "tabs":
             for i, p in enumerate(s.pages()):
                 print(f"  {i}  {s.tab_id(p)}  {p.title()[:60]!s:<60}  {p.url[:110]}")
             return 0
         if op == "open":
+            from herald import browser_workspaces as bw
+            bw.admit(s.workspace)
+            s.claim_account(args.url)
+            if len(s.pages()) >= int(config.get('browser.batch_size',10)):
+                raise SystemExit('Workspace tab limit reached; preserve this group before opening more.')
             page = s.ctx.new_page()
             page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
             browse.settle(page, args.wait)
             print(f"tab {s.tab_id(page)}  {page.title()[:70]}  {page.url}")
             return 0
         page = s.tab(args.tab)
+        s.claim_account(page.url)
+        mutates = op in ('fill','select','check','upload','click','press','go','close')
+        if mutates:
+            s.checkpoint_page(page,'before-browser-command')
         if op == "close":
             page.close()
             print("closed")
@@ -1840,8 +1857,10 @@ def cmd_browse(args) -> int:
                 print(f"no field {args.field!r}; `herald browse fields {args.tab}` lists them",
                       file=sys.stderr)
                 return 1
-            if (loc.get_attribute("type") or "").lower() == "password":
-                print("refused: a password is typed by the user, through "
+            from herald.application_checkpoints import PROTECTED
+            metadata=loc.evaluate("e=>[e.type,e.id,e.name,e.getAttribute('aria-label'),e.labels?[...e.labels].map(x=>x.innerText).join(' '):''].join(' ')")
+            if PROTECTED.search(metadata):
+                print("refused: a protected value is typed by the user, through "
                       "`herald browse login`, never by a session", file=sys.stderr)
                 return 1
             if op == "fill":
@@ -1905,7 +1924,7 @@ def cmd_browse(args) -> int:
                       file=sys.stderr)
                 return 1
             page.bring_to_front()  # the live screen shows whichever tab is in front
-            token = browse.new_view(s.tab_id(page), args.why, args.minutes)
+            token = browse.new_view(s.tab_id(page), args.why, args.minutes, workspace=s.workspace)
             url = browse.view_link(token)
             sent = notify.telegram(
                 f"A browser tab is waiting for you ({page.url[:80]}).\n{url}\n\n"
@@ -1915,6 +1934,8 @@ def cmd_browse(args) -> int:
                    "button in the left-hand menu to type." if "/vnc.html" in url else ""),
                 thread_id=notify._live_topic_thread())
             print("the link is on the user's phone" if sent else f"open: {url}")
+        if mutates and op != 'close':
+            s.checkpoint_page(page,'after-browser-command')
     return 0
 
 
@@ -1970,8 +1991,27 @@ def cmd_watch(args) -> int:
 def cmd_apply(args) -> int:
     """Fill job applications from the answer bank. Never submits. See lib/herald/apply.py."""
     from herald import apply as ap  # noqa: PLC0415
+    from herald import browser_workspaces as bw
+    touched = set()
+
+    def handoff(r, partial=False):
+        workspace = r.get('workspace')
+        if workspace:
+            touched.add(workspace)
+            group = bw.ready_group(workspace,partial=partial)
+            if group:
+                bw.publish(group)
+                print('A protected application group was sent to your phone.')
+
+    def report_error(label,e):
+        # Playwright errors may embed a navigation query or the value typed.
+        detail = str(e)[:300] if isinstance(e,bw.Busy) else 'Operation interrupted; checkpoint preserved. Inspect the draft before retrying.'
+        print(f'{label}: {type(e).__name__}: {detail}')
 
     def show(r):
+        if r.get('skipped'):
+            print(f"{r['company']}: already {r['skipped']}; no form opened")
+            return
         mark = "ready for review" if r.get("done") and not r["pending"] and not r.get("failed") else "waiting on answers"
         print(f"#{r['app']} {r['company']}: {r['title'][:60]} ({r['ats']}, tab {r['tab']}) {mark}; "
               f"{len(r['filled'])} filled" + (f", step {r['step']}" if r.get("step") else ""))
@@ -1984,11 +2024,15 @@ def cmd_apply(args) -> int:
     if args.op == "fill":
         for url in args.urls:
             try:
-                show(ap.run(url, opportunity=args.opp, company=args.company))
+                r=ap.run(url, opportunity=args.opp, company=args.company,workspace=args.workspace,retry=args.retry)
+                show(r);handoff(r)
             except SystemExit:
                 raise
             except Exception as e:
-                print(f"{url}: {type(e).__name__}: {str(e)[:200]}")
+                from herald.application_checkpoints import safe_url
+                report_error(safe_url(url),e)
+        for workspace in tuple(touched):
+            handoff({'workspace':workspace},partial=True)
         return 0
     if args.op == "refill":
         with db.session() as con:
@@ -1998,9 +2042,25 @@ def cmd_apply(args) -> int:
                                ap.DONE).fetchall()
         for r in rows:
             try:
-                show(ap.run(r["url"]))
+                result=ap.run(r["url"],workspace=getattr(args,'workspace',None),retry=getattr(args,'retry',False))
+                show(result);handoff(result)
             except Exception as e:
-                print(f"#{r['id']}: {type(e).__name__}: {str(e)[:200]}")
+                report_error(f"#{r['id']}",e)
+        for workspace in tuple(touched):
+            handoff({'workspace':workspace},partial=True)
+        return 0
+    if args.op == 'review':
+        if args.group:
+            bw.publish(args.group)
+        else:
+            groups={}
+            for i in args.ids:
+                bound=bw.binding(i)
+                if not bound:raise SystemExit('An application has no browser checkpoint; recover and verify it before review.')
+                groups.setdefault(bound['workspace'],[]).append(i)
+            for workspace,ids in groups.items():
+                group=bw.ready_group(workspace,partial=True,app_ids=ids)
+                if group:bw.publish(group)
         return 0
     if args.op == "pending":
         with db.session() as con:
@@ -2575,8 +2635,12 @@ def main() -> int:
     x = ay_sub.add_parser("fill", help="open each application and fill what the bank answers")
     x.add_argument("urls", nargs="+"); x.add_argument("--opp", type=int, help="opportunities.id")
     x.add_argument("--company")
+    x.add_argument("--workspace"); x.add_argument("--retry", action="store_true")
     x = ay_sub.add_parser("refill", help="fill again (after new answers, or a lost tab)")
     x.add_argument("ids", nargs="*", type=int)
+    x.add_argument("--workspace"); x.add_argument("--retry", action="store_true")
+    x = ay_sub.add_parser("review", help="send a protected group of verified applications for your review")
+    x.add_argument("ids", nargs="*", type=int); x.add_argument("--group")
     ay_sub.add_parser("pending", help="every unanswered question across open applications")
     x = ay_sub.add_parser("answer", help='store answers, then refill: JSON list of {"app","q","a","keep":app|bank|company,"pattern"}')
     x.add_argument("json", help="a file or a JSON string"); x.add_argument("--no-refill", action="store_true")
@@ -2607,7 +2671,11 @@ def main() -> int:
     wt.set_defaults(fn=cmd_watch, op="list")
 
     bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
+    bw.add_argument("--workspace", help="independent browser workspace")
     bw_sub = bw.add_subparsers(dest="op", required=True)
+    bw_sub.add_parser("workspaces", help="list durable browser ownership")
+    x = bw_sub.add_parser("workspace", help="register a separate browser workspace")
+    x.add_argument("name", nargs="?")
     bw_sub.add_parser("status", help="is the profile browser up, and where")
     bw_sub.add_parser("tabs", help="open tabs, with their ids")
     x = bw_sub.add_parser("fetch", help="render one public page headless and print its text")

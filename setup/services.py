@@ -348,7 +348,7 @@ def wanted_units(telegram_configured: bool) -> list[str]:
                 if default or (default is None and telegram_configured)
                 or (u == "herald-brain.service" and config.remote_control_enabled())
                 or (u == "herald-secrets.service" and secretintake.enabled())
-                or (u == "herald-browser.service" and _browser_wanted())]
+                or (u in ("herald-browser.service", "herald-browser-review.service") and _browser_wanted())]
     if platform_name() in ("launchd", "container"):
         return [label for label in launchd_jobs()
                 if telegram_configured or not label.endswith(".telegram")]

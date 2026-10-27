@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 
 from . import apply as ap
 from . import config
+from .application_checkpoints import PROTECTED_JS
 
 # Profile keys every applicant has, by question label. The values live in the
 # person's bank (apply.bank), never here.
@@ -128,6 +129,7 @@ SCAN_JS = r"""() => {
     }
     return '';
   };
+  const protectedPattern = __PROTECTED__;
   const out = []; const groups = {};
   // Ashby yes/no fields use buttons; their backing checkbox loses the
   // distinction between No and unanswered (27 Oct 2026).
@@ -180,11 +182,14 @@ SCAN_JS = r"""() => {
     else if (type === 'file') kind = 'file';
     else if (e.getAttribute('role') === 'combobox') kind = 'combobox';
     if (type === 'password') kind = 'password';
+    const sensitive = type === 'password' || protectedPattern.test(labelOf(e)+' '+(e.id||'')+' '+(e.name||''));
     const o = {hx: i, kind, label: labelOf(e), required: req,
+               field_id: e.id || '', name: e.name || '', protected: sensitive,
                value: kind === 'file' ? (e.files && e.files.length ? e.files[0].name : '')
-                    : kind === 'password' ? (e.value ? '(set)' : '') : (e.value || '')};
+                    : kind === 'password' ? (e.value ? '(set)' : '') : sensitive ? (e.value ? '(protected)' : '') : (e.value || '')};
+    if (kind === 'select' && !sensitive) o.selected_label = e.selectedIndex >= 0 ? e.options[e.selectedIndex].text.trim() : '';
     if (kind === 'select') o.options = [...e.options].map(x => x.text.trim()).filter(x => x && !/^select/i.test(x));
-    if (kind === 'combobox') {
+    if (kind === 'combobox' && !sensitive) {
       const control = e.closest('[class*=control]');
       const selected = control && control.querySelector('[class*=singleValue],[class*=single-value],[class*=multiValue]');
       o.value = txt(selected) || e.value || '';
@@ -200,7 +205,7 @@ SCAN_JS = r"""() => {
     out.push(o);
   });
   return out;
-}"""
+}""".replace('__PROTECTED__', PROTECTED_JS)
 
 
 class Generic:
@@ -211,11 +216,17 @@ class Generic:
         self.resume = resume
 
     def scan(self) -> list[dict]:
+        from .application_checkpoints import safe_url
         found = []
         for fr in self.page.frames:
             try:
+                counts = {}
                 for f in fr.evaluate(SCAN_JS):
                     f["frame"] = fr
+                    f['frame_path'] = safe_url(fr.url)
+                    key = (f['label'], f['kind'])
+                    f['occurrence'] = counts.get(key, 0)
+                    counts[key] = f['occurrence'] + 1
                     found.append(f)
             except Exception:
                 continue
@@ -239,6 +250,24 @@ class Generic:
         return []
 
     def set(self, f, value) -> bool:
+        from .application_checkpoints import identity, protected
+        if protected(f) and f['kind'] != 'file':
+            return False
+        # Resume parsing and dependent controls can rebuild the entire form.
+        # Never reuse a numeric scan position against a different control.
+        fresh = next((x for x in self.scan() if identity(x) == identity(f)), None)
+        if fresh is None:
+            return False
+        f = fresh
+        recorder = getattr(self, 'checkpoint', None)
+        if recorder:
+            recorder.before(f, value)
+            if f['kind'] == 'file' and value is not None:
+                recorder.upload(self.resume if value in (True, 'resume') else str(value),f)
+        ok = self._set(f, value)
+        return recorder.after(f, value, ok) if recorder else ok
+
+    def _set(self, f, value) -> bool:
         k = f["kind"]
         if value is None:
             return True  # deliberately blank
@@ -381,7 +410,12 @@ class Generic:
         # letter's, and the resume went there (23 and 24 Oct 2026). If the
         # page already shows the resume's file name, it is attached.
         import os
-        already = os.path.basename(self.resume) in self.page.inner_text("body") if self.resume else True
+        already = not bool(self.resume)
+        for frame in self.page.frames if self.resume else []:
+            try:
+                already = already or frame.evaluate("n=>document.body.innerText.includes(n)||[...document.querySelectorAll('input[type=file]')].some(e=>[...e.files].some(f=>f.name===n))", os.path.basename(self.resume))
+            except Exception:
+                pass
         # Upload first, then read the form again: Ashby rebuilds the whole
         # form after a resume upload (it autofills from it), and on 23 Oct
         # 2026 every field found before the upload went stale and each one
@@ -401,6 +435,9 @@ class Generic:
                     failed.append(f"resume: {type(e).__name__}")
                 break
         resume_done = True
+        recorder = getattr(self,'checkpoint',None)
+        if recorder:
+            recorder.restore_uploads()
         for f in self.scan():
             label = (f.get("label") or "").strip()
             k = f["kind"]
@@ -419,9 +456,17 @@ class Generic:
                 continue
             already = (f.get("value") not in (None, "")) if k not in ("radio", "checks", "buttonradio") else \
                 any(o["checked"] for o in f["options"])
-            if already:
+            from .application_checkpoints import matches, protected
+            if protected(f):
+                if f.get('required') and not already:
+                    pending.append({'q': 'Complete the protected field yourself: '+label, 'kind': 'action', 'required': True})
                 continue
-            value, found = resolve(self.bank, label, self.company, self.answers)
+            recorder = getattr(self, 'checkpoint', None)
+            value, found = recorder.saved_value(f) if recorder else (None, False)
+            if not found:
+                value, found = resolve(self.bank, label, self.company, self.answers)
+            if already and (not found or matches(f, value)):
+                continue
             if not found:
                 if f.get("required") or k == "textarea":
                     pending.append(self._pending(f, label))
@@ -457,6 +502,7 @@ class Generic:
 
 WD_SCAN = r"""() => {
   const out = [];
+  const protectedPattern = __PROTECTED__;
   document.querySelectorAll('[data-automation-id^="formField-"]').forEach((f, i) => {
     if (f.getBoundingClientRect().width === 0) return;
     const lab = ((f.querySelector('label, legend') || {}).innerText || '').replace(/\s+/g, ' ').replace(/\*$/, '').trim();
@@ -484,12 +530,15 @@ WD_SCAN = r"""() => {
       // dump printed a new account's password into a session transcript.
       value = inp.type === 'password' ? (inp.value ? '(set)' : '') : inp.value; }
     const req = /\*/.test((f.querySelector('label, legend') || {}).innerText || '');
+    const sensitive = kind === 'password' || protectedPattern.test(lab+' '+id);
+    if (sensitive) value = value ? '(protected)' : '';
     f.setAttribute('data-wd-i', i);
     const occurrence = out.filter(x => x.id === id).length;
-    out.push({i, id, occurrence, label: lab, kind, value, options, required: req});
+    const selected_labels = [...f.querySelectorAll('input[type=radio]:checked,input[type=checkbox]:checked')].map(r=>((f.querySelector('label[for="'+r.id+'"]')||{}).innerText||'').trim());
+    out.push({i, id, occurrence, label: lab, kind, value, options, required: req, protected: sensitive, selected_labels});
   });
   return out;
-}"""
+}""".replace('__PROTECTED__', PROTECTED_JS)
 
 # Workday field ids that map straight onto the profile.
 WD_IDS = {
@@ -528,6 +577,9 @@ class Workday:
         # Workday lays a transparent click_filter div over its buttons, so a
         # normal click waits forever for the button to be hittable. Fall back
         # to a mouse click at the button's centre, which lands on the filter.
+        recorder = getattr(self, 'checkpoint', None)
+        if recorder:
+            recorder.check_control()
         loc.scroll_into_view_if_needed()
         try:
             loc.click(timeout=4000)
@@ -561,6 +613,22 @@ class Workday:
         return []
 
     def set(self, f, value) -> bool:
+        from .application_checkpoints import identity, protected
+        if protected(f):
+            return False
+        fresh = next((x for x in self.scan() if identity(x) == identity(f)), None)
+        if fresh is None:
+            return False
+        f = fresh
+        recorder = getattr(self, 'checkpoint', None)
+        if recorder:
+            recorder.before(f, value)
+            if f['kind'] == 'file' and value is not None:
+                recorder.upload(self.resume,f)
+        ok = self._set(f, value)
+        return recorder.after(f, value, ok) if recorder else ok
+
+    def _set(self, f, value) -> bool:
         if value is None:
             return True
         b, k, p = self.box(f), f["kind"], self.page
@@ -664,6 +732,11 @@ class Workday:
         return True
 
     def value_for(self, f):
+        recorder = getattr(self, 'checkpoint', None)
+        if recorder:
+            v, found = recorder.saved_value(f)
+            if found:
+                return v, found
         prof = self.bank.get("profile", {})
         key = WD_IDS.get(f["id"])
         if ap.has_answer(self.bank, f["label"], self.company, self.answers):
@@ -693,7 +766,7 @@ class Workday:
             # the wrong box and the sign-in failed. The redirect brings the
             # browser back to this application afterwards.
             from urllib.parse import quote, urlparse
-            u = urlparse(p.url)
+            u = urlparse(getattr(self, 'application_url', p.url))
             parts = [x for x in u.path.split("/") if x]
             site = "/".join(parts[:2]) if parts and re.fullmatch(r"[a-z]{2}-[A-Z]{2}", parts[0]) else parts[0]
             back = u.path if "/apply" in u.path else u.path.rstrip("/") + "/apply/applyManually"
@@ -816,10 +889,17 @@ class Workday:
             if "waiting" in acct:
                 return {"filled": filled, "pending": [{"q": "verify the account from your email", "kind": "action"}],
                         "failed": failed, "done": False}
+            if 'failed' in acct:
+                return {'filled': filled, 'pending': [{'q': 'Sign in yourself; the saved credentials were rejected. They will not be retried automatically.', 'kind': 'action'}], 'failed': ['Stored sign-in rejected'], 'done': False}
         for _ in range(10):
             cur, total, name = self.step()
             if not total:
                 break
+            if not self.scan() and not SUBMITTY.search(p.locator('[data-automation-id="pageFooterNextButton"]').first.inner_text() if p.locator('[data-automation-id="pageFooterNextButton"]').count() else ''):
+                try:
+                    p.wait_for_function("() => [...document.querySelectorAll('[data-automation-id^=formField-]')].some(e=>e.getBoundingClientRect().width>0)", timeout=12000)
+                except Exception:
+                    return {'filled': filled, 'pending': [{'q': 'The application page did not finish loading. The saved checkpoint is preserved.', 'kind': 'action'}], 'failed': ['Page controls unavailable'], 'done': False, 'step': name}
             # The last step is not always Review (Expedia's 7 of 7 was the
             # disability form), so the stop is the footer button reading
             # Submit, checked before every press below.
@@ -836,12 +916,16 @@ class Workday:
                               "firstYearAttended": "start_year", "lastYearAttended": "end_year",
                               "gradeAverage": "gpa"})
                 if p.locator("input[type=file]").count() and "successfully uploaded" not in self.body().lower():
-                    p.locator("input[type=file]").first.set_input_files(self.resume)
-                    p.wait_for_timeout(4000)
-                    filled.append("resume")
+                    upload = next((f for f in self.scan() if f['kind']=='file'),None)
+                    if upload and self.set(upload,'resume'):
+                        p.wait_for_timeout(2000)
+                        filled.append("resume")
             step_pending = []
             for f in self.scan():
                 if f["value"] or f["kind"] == "file":
+                    continue
+                if f.get('protected'):
+                    step_pending.append({'q': 'Complete the protected field yourself: '+f['label'], 'kind': 'action', 'required': True})
                     continue
                 v, found = self.value_for(f)
                 if not found:
@@ -876,9 +960,14 @@ class Workday:
             label = nxt.first.inner_text().strip()
             if SUBMITTY.search(label):
                 return {"filled": filled, "pending": pending, "failed": failed, "done": True, "step": name}
+            recorder = getattr(self, 'checkpoint', None)
+            if recorder:
+                recorder.snapshot('before-next:'+name)
             self.click(nxt.first)
             p.wait_for_timeout(5000)
             nc, _, nn = self.step()
+            if recorder:
+                recorder.snapshot('page:'+nn)
             if nc == cur:
                 errs = [e.inner_text().strip()[:160] for e in p.locator('[data-automation-id="errorMessage"]:visible').all()]
                 failed += errs or [f"stuck on {name}"]

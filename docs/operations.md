@@ -297,6 +297,51 @@ later block the unprivileged user namespaces it needs unless an AppArmor
 profile allows them. Installing such a profile for the Chromium binary and
 setting `browser.sandbox` to true turns it back on.
 
+## Application browser recovery
+
+Application workers are separate `herald-browser-worker@<workspace>.service`
+instances. Each owns its profile, display and Chromium process. The review
+HTTP controller (`herald-browser-review.service`, localhost 8794 by default)
+can restart without killing those browsers. Install and enable it alongside
+the original browser service. On a Tailscale Serve installation, add:
+
+```bash
+tailscale serve --bg --https=8449 --set-path /groups http://127.0.0.1:8794
+```
+
+`herald browse workspaces` lists durable ownership. `herald apply fill` uses
+at most `browser.max_workspaces` workers (default two), with at most
+`browser.batch_size` applications each (default ten). A verified full group
+is sent for review immediately; a shorter final group is handed over at the
+end. The review link has an application selector. The person submits through
+the employer page and records it with “I submitted this”; Herald never
+submits. Finish and close group refuses to discard unsubmitted drafts.
+Return for corrections explicitly releases ownership and requires reverification.
+Link expiry and controller restarts never release a review reservation.
+
+Checkpoints are append-only in `application_checkpoints` and atomically
+written, with fsync, under `$HERALD_HOME/browser/checkpoints`. Attachment
+copies are immutable and hash checked. Protected field values are excluded
+before a page scan leaves the browser. Authentication remains in protected
+profiles; it is not part of application recovery. Review changes are captured
+on tab switches and every fifteen seconds while its page is connected.
+An unsaved keystroke since the last capture and an expired login may require
+the person's hands again. Website draft saving is separate from checkpointing.
+
+Browser identity changes invalidate verified review groups. They require
+returning for corrections, recovery and readback verification before a new
+review group can be created. `herald apply snapshot` captures open drafts
+without navigation. Use `herald apply refill <ids>` for recovery only when
+application work is authorized. Identical failures stop after two attempts;
+`--retry` is an explicit override after resolving the cause.
+
+`browser.memory_max` configures the original service (default 6G), and
+`browser.worker_memory_max` configures each worker (default 3G). Memory
+admission checks both machine availability and the worker's own cgroup;
+new work pauses at 85 percent of the worker limit. Checkpoint existing drafts
+before changing units. `herald services install` reloads units without
+restarting the original browser. Never restart it to deploy a review page.
+
 ## Backups
 
 There are two repositories. The program pushes to the public `herald` repo; the person

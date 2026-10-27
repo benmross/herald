@@ -6,6 +6,8 @@ import pathlib
 import signal
 import sys
 import time
+import json
+import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'lib'))
@@ -24,8 +26,11 @@ def main():
     host.start()
     while True:
         if not browse.alive(workspace):
-            # The next Session invalidates old ready claims using the new browser id.
             host.start()
+        if browse.alive(workspace):
+            with urllib.request.urlopen(browse.cdp_url(workspace)+'/json/version',timeout=3) as r:
+                version=json.load(r)
+            bw.note_browser(workspace,version['webSocketDebuggerUrl'].rsplit('/',1)[-1])
         host.screen()
         time.sleep(3)
 

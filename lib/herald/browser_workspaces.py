@@ -77,10 +77,18 @@ def available_memory_mb():
         return None
 
 
-def admit():
+def admit(workspace=None):
     free = available_memory_mb()
     if free is not None and free < int(setting('minimum_available_mb', 2048)):
         raise Capacity('Browser work paused to preserve memory and existing drafts; finish a review group before opening more work.')
+    if workspace and workspace != 'default':
+        # Use the worker's cgroup, not only machine-wide free memory. The old
+        # fixed cap killed Chromium despite available RAM elsewhere.
+        r=subprocess.run(['systemctl','--user','show','herald-browser-worker@'+name(workspace)+'.service','-p','MemoryCurrent','-p','MemoryMax'],capture_output=True,text=True,timeout=3)
+        values=dict(line.split('=',1) for line in r.stdout.splitlines() if '=' in line)
+        current,limit=values.get('MemoryCurrent','0'),values.get('MemoryMax','infinity')
+        if current.isdigit() and limit.isdigit() and int(limit)>0 and int(current)>int(limit)*0.85:
+            raise Capacity('This browser worker is near its memory limit. Its checkpoint is preserved; no further fields will be changed.')
 
 
 def create(workspace=None):
@@ -118,7 +126,7 @@ def choose(app_id, url):
         if r['slot'] == 0 or r['state'] != 'agent':
             continue
         with db.session() as c:
-            count = c.execute('SELECT count(*) FROM application_browser WHERE workspace=?', (r['id'],)).fetchone()[0]
+            count = c.execute("SELECT count(*) FROM application_browser b JOIN applications a ON a.id=b.app_id WHERE b.workspace=? AND a.status NOT IN ('submitted','rejected','closed','withdrawn')", (r['id'],)).fetchone()[0]
         if count < int(setting('batch_size', 10)):
             assert_agent(r['id'], url)
             return r['id']
@@ -202,7 +210,19 @@ def start(workspace):
         raise RuntimeError('Browser worker could not start; install the user service templates first.')
 
 
-def ready_group(workspace, *, partial=False):
+def ready_group(workspace, *, partial=False, app_ids=None):
+    # A different session may still be filling this workspace. Never take a
+    # partly active desktop away or publish a group behind its writer's back.
+    if not get(workspace) or get(workspace)['state'] != 'agent':
+        return None
+    try:
+        with lease(workspace,timeout=0):
+            return _ready_group(workspace,partial=partial,app_ids=app_ids)
+    except Busy:
+        return None
+
+
+def _ready_group(workspace, *, partial=False, app_ids=None):
     """Atomically reserve only verified current-generation applications for review."""
     with db.session() as c:
         c.execute('BEGIN IMMEDIATE')
@@ -216,6 +236,10 @@ def ready_group(workspace, *, partial=False):
             AND p.verified=1 AND p.generation=? AND p.workspace=?) ORDER BY a.id""",
                          (workspace, w['generation'], w['generation'], workspace)).fetchall()
         size = int(setting('batch_size', 10))
+        if app_ids is not None:
+            rows = [r for r in rows if r['id'] in app_ids]
+            if len(rows) != len(app_ids):
+                raise Busy('Some requested applications do not have current verified checkpoints; no group was created.')
         if not rows or (len(rows) < size and not partial):
             return None
         group = 'review-' + uuid.uuid4().hex[:12]
@@ -255,3 +279,48 @@ def finish_group(group):
         remaining = c.execute("SELECT count(*) FROM application_browser b JOIN applications a ON a.id=b.app_id WHERE b.workspace=? AND a.status NOT IN ('submitted','rejected','closed','withdrawn')", (info['workspace'],)).fetchone()[0]
         c.execute('UPDATE browser_workspaces SET state=? WHERE id=?', ('agent' if remaining else 'closed', info['workspace']))
     return info['workspace']
+
+
+def return_group(group):
+    info=group_info(group)
+    with db.session() as c:
+        c.execute("UPDATE application_review_groups SET state='returned' WHERE id=?",(group,))
+        c.execute("UPDATE browser_workspaces SET state='agent' WHERE id=?",(info['workspace'],))
+        c.execute("UPDATE applications SET status='filling' WHERE id IN (SELECT app_id FROM application_review_members WHERE group_id=?) AND status='filled'",(group,))
+
+
+def stop_closed(workspace):
+    if workspace == 'default' or get(workspace)['state'] != 'closed':
+        raise Busy('Unfinished browser work cannot be stopped.')
+    subprocess.run(['systemctl','--user','stop','herald-browser-worker@'+name(workspace)+'.service'],check=True,timeout=20)
+
+
+def publish(group, minutes=240):
+    from . import browse, notify
+    info=group_info(group)
+    if info['state'] != 'review':
+        raise Busy('This group requires recovery or has already been finished.')
+    if not browse.view_base():
+        raise RuntimeError('Set the private browser view URL before publishing review groups.')
+    token=browse.new_view(info['members'][0]['tab'],'Review and submit your prepared applications',minutes,workspace=info['workspace'],group=group)
+    url=browse.view_link(token)
+    sent=notify.telegram(f"Your next {len(info['members'])} applications are ready for review. Switch between them here:\n{url}\n\nThis group is reserved for you while other groups are prepared. Submit on each employer’s page, then use “I submitted this” to record it.",thread_id=notify._live_topic_thread())
+    return sent
+
+
+@contextlib.contextmanager
+def account_lease(url, timeout=8):
+    import hashlib
+    key=hashlib.sha256(account(url).encode()).hexdigest()
+    folder=config.HOME/'run'/'browser-locks'
+    folder.mkdir(parents=True,exist_ok=True,mode=0o700)
+    fd=os.open(folder/('account-'+key+'.lock'),os.O_CREAT|os.O_RDWR,0o600)
+    deadline=time.monotonic()+timeout
+    try:
+        while True:
+            try:fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);break
+            except BlockingIOError:
+                if time.monotonic()>=deadline:raise Busy('Another workspace is using this employer account; its current operation is protected.')
+                time.sleep(0.1)
+        yield
+    finally:os.close(fd)

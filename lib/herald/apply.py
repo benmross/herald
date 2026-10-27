@@ -121,22 +121,21 @@ def best_option(want, options: list[str]) -> str | None:
     if want is None or not options:
         return None
     want = str(want)
+    exact = [o for o in options if norm(o) == norm(want)]
+    if len(exact) == 1:
+        return exact[0]
     try:
-        for o in options:
-            if re.search(want, o, re.I):
-                return o
+        full = [o for o in options if re.fullmatch(want, o, re.I)]
+        if len(full) == 1:
+            return full[0]
+        # Only explicit patterns or an unambiguous descriptive phrase may
+        # match part of an option. Never guess a degree/major by token overlap.
+        if re.search(r'[\^$|.*+?\\\[()]', want) or len(want.split()) >= 4:
+            hits = [o for o in options if re.search(want, o, re.I)]
+            return hits[0] if len(hits) == 1 else None
     except re.error:
         pass
-    words = set(re.findall(r"[a-z0-9]+", want.lower()))
-    if not words:
-        return None
-    scored = []
-    for o in options:
-        ow = set(re.findall(r"[a-z0-9]+", o.lower()))
-        if ow:
-            scored.append((len(words & ow) / len(words), o))
-    scored.sort(reverse=True)
-    return scored[0][1] if scored and scored[0][0] >= 0.6 else None
+    return None
 
 
 # --- the applications table ----------------------------------------------------
@@ -313,14 +312,37 @@ def resume_path(bank: dict) -> str:
     return str(path if path.is_absolute() else config.LEDGER / path)
 
 
+def canonical_key(url):
+    from urllib.parse import urlsplit, parse_qs
+    u = urlsplit(url)
+    if 'myworkdayjobs.com' in u.netloc:
+        m = re.search(r'_([A-Za-z0-9-]+)(?:/apply.*)?$', u.path)
+        if m:
+            return u.netloc.lower() + ':' + m.group(1)
+    if 'icims.com' in u.netloc:
+        m = re.search(r'/jobs/(\d+)', u.path)
+        if m:
+            return u.netloc.lower() + ':' + m.group(1)
+    q = parse_qs(u.query)
+    jid = q.get('gh_jid', q.get('jobId', []))
+    return u.netloc.lower() + u.path.removesuffix('/application').rstrip('/') + (':' + jid[0] if jid else '')
+
+
 def run(url: str, *, opportunity: int | None = None, company: str | None = None,
-        title: str | None = None) -> dict:
+        title: str | None = None, workspace=None, retry=False) -> dict:
     """Open (or reuse) the application's tab, fill everything the bank answers,
     record what is left. Never submits."""
-    from . import ats, browse
+    from . import ats, browse, browser_workspaces as bw
+    from .application_checkpoints import Recorder, latest, artifact_path
+    import hashlib
 
     bank = load_bank()
     with db.session() as con:
+        duplicate = next((r for r in con.execute('SELECT * FROM applications') if canonical_key(r['url']) == canonical_key(url)), None)
+        if duplicate and duplicate['status'] in DONE:
+            return {'app': duplicate['id'], 'tab': '', 'company': duplicate['company'], 'title': duplicate['title'] or '', 'ats': duplicate['ats'], 'done': False, 'filled': [], 'pending': [], 'failed': [], 'skipped': duplicate['status']}
+        if duplicate:
+            url = duplicate['url']
         if opportunity and not company:
             o = con.execute("SELECT org, title FROM opportunities WHERE id=?", (opportunity,)).fetchone()
             if o:
@@ -330,7 +352,14 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
         kind = ats.detect(url)
         app_id = record(con, url=url, company=company, title=title, ats=kind, opportunity=opportunity)
         answers = app_answers(get(con, app_id))
-    with browse.Session() as s:
+        fingerprint = hashlib.sha256(json.dumps([bank, answers, url], sort_keys=True).encode()).hexdigest()
+        previous = con.execute('SELECT * FROM application_attempts WHERE app_id=?', (app_id,)).fetchone()
+        if previous and previous['fingerprint'] == fingerprint and previous['failures'] >= int(config.get('apply.max_step_failures', 2)) and not retry:
+            raise bw.Busy('Repeated failure is checkpointed. Complete the access step or fix the adapter, then use refill --retry; no credentials or forms were retried.')
+    workspace = workspace or bw.choose(app_id, url)
+    bw.assert_agent(workspace, url)
+    with browse.Session(workspace) as s:
+        s.claim_account(url)
         # Workday moves the tab to .../apply/applyManually, so match on the
         # posting's URL as a prefix; an exact match opened a second tab per run.
         base = url.split("#")[0].split("?")[0].rstrip("/")
@@ -340,20 +369,62 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
                      or (req and urlparse(pg.url).netloc == urlparse(url).netloc
                          and req.group(0) in pg.url)), None)
         if page is None:
+            bw.admit()
+            if len([p for p in s.pages() if p.url != 'about:blank']) >= int(config.get('browser.batch_size', 10)):
+                raise bw.Capacity('This workspace has reached its tab limit; preserve or hand off this batch before opening more.')
             page = s.ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             browse.settle(page, 4000)
         # Fail fast on a field that went stale rather than waiting 30 s each.
         page.set_default_timeout(8000)
+        page.bring_to_front()
         if kind == "generic":
             kind = ats.detect(page.url, page.content()[:20000])
         adapter = ats.adapter_for(kind)(page, bank, company, answers, resume=resume_path(bank))
-        result = adapter.fill()
+        adapter.application_url = url
+        bound = bw.get(workspace)
+        bw.bind(app_id, workspace, s.tab_id(page))
+        checkpoint = Recorder(app_id, workspace, page, adapter)
+        adapter.checkpoint = checkpoint
+        if checkpoint.recovering:
+            resume = next((x for x in checkpoint.artifacts if x['name'] == pathlib.Path(adapter.resume).name), None)
+            if resume:
+                adapter.resume = artifact_path(resume)
+        prior_checkpoint = latest(app_id)
+        already_ready = bool(duplicate and duplicate['status']=='filled' and prior_checkpoint and prior_checkpoint['verified'] and not checkpoint.recovering and not retry)
+        checkpoint.snapshot('opened')
+        try:
+            result = ({'done':True,'filled':[],'pending':[],'failed':[]} if already_ready else adapter.fill())
+            issues = checkpoint.verify_review(result) if result.get('done') else []
+            if issues:
+                result['failed'] += issues
+                result['done'] = False
+            if not result.get('done'):
+                checkpoint.snapshot('blocked', result=result)
+        except BaseException as exc:
+            # Keep the previous committed checkpoint if the browser itself died.
+            try:
+                checkpoint.snapshot('interrupted')
+            except Exception:
+                pass
+            if isinstance(exc, Exception) and not isinstance(exc, bw.Busy):
+                with db.session() as con:
+                    count = (previous['failures'] if previous and previous['fingerprint'] == fingerprint and not retry else 0) + 1
+                    message = 'Browser operation interrupted (' + type(exc).__name__ + '); checkpoint preserved. Inspect the draft before retrying.'
+                    set_state(con, app_id, status='filling', pending=[{'q':message,'required':True}])
+                    con.execute('INSERT OR REPLACE INTO application_attempts(app_id,fingerprint,failures,error,updated_at) VALUES (?,?,?,?,?)', (app_id,fingerprint,count,message,db.now()))
+            raise
         result.update(app=app_id, tab=s.tab_id(page), company=company, ats=kind,
-                      title=title or page.title()[:80])
+                      title=title or page.title()[:80], workspace=workspace)
     with db.session() as con:
         status = "filled" if result.get("done") and not result["pending"] and not result.get("failed") else "filling"
         set_state(con, app_id, status=status, pending=result["pending"])
+        failure = bool(result.get('failed'))
+        count = (previous['failures'] if previous and previous['fingerprint'] == fingerprint and not retry else 0) + int(failure)
+        if any('sign-in rejected' in str(x).lower() for x in result.get('failed', [])):
+            count = int(config.get('apply.max_step_failures', 2))
+        con.execute('INSERT OR REPLACE INTO application_attempts(app_id,fingerprint,failures,error,updated_at) VALUES (?,?,?,?,?)',
+                    (app_id, fingerprint, count if failure else 0, '; '.join(result.get('failed', []))[:500], db.now()))
         if kind == "workday":
             from urllib.parse import urlparse
             con.execute("UPDATE applications SET account=? WHERE id=?", (urlparse(url).netloc, app_id))
@@ -372,44 +443,25 @@ def pending_all(con) -> list[dict]:
 
 
 def snapshot(con, app_id: int) -> int:
-    """Save every field's current value as this application's own answers.
+    """Capture an open draft without changing it, including Workday and frames.
 
-    Choices made while filling (a team, a cohort, an essay pasted by hand)
-    live only in the page until saved. A browser restart on 23 Oct 2026 would
-    have lost fourteen half-reviewed forms; with a snapshot, `refill` puts
-    each one back exactly. Workday keeps its own drafts and is skipped.
+    Structured identities preserve repeated labels. Capture is recovery evidence,
+    not proof that an application is ready. No passwords, SSNs or OTPs are saved.
     """
-    from . import ats, browse
-
+    from . import ats, browse, browser_workspaces as bw
+    from .application_checkpoints import Recorder
     row = get(con, app_id)
-    if not row or row["ats"] == "workday":
+    if not row:
         return 0
-    base = row["url"].split("#")[0].split("?")[0].rstrip("/")
-    saved = app_answers(row)
-    n = 0
-    with browse.Session() as s:
-        page = next((pg for pg in s.pages() if pg.url.split("?")[0].startswith(base)), None)
+    bound = bw.binding(app_id)
+    workspace = bound['workspace'] if bound else 'default'
+    base = row['url'].split('#')[0].split('?')[0].rstrip('/')
+    with browse.Session(workspace) as s:
+        page = next((p for p in s.pages() if (bound and s.tab_id(p)==bound['tab']) or p.url.split('?')[0].startswith(base)), None)
         if page is None:
             return 0
-        adapter = ats.Generic(page, load_bank(), row["company"], saved, resume="")
-        for f in adapter.scan():
-            label = (f.get("label") or "").strip()
-            k = f["kind"]
-            if not label or k in ("file", "password"):
-                continue
-            if k in ("radio", "checks", "buttonradio"):
-                on = [o["label"] for o in f["options"] if o["checked"]]
-                if not on:
-                    continue
-                value = ("^" + re.escape(on[0]) + "$") if k in ("radio", "buttonradio") else \
-                    ["^" + re.escape(x) + "$" for x in on]
-            else:
-                v = (f.get("value") or "").strip()
-                if not v:
-                    continue
-                value = ("^" + re.escape(v) + "$") if k in ("select", "combobox") else v
-            saved[norm(label)] = value
-            n += 1
-    con.execute("UPDATE applications SET answers = ? WHERE id = ?",
-                (json.dumps(saved, ensure_ascii=False), app_id))
-    return n
+        adapter = ats.adapter_for(row['ats'])(page, load_bank(), row['company'], app_answers(row), resume=resume_path(load_bank()))
+        bw.bind(app_id, workspace, s.tab_id(page))
+        recorder = Recorder(app_id, workspace, page, adapter)
+        recorder.snapshot('captured')
+        return len([f for f in adapter.scan() if not f.get('protected') and f.get('kind') != 'password'])

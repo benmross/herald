@@ -92,3 +92,26 @@ class Workspaces(unittest.TestCase):
         self.assertEqual(bw.get(w)['state'],'agent')
         bw.create()
         with self.assertRaises(bw.Capacity):bw.create()
+
+    def test_ten_verified_drafts_are_handed_over_without_affecting_next_worker(self):
+        w=bw.create()['id'];other=bw.create()['id']
+        for n in range(1,10):self.app(w,n)
+        self.assertIsNone(bw.ready_group(w))
+        self.app(w,10)
+        group=bw.ready_group(w)
+        self.assertEqual(len(bw.group_info(group)['members']),10)
+        with bw.lease(other,timeout=0):
+            bw.assert_agent(other,'https://independent.example/new')
+        with self.assertRaises(bw.Busy):
+            with bw.lease(w,timeout=0):pass
+        bw.return_group(group)
+        self.assertEqual(bw.get(w)['state'],'agent')
+        with db.session() as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM applications WHERE status='filling'").fetchone()[0],10)
+
+    def test_busy_writer_cannot_be_interrupted_by_automatic_handoff(self):
+        w=bw.create()['id'];self.app(w)
+        with bw.lease(w):
+            self.assertIsNone(bw.ready_group(w,partial=True))
+            self.assertEqual(bw.get(w)['state'],'agent')
+        self.assertIsNotNone(bw.ready_group(w,partial=True))

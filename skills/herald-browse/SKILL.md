@@ -32,6 +32,16 @@ answer matters and the page is an application site, use the browser first.
 
 ## Commands
 
+Interactive commands use a durable workspace lease. `herald browse workspaces`
+lists ownership; `herald browse workspace <name>` registers an independent
+browser, and `herald browse --workspace <name> ...` selects it. Separate
+workspaces have separate profiles and desktops. Never attach an unmanaged CDP
+client to bypass leases. A sign-in link reserves its whole workspace for the
+person until Return control; review groups remain protected until finished
+or returned for corrections, including after link expiry. Use `herald apply`
+for application filling and recovery checkpoints. Research crawls remain
+separate from human review.
+
 ```bash
 herald browse fetch <url> [--wait ms]         # headless, one page, prints its text
 herald browse open <url>                       # new tab in the profile browser; prints its id

@@ -23,10 +23,14 @@ herald apply answer answers.json                               # store them, ref
 herald apply list                                              # status of everything
 ```
 
-1. **Fill in one batch.** Pass every URL to one `fill`. For more than about
-   five, run it with `run_in_background` and read the output when it ends.
-   Each line says ready for review, or lists the questions it could not
-   answer with their options.
+1. **Preflight, then fill in groups.** Check the exact requisition is open,
+   fits the person's requirements, and is not already applied to. Pilot one
+   application on each unfamiliar platform before expanding. `fill` allocates
+   separate persistent workspaces, with at most ten applications each. Ten
+   verified drafts trigger a protected group link automatically; a shorter
+   final group is handed over when the batch finishes. While the person
+   reviews one workspace, another session can fill a different workspace.
+   Resource limits pause new work without discarding existing drafts.
 2. **Answer everything pending in one `answer` call.** A JSON list:
 
    ```json
@@ -47,8 +51,33 @@ herald apply list                                              # status of every
 3. The refill that `answer` runs reaches the end of the form or lists the
    next batch (multi-page Workday forms reveal questions page by page).
    Repeat until every line says ready for review.
-4. Send the person the review link: `herald browse login <tab> --why "..."`.
-   They switch tabs at the top of the live screen.
+4. Use the automatic group handoff or `herald apply review <ids...>`.
+   Reissue a link with `herald apply review --group <group>`.
+   Only current verified checkpoints qualify. The person switches between
+   applications in the group selector, submits on each employer's page,
+   and records that with “I submitted this”. Herald never submits.
+
+## Checkpoints and ownership
+
+`herald browse workspaces` shows ownership. Use `herald browse --workspace
+<name> ...` for a specific worker. A human review or sign-in reservation
+blocks automation until control is returned. Do not bypass it with raw CDP,
+another Playwright connection, forced clicks, or by changing ownership rows.
+Work on the same employer account is serialized, even in separate workspaces.
+
+Filling writes append-only checkpoints before and after field changes and at
+page boundaries, with semantic field identities and immutable attachment
+copies. Each write must pass readback; ambiguous choices remain blockers.
+Password, SSN, captcha and verification-code values are excluded in the page
+before scanning. They must never enter the bank, logs or debug screenshots.
+`herald apply snapshot` captures open drafts without filling or submitting.
+
+After a browser restart, old review claims are invalidated. Return the group
+for corrections, then refill and verify it before handing it over again.
+Two identical failures stop automatic retries; use `refill --retry` only
+after fixing the adapter or completing the access step. Never repeatedly
+retry a rejected password. A checkpoint preserves what was observed; it
+does not prove the website saved its own draft or preserve authentication.
 
 ## Writing essays
 

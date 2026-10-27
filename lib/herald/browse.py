@@ -74,6 +74,8 @@ DESKTOP_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
 
 # Fields a page offers, with a stable handle (data-hb) to fill them by.
+from .application_checkpoints import PROTECTED_JS
+
 FIELDS_JS = r"""
 () => {
  const out=[];
@@ -97,12 +99,13 @@ FIELDS_JS = r"""
    e.setAttribute('data-hb',i);
    const o={hb:i,tag:e.tagName.toLowerCase(),type,name:e.getAttribute('name')||'',label:lab(e),
      required:e.required||e.getAttribute('aria-required')=='true'};
-   if(type=='password') o.value='(password field: the user types this, never you)';
+   o.protected=type==='password'||__PROTECTED__.test([o.label,o.name,e.id].join(' '));
+   if(o.protected) o.value='(protected field: the user types this)';
    else o.value=(e.type=='checkbox'||e.type=='radio')?e.checked:(e.value||'').slice(0,80);
    if(e.tagName=='SELECT') o.options=[...e.options].map(x=>x.text.trim()).slice(0,40);
    out.push(o);});
  return out;}
-"""
+""".replace('__PROTECTED__',PROTECTED_JS)
 
 LINKS_JS = """() => [...document.querySelectorAll('a[href]')]
   .map(a => [a.innerText.replace(/\\s+/g,' ').trim().slice(0,100), a.href])
@@ -180,6 +183,8 @@ def chrome_args(*, headless: bool, workspace=None) -> list[str]:
         args.append("--no-sandbox")
     if headless:
         args += ["--headless=new", f"--user-agent={DESKTOP_UA}"]
+    if workspace and workspace != 'default':
+        args.append('--restore-last-session')
     return args + ["about:blank"]
 
 
@@ -247,6 +252,10 @@ class Session:
         from . import browser_workspaces as bw
         from playwright.sync_api import sync_playwright
         self.workspace = bw.name(workspace)
+        self.human = human
+        import contextlib
+        self._accounts = contextlib.ExitStack()
+        self._claimed_hosts = set()
         self._lease = bw.lease(self.workspace, human=human, timeout=timeout)
         self._lease.__enter__()
         self._pw = None
@@ -258,6 +267,12 @@ class Session:
             self._pw = sync_playwright().start()
             self.browser = self._pw.chromium.connect_over_cdp(cdp_url(self.workspace))
             self.ctx = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+            if self.workspace != 'default' and not self.ctx.cookies():
+                auth = home() / 'profile' / 'herald-auth.json'
+                if auth.exists():
+                    # Authentication stays in the protected browser profile,
+                    # never in application checkpoints or tool output.
+                    self.ctx.add_cookies(json.loads(auth.read_text()))
         except BaseException:
             if self._pw:
                 self._pw.stop()
@@ -266,6 +281,13 @@ class Session:
 
     def close(self) -> None:
         # Over CDP, close() disconnects; the browser and its tabs stay.
+        try:
+            if not self.human:
+                from .application_checkpoints import atomic_json
+                atomic_json(home() / 'profile' / 'herald-auth.json', self.ctx.cookies())
+        except Exception:
+            pass
+        self._accounts.close()
         try:
             self.browser.close()
         except Exception:
@@ -277,6 +299,25 @@ class Session:
         if self._lease:
             self._lease.__exit__(None, None, None)
             self._lease = None
+
+    def claim_account(self, url):
+        from . import browser_workspaces as bw
+        if bw.account(url) in self._claimed_hosts:
+            return
+        if not self.human:
+            bw.assert_agent(self.workspace, url)
+        self._accounts.enter_context(bw.account_lease(url))
+        self._claimed_hosts.add(bw.account(url))
+
+    def checkpoint_page(self, page, stage):
+        """Capture bound drafts around manual browser commands, without values in logs."""
+        from . import apply, ats, db
+        from .application_checkpoints import Recorder
+        with db.session() as c:
+            row=c.execute('SELECT a.* FROM applications a JOIN application_browser b ON b.app_id=a.id WHERE b.workspace=? AND b.tab=?',(self.workspace,self.tab_id(page))).fetchone()
+        if row is None or row['status'] in apply.DONE:return
+        adapter=ats.adapter_for(row['ats'])(page,apply.load_bank(),row['company'],apply.app_answers(row),resume=apply.resume_path(apply.load_bank()))
+        Recorder(row['id'],self.workspace,page,adapter).snapshot(stage)
 
     def __enter__(self):
         return self
@@ -535,7 +576,7 @@ _LINKS_JS = """() => [...document.querySelectorAll('a[href]')].map(a =>
 
 async def _crawl(jobs, out: pathlib.Path, *, concurrency: int, wait_ms: int,
                  grep: re.Pattern | None, profile: bool, every: int,
-                 links: bool = False) -> dict:
+                 links: bool = False, workspace=None) -> dict:
     from playwright.async_api import async_playwright
     done = {"ok": 0, "err": 0, "skipped": 0}
     q: asyncio.Queue = asyncio.Queue()
@@ -593,9 +634,12 @@ async def _crawl(jobs, out: pathlib.Path, *, concurrency: int, wait_ms: int,
 
     async with async_playwright() as p:
         if profile:
-            ensure()
-            browser = await p.chromium.connect_over_cdp(cdp_url())
+            ensure(workspace)
+            browser = await p.chromium.connect_over_cdp(cdp_url(workspace))
             ctx = browser.contexts[0]
+            concurrency=min(concurrency,max(0,int(config.get('browser.batch_size',10))-len(ctx.pages)))
+            if not concurrency:
+                raise RuntimeError('Workspace tab limit reached; existing drafts were preserved.')
         else:
             browser = await p.chromium.launch(
                 executable_path=config.get("browser.executable") or None, headless=True)
@@ -612,12 +656,23 @@ async def _crawl(jobs, out: pathlib.Path, *, concurrency: int, wait_ms: int,
 
 def crawl(jobs, out: str, *, concurrency: int = 6, wait_ms: int = 5000,
           grep: str | None = None, profile: bool = False, every: int = 25,
-          links: bool = False) -> dict:
+          links: bool = False, workspace=None) -> dict:
+    import contextlib
+    from . import browser_workspaces as bw
     outp = pathlib.Path(out)
     outp.mkdir(parents=True, exist_ok=True)
     rx = re.compile(r"[^\n]{0,160}(?:" + grep + r")[^\n]{0,200}", re.I) if grep else None
-    return asyncio.run(_crawl(jobs, outp, concurrency=concurrency, wait_ms=wait_ms,
-                              grep=rx, profile=profile, every=every, links=links))
+    with contextlib.ExitStack() as locks:
+        if profile:
+            workspace=bw.name(workspace)
+            locks.enter_context(bw.lease(workspace))
+            bw.admit(workspace)
+            for url in sorted({u for _,u in jobs},key=bw.account):
+                bw.assert_agent(workspace,url)
+            for host in sorted({bw.account(u) for _,u in jobs}):
+                locks.enter_context(bw.account_lease('https://'+host))
+        return asyncio.run(_crawl(jobs, outp, concurrency=concurrency, wait_ms=wait_ms,
+                                  grep=rx, profile=profile, every=every, links=links,workspace=workspace))
 
 
 # --- one page, for collectors -------------------------------------------------

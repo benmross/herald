@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Private, token-scoped review groups. Workers outlive this HTTP controller."""
+import html
+import json
+import pathlib
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parent.parent/'lib'))
+from herald import browse, browser_workspaces as bw, config
+
+HEADERS={'Cache-Control':'no-store','Referrer-Policy':'no-referrer','X-Frame-Options':'DENY','X-Content-Type-Options':'nosniff'}
+PAGE=r'''<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Application review</title><style>
+body{margin:0;font:16px system-ui;background:#151515;color:#eee}header{padding:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}select{flex:1;min-width:180px;font:inherit;padding:8px}button,input{font:inherit;padding:8px}#status{padding:4px 12px;color:#bbb}iframe{width:100%;height:calc(100dvh - 115px);border:0}#screen{width:100%}#fallback{display:none}#tools{padding:8px;display:flex;gap:6px;flex-wrap:wrap}</style>
+<header><select id=tabs aria-label="Applications in this group"></select><button id=submitted>I submitted this</button><button id=return>Return for corrections</button><button id=done>Finish and close group</button></header>
+<div id=status></div><iframe id=live title="Your browser"></iframe>
+<div id=fallback><div id=tools><input id=text autocomplete=off autocapitalize=off placeholder="Type here"><button id=send>Send</button><button id=enter>Enter</button><button id=tabkey>Tab</button><button id=up>Up</button><button id=down>Down</button></div><img id=screen alt="Your application"></div>
+<script>
+const data=__DATA__, B=location.pathname.replace(/\/$/,''), select=document.querySelector('#tabs'),status=document.querySelector('#status');
+let selected=data.tab;
+for(const m of data.members){const o=document.createElement('option');o.value=m.tab;o.textContent=m.company+' — '+m.title;select.append(o)}
+select.value=selected;
+async function act(a){const r=await fetch(B+'/act',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(a)});const out=await r.json();status.textContent=out.message||'';return out}
+select.onchange=async()=>{selected=select.value;await act({k:'tab',tab:selected});frame()};
+document.querySelector('#submitted').onclick=async()=>{const m=data.members.find(m=>m.tab===selected);if(m)await act({k:'submitted',app:m.id})};
+document.querySelector('#done').textContent=data.group?'Finish and close group':'Return control';
+document.querySelector('#submitted').hidden=!data.group;
+document.querySelector('#return').hidden=!data.group;
+document.querySelector('#return').onclick=async()=>{const r=await act({k:'return'});if(r.ok)document.querySelector('#live').src='about:blank'};
+document.querySelector('#done').onclick=async()=>{const r=await act({k:'done'});if(r.ok){document.querySelector('#live').src='about:blank';status.textContent=r.message}};
+const img=document.querySelector('#screen');function frame(){if(!data.vnc)img.src=B+'/frame?'+Date.now()}
+img.onclick=e=>{const r=img.getBoundingClientRect();act({k:'click',x:(e.clientX-r.left)*img.naturalWidth/r.width,y:(e.clientY-r.top)*img.naturalHeight/r.height}).then(frame)};
+document.querySelector('#send').onclick=()=>{const e=document.querySelector('#text');act({k:'type',text:e.value}).then(frame);e.value=''};
+for(const [id,key] of [['enter','Enter'],['tabkey','Tab']])document.querySelector('#'+id).onclick=()=>act({k:'key',key}).then(frame);
+document.querySelector('#up').onclick=()=>act({k:'scroll',dy:-600}).then(frame);document.querySelector('#down').onclick=()=>act({k:'scroll',dy:600}).then(frame);
+async function setup(){const r=await act({k:'tab',tab:selected});if(!r.ok)return;if(data.vnc){document.querySelector('#live').src=data.vnc}else{document.querySelector('#live').hidden=true;document.querySelector('#fallback').style.display='block';frame()}}
+setup();setInterval(frame,2000);
+setInterval(async()=>{const r=await fetch(B+'/status');if(!r.ok){document.querySelector('#live').src='about:blank';status.textContent='Your review is protected. This link expired; request a new link.'}},15000);
+</script>'''
+
+
+class Driver:
+    def __init__(self):self.sessions={}
+    def session(self,workspace):
+        if workspace not in self.sessions:
+            s=browse.Session(workspace,human=True,timeout=1)
+            try:
+                from herald import db
+                with db.session() as c:
+                    urls=[r[0] for r in c.execute('SELECT a.url FROM applications a JOIN application_browser b ON b.app_id=a.id WHERE b.workspace=? ORDER BY a.url',(workspace,))]
+                for url in sorted(set(urls)):s.claim_account(url)
+            except BaseException:s.close();raise
+            self.sessions[workspace]=s
+        return self.sessions[workspace]
+    def reset(self,workspace):
+        s=self.sessions.pop(workspace,None)
+        if s:s.close()
+    def page(self,rec):
+        s=self.session(rec['workspace'])
+        if rec.get('group') and bw.group_info(rec['group'])['state']=='recovery':
+            raise bw.Busy('This browser restarted. Your checkpoints are preserved; recovery and verification are required before review can resume.')
+        return s.tab(rec['tab'])
+
+    def checkpoint(self,rec):
+        if not rec.get('group'):return
+        from herald import apply, ats, application_checkpoints as cp, db
+        page=self.page(rec)
+        member=next((m for m in bw.group_info(rec['group'])['members'] if m['tab']==rec['tab']),None)
+        if not member or member['status'] in apply.DONE:return
+        with db.session() as c:row=apply.get(c,member['id'])
+        adapter=ats.adapter_for(row['ats'])(page,apply.load_bank(),row['company'],apply.app_answers(row),resume=apply.resume_path(apply.load_bank()))
+        cp.Recorder(row['id'],rec['workspace'],page,adapter).snapshot('human-review')
+
+
+DRIVER=Driver()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self,*args):pass
+    def send(self,code,body,ctype='application/json'):
+        if isinstance(body,dict):body=json.dumps(body).encode()
+        elif isinstance(body,str):body=body.encode()
+        self.send_response(code)
+        for k,v in HEADERS.items():self.send_header(k,v)
+        self.send_header('Content-Type',ctype);self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    def route(self):
+        parts=self.path.split('?')[0].strip('/').split('/')
+        if parts and parts[0]=='groups':parts=parts[1:]
+        if len(parts)<2 or parts[0]!='v':return None,None,None
+        token=parts[1];return token,browse.view(token),parts[2] if len(parts)>2 else ''
+    def info(self,rec):
+        if rec.get('group'):
+            return bw.group_info(rec['group'])['members']
+        return [{'id':None,'company':'Browser','title':rec['why'],'tab':rec['tab']}]
+    def do_GET(self):
+        token,rec,sub=self.route()
+        if not rec:return self.send(404,{'message':'This link has expired. Your review tabs remain protected.'})
+        try:
+            if sub=='':
+                data={'members':self.info(rec),'group':rec.get('group'),'tab':rec['tab'],'vnc':browse.vnc_url(token) if browse.vnc_enabled() else None}
+                # Fetched application titles cannot become executable markup.
+                encoded=json.dumps(data).replace('<','\\u003c').replace('>','\\u003e').replace('&','\\u0026')
+                return self.send(200,PAGE.replace('__DATA__',encoded),'text/html; charset=utf-8')
+            if sub=='status':
+                if rec.get('group') and bw.group_info(rec['group'])['state']=='recovery':return self.send(409,{'message':'Recovery required; checkpoints preserved.'})
+                DRIVER.checkpoint(rec)
+                return self.send(200,{'ok':True})
+            if sub=='frame':
+                page=DRIVER.page(rec)
+                return self.send(200,page.screenshot(type='jpeg',quality=75),'image/jpeg')
+        except (bw.Busy,LookupError,SystemExit) as e:return self.send(423,{'message':str(e)})
+        except Exception:
+            DRIVER.reset(rec['workspace']);return self.send(503,{'message':'Browser unavailable. Your checkpoints and group are preserved.'})
+        return self.send(404,{'message':'Not found'})
+    def do_POST(self):
+        token,rec,sub=self.route()
+        if not rec or sub!='act':return self.send(404,{'message':'Link expired; review ownership is preserved.'})
+        try:
+            n=int(self.headers.get('Content-Length','0'))
+            if n<0 or n>8192:return self.send(400,{'message':'Invalid action'})
+            a=json.loads(self.rfile.read(n));k=a.get('k')
+            if k=='submitted' and rec.get('group'):
+                member=next((m for m in self.info(rec) if m['id']==int(a['app'])),None)
+                if not member or not DRIVER.session(rec['workspace']).tab(member['tab']).evaluate("document.visibilityState==='visible'"):
+                    return self.send(409,{'message':'Select that application in the group before marking it submitted.'})
+                bw.mark_submitted(rec['group'],int(a['app']));return self.send(200,{'ok':True,'message':'Marked as submitted by you.'})
+            if k=='return' and rec.get('group'):
+                DRIVER.reset(rec['workspace']);bw.return_group(rec['group']);browse.close_view(token)
+                return self.send(200,{'ok':True,'message':'Returned for corrections; no application was submitted by Herald.'})
+            if k=='done':
+                if rec.get('group'):
+                    members=self.info(rec)
+                    workspace=bw.finish_group(rec['group'])
+                    session=DRIVER.sessions.get(rec['workspace'])
+                    if session:
+                        for m in members:
+                            try:session.tab(m['tab']).close()
+                            except (Exception,SystemExit):pass
+                DRIVER.reset(rec['workspace']);browse.close_view(token)
+                if rec.get('group') and bw.get(workspace)['state']=='closed':bw.stop_closed(workspace)
+                return self.send(200,{'ok':True,'message':'This review group is finished.' if rec.get('group') else 'Control returned.'})
+            if k=='tab':
+                if a.get('tab') not in [m['tab'] for m in self.info(rec)]:return self.send(400,{'message':'Tab is outside this group.'})
+                DRIVER.checkpoint(rec)
+                rec['tab']=a['tab']
+                from herald.application_checkpoints import atomic_json
+                atomic_json(browse.spool()/(browse._hash(token)+'.json'),rec)
+            page=DRIVER.page(rec)
+            if k=='tab':page.bring_to_front()
+            elif k=='click':page.mouse.click(float(a['x']),float(a['y']))
+            elif k=='type':page.keyboard.type(str(a.get('text',''))[:4000])
+            elif k=='key' and a.get('key') in ('Enter','Tab','Backspace','Escape'):page.keyboard.press(a['key'])
+            elif k=='scroll':page.mouse.wheel(0,max(-3000,min(3000,int(a.get('dy',0)))))
+            else:return self.send(400,{'message':'Unknown action'})
+            return self.send(200,{'ok':True})
+        except (bw.Busy,ValueError,LookupError,SystemExit) as e:return self.send(423,{'message':str(e)})
+        except Exception:
+            DRIVER.reset(rec['workspace']);return self.send(503,{'message':'The browser could not complete that action; your group remains protected.'})
+
+
+def main():
+    # Browser services outlive this HTTP controller, including across restarts.
+    for w in bw.all_workspaces():
+        if w['slot'] and w['state']!='closed':
+            try:bw.start(w['id'])
+            except (bw.Busy,RuntimeError):pass
+    server=HTTPServer(('127.0.0.1',int(config.get('browser.review_port',8794))),Handler)
+    server.serve_forever()
+
+
+if __name__=='__main__':main()

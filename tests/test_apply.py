@@ -84,6 +84,14 @@ class Store(unittest.TestCase):
 
 
 class NoPasswords(unittest.TestCase):
+    def test_choices_must_be_unambiguous(self):
+        self.assertIsNone(ap.best_option('Computer Science',['Computer Science and Engineering','Computer Science and Mathematics']))
+        self.assertIsNone(ap.best_option('No',['Not specified','Not applicable']))
+        self.assertEqual(ap.best_option('^No$',['Yes','No']),'No')
+
+    def test_canonical_requisition_deduplication(self):
+        self.assertEqual(ap.canonical_key('https://example.wd5.myworkdayjobs.com/en-US/Jobs/job/City/Intern_R123'),ap.canonical_key('https://example.wd5.myworkdayjobs.com/en-US/Jobs/job/City/Intern_R123/apply/applyManually'))
+
     def test_scanners_mask_passwords(self):
         for js in (ats.SCAN_JS, ats.WD_SCAN):
             self.assertIn("'(set)'", js)
