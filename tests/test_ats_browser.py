@@ -79,6 +79,15 @@ class Widgets(unittest.TestCase):
         self.assertTrue(adapter.set(adapter.scan()[0], "Yes"))
         self.assertTrue(self.page.locator("#yes").is_checked())
 
+    def test_workday_school_name_alias_updates_existing_education(self):
+        self.page.set_content('''<div data-automation-id="formField-schoolName">
+          <label>School or University</label><input value="Old school"></div>''')
+        adapter = ats.Workday(self.page, {}, None, {}, resume="")
+        added = adapter.entries("Education", [{"school": "Example University"}],
+                                {"school": "school"})
+        self.assertEqual(added, 0)
+        self.assertEqual(self.page.locator("input").input_value(), "Example University")
+
 
 if __name__ == "__main__":
     unittest.main()

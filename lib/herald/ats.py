@@ -497,6 +497,7 @@ WD_IDS = {
     "addressLine1": "address1", "city": "city", "postalCode": "postal",
     "phoneNumber": "phone_digits", "countryRegion": "state", "phoneType": "phone_type",
     "school": "school", "degree": "degree_workday", "fieldOfStudy": "major",
+    "schoolName": "school",
     "firstYearAttended": "start_year", "lastYearAttended": "end_year",
     "gradeAverage": "gpa",
 }
@@ -637,6 +638,7 @@ class Workday:
             # hidden input's focus. Filling inputs directly can put the year
             # into the day (F5's three-part date, 27 Oct 2026).
             parts = re.findall(r"\d+", str(value))
+            p.bring_to_front()
             inputs = b.locator('input[role="spinbutton"]').all()
             if not inputs:
                 inputs = b.locator("input:visible").all()
@@ -644,7 +646,7 @@ class Workday:
                 segment = inp.get_attribute("aria-label")
                 display = b.locator('[data-automation-id=' + json.dumps('dateSection' + (segment or '') + '-display') + ']')
                 if display.count():
-                    display.click(force=True)
+                    display.click()
                     p.keyboard.press("Control+a")
                     p.keyboard.type(part, delay=40)
                     p.keyboard.press("Tab")
@@ -751,6 +753,10 @@ class Workday:
         around it. A section that already has entries is left alone.
         """
         p = self.page
+        # Some tenants use schoolName rather than school. Counting the wrong
+        # id made each refill append another education (27 Oct 2026).
+        if "school" in fields and any(f["id"] == "schoolName" for f in self.scan()):
+            fields = {("schoolName" if k == "school" else k): v for k, v in fields.items()}
         first_id = next(iter(fields))
         existing = sum(f["id"] == first_id for f in self.scan())
         added = 0
