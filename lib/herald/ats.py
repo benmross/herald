@@ -851,10 +851,20 @@ class Workday:
         # A cookie banner over the button swallowed the click on ICF
         # (27 Oct 2026), and the unchanged page read as a rejected password.
         self.dismiss_cookies()
-        p.locator('input[data-automation-id="email"]').first.fill(acct["email"])
-        p.locator('input[data-automation-id="password"]').first.fill(acct["password"])
+        # Focus each box before filling it, and press the button with the
+        # mouse at its centre. On ICF (27 Oct 2026) a locator click landed on
+        # Workday's click filter, nothing was submitted, and the form reset;
+        # the same steps by mouse signed in at once.
+        for sel, value in (('input[data-automation-id="email"]', acct["email"]),
+                           ('input[data-automation-id="password"]', acct["password"])):
+            box = p.locator(sel).first
+            box.click()
+            box.fill(value)
         btn = p.locator('[data-automation-id="signInSubmitButton"]')
-        self.click(btn.first if btn.count() else p.get_by_role("button", name="Sign In").first)
+        btn = btn.first if btn.count() else p.get_by_role("button", name="Sign In").first
+        btn.scroll_into_view_if_needed()
+        bb = btn.bounding_box()
+        p.mouse.click(bb["x"] + bb["width"] / 2, bb["y"] + bb["height"] / 2)
         try:
             p.locator('input[data-automation-id="password"]').first.wait_for(state="hidden", timeout=20000)
         except bw.Busy:
@@ -962,6 +972,12 @@ class Workday:
         # From the posting: Apply, then Apply Manually (predictable, unlike
         # "Autofill with Resume", which guesses at work history).
         start = p.locator('[data-automation-id="adventureButton"]:visible')
+        if not start.count():
+            # A posting with a saved draft offers "Continue Application"
+            # instead of Apply (ICF, 27 Oct 2026); it opens the draft.
+            start = p.get_by_role("link", name=re.compile(r"^Continue Application$", re.I))
+            if not start.count():
+                start = p.get_by_role("button", name=re.compile(r"^Continue Application$", re.I))
         if start.count() and not p.locator('[data-automation-id^="formField-"]').count():
             self.click(start.first)
             p.wait_for_timeout(2500)

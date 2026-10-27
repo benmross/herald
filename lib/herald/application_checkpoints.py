@@ -238,6 +238,29 @@ class Recorder:
             if f.get('required') and f['kind']!='file' and not read_value(f):failures.append('Required field remains empty: '+f['label'])
             written=self.writes.get(identity(f))
             if written and not matches(f,written['intended']):failures.append('Field changed after it was verified: '+f['label'])
+        # A write left unverified by an earlier run is checked again: against
+        # the field if it is on this page, else against what was observed.
+        # Stale flags otherwise blocked forms whose values were right (ICF
+        # showed "Bachelors" and "Computer Science", 27 Oct 2026).
+        current={identity(f):f for f in fields}
+        for key,v in self.writes.items():
+            if v.get('verified') or protected(v.get('field',{})):continue
+            f=current.get(key)
+            if f is None and v.get('observed') not in (None,'',[]):
+                f=dict(v['field']);f.pop('selected_labels',None)
+                if f['kind'] in ('radio','checks','buttonradio'):f['selected_labels']=v['observed'] if isinstance(v['observed'],list) else [v['observed']]
+                else:f['value']=v['observed'];f['selected_label']=v['observed']
+            if f is None:continue
+            want=[v['intended']]
+            try:
+                # The answer may have been corrected in the bank since then.
+                now,found=(self.adapter.value_for(f) if hasattr(self.adapter,'value_for')
+                           else ats.resolve(self.adapter.bank,f.get('label',''),self.adapter.company,self.adapter.answers))
+                if found:want.append(now)
+            except Exception:
+                pass
+            if any(matches(f,w) for w in want):
+                v['verified']=True;v['observed']=read_value(f)
         bad=[v for v in self.writes.values() if not v.get('verified')]
         if bad:failures.append('Some field writes have not passed readback verification.')
         # Only boolean attachment evidence leaves the page; never save its body text.
