@@ -505,8 +505,11 @@ def main() -> int:
         # The needles, the credential shapes and the blanking of this repo's own
         # URL all live in lib/herald/leaks.py, which `herald ext check` uses
         # too, so an extension is held to exactly this before it is published.
-        tracked = subprocess.run(["git", "ls-files"], cwd=ROOT,
-                                 capture_output=True, text=True).stdout.split()
+        # Untracked files count too: `git add -A` commits them, and on 27 Oct
+        # 2026 a new file carrying the user's name passed this check because it
+        # ran before the file was staged, then went out in the push.
+        tracked = subprocess.run(["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                                 cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
         # A copyright line is attribution, which is the one place the author's name
         # belongs in a public repository. Nothing else is exempt.
         hits = leaks.scan(ROOT, tracked, allowed={"LICENSE"})
