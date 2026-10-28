@@ -33,7 +33,7 @@ sys.path.insert(0, str(HERE.parent / "lib"))
 sys.path.insert(0, str(HERE))
 
 from _snapshot import build  # noqa: E402
-from herald import amber, config, db, notify, think  # noqa: E402
+from herald import amber, config, db, ledger, notify, think  # noqa: E402
 
 CYCLE = "dawn"
 LABEL = f"cycle:{CYCLE}"
@@ -131,6 +131,12 @@ Do these, in this order:
 
 5. **Return the digest** through the schema.
 
+**Backing up the ledger is part of this cycle, and it is already done.** The
+cycle pushes `$HERALD_HOME` to its remote before this snapshot is built. Do
+not push it yourself and do not mention the backup in the digest. The one
+exception is a snapshot section saying the backup is not reaching its remote:
+that means the push failed, and {THEY} need{"" if WHO["plural_verb"] else "s"} to hear it.
+
 **Include the open obligations.** They are listed in the snapshot. Do not
 simply list them: {THEY} can see the whole list any time with /obligations, and
 every one was shown to {THEM} when it was added. Lead with the ones where today
@@ -195,6 +201,12 @@ def _brain_url() -> str | None:
 
 def main() -> int:
     now = dt.datetime.now(config.tz())
+    # Backing up the ledger is this cycle's job, done here in Python so the
+    # digest never has to mention it. If it fails, the snapshot's backlog
+    # section says so and carries git's reason.
+    push_error = ledger.push()
+    if push_error:
+        os.environ["HERALD_LEDGER_PUSH_ERROR"] = push_error
     with db.session() as con:
         snapshot, shown = build(con, CYCLE)
 

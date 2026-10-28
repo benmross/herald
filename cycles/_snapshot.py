@@ -28,6 +28,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 from dataclasses import dataclass
@@ -258,9 +259,12 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         stuck = None
     if stuck and stuck[1] >= ledger.BACKLOG_HOURS:
         head("The ledger's backup is not reaching its remote")
+        why = os.environ.get("HERALD_LEDGER_PUSH_ERROR")
         out.append(f"{stuck[0]} commit(s) in $HERALD_HOME have not been pushed, the "
-                   f"oldest {stuck[1] / 24:.1f} days ago. `git -C $HERALD_HOME push` "
-                   f"says why. Tell {them}: the only copy is on this machine.")
+                   f"oldest {stuck[1] / 24:.1f} days ago. "
+                   + (f"This cycle's push just failed: {why}. " if why else
+                      "`git -C $HERALD_HOME push` says why. ")
+                   + f"Tell {them}: the only copy is on this machine.")
 
     waiting = _rows(con, "SELECT * FROM approvals WHERE state='pending' ORDER BY ts")
     if waiting:

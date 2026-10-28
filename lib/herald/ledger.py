@@ -67,6 +67,33 @@ def commit(message: str, *, push: bool = True) -> str | None:
     return short
 
 
+def push(timeout: int = 120) -> str | None:
+    """Push `$HERALD_HOME` to its remote and wait for the answer. Returns None
+    when there was nothing to do or the push went through, and git's own
+    error text when it failed.
+
+    Sessions commit the ledger with plain `git commit`, which never pushes,
+    so the off-box copy drifts behind between cycles. The dawn cycle used to
+    find that backlog in its snapshot every morning, push it by hand and then
+    report having done so in the digest: routine upkeep read out to the person
+    as news. The cycle now calls this before building its snapshot, so the
+    backlog section only ever appears when a push has really failed.
+    """
+    if not versioned() or _git("remote", "get-url", "origin").returncode != 0:
+        return None
+    if backlog() is None:
+        return None
+    try:
+        r = subprocess.run(["git", "push", "-q", "origin", "HEAD"],
+                           cwd=str(config.HOME), capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"git push timed out after {timeout}s"
+    if r.returncode == 0:
+        return None
+    return (r.stderr or r.stdout).strip()[-400:] or f"git push exited {r.returncode}"
+
+
 def backlog() -> tuple[int, float] | None:
     """(commits not on the remote, age in hours of the oldest), or None when
     the ledger is pushed, unversioned, or has no remote.
