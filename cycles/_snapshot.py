@@ -462,14 +462,14 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
     if since:
         fresh = _rows(con, """
             SELECT * FROM facts
-            WHERE source='gmail' AND kind='message' AND ts > ?
+            WHERE source IN ('gmail', 'purelymail') AND kind='message' AND ts > ?
               AND json_extract(data,'$.from_me') = 0
             ORDER BY ts DESC LIMIT ?
         """, (since, NEW_MAIL_LIMIT))
     else:
         fresh = _rows(con, """
             SELECT * FROM facts
-            WHERE source='gmail' AND kind='message'
+            WHERE source IN ('gmail', 'purelymail') AND kind='message'
               AND json_extract(data,'$.from_me') = 0
             ORDER BY ts DESC LIMIT ?
         """, (NEW_MAIL_LIMIT,))
@@ -757,7 +757,7 @@ def pulse(con) -> dict:
         "place": loc[0]["title"] if loc else None,
         "fact_id": _max_id(con, "SELECT MAX(id) FROM facts"),
         "mail_id": _max_id(con, "SELECT MAX(id) FROM facts "
-                                "WHERE source='gmail' AND kind='message'"),
+                                "WHERE source IN ('gmail', 'purelymail') AND kind='message'"),
         "action_id": _max_id(con, "SELECT MAX(id) FROM actions"),
         "commit_id": _max_id(con, "SELECT MAX(id) FROM commitments"),
         "open_n": _max_id(con, "SELECT COUNT(*) FROM commitments "
@@ -786,7 +786,7 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
 
     mail = _rows(con, """
         SELECT id, title, json_extract(data,'$.from') sender FROM facts
-        WHERE source='gmail' AND kind='message' AND id > ?
+        WHERE source IN ('gmail', 'purelymail') AND kind='message' AND id > ?
         ORDER BY id DESC LIMIT ?
     """, (prev.get("mail_id", 0), DELTA_ITEM_LIMIT))
     if mail:

@@ -66,7 +66,7 @@ BATCH = 50
 BACKFILL_PER_RUN = 150
 PAUSE = 0.3   # seconds between batches; Gmail 429s a tight loop
 HEADERS = ["From", "To", "Cc", "Subject", "Date", "List-Id", "List-Unsubscribe",
-           "Precedence", "Reply-To", "Auto-Submitted"]
+           "Precedence", "Reply-To", "Auto-Submitted", "Message-ID"]
 
 # Gmail's own tabs. Anything filed under one of these is broadcast, not
 # correspondence.
@@ -258,6 +258,7 @@ def collect(con) -> dict:
                 "body_truncated": len(text) > mailtext.MAX_CHARS,
                 "attachments": mailtext.attachments(payload),
                 "thread_id": msg.get("threadId"),
+                "message_id": _header(msg, "Message-ID"),
                 "from": sender,
                 "to": _header(msg, "To"),
                 "cc": _header(msg, "Cc"),

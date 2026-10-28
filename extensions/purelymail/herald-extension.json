@@ -1,0 +1,21 @@
+{
+  "name": "purelymail",
+  "description": "Direct mailbox reading and drafts over TLS IMAP.",
+  "version": "0.1.0",
+  "bundled": true,
+  "enabled": false,
+  "provides_capabilities": [
+    {
+      "key": "purelymail",
+      "title": "Purelymail mailbox",
+      "summary": "Read mail directly and save drafts in the mailbox.",
+      "secrets": [
+        "purelymail.password"
+      ],
+      "settings": [
+        "purelymail.address"
+      ],
+      "setup_hint": "docs/purelymail.md"
+    }
+  ]
+}

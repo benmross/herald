@@ -410,11 +410,11 @@ class _MailReader:
 
     def message(self, candidate_id: str):
         """The stored gmail fact behind an `opportunities/candidate` row."""
-        if not candidate_id.startswith("gmail:"):
+        if not candidate_id.startswith(("gmail:", "purelymail:")):
             return None
         return self.con.execute(
-            "SELECT * FROM facts WHERE id = ? AND source='gmail' AND kind='message'",
-            (candidate_id.split(":", 1)[1],)).fetchone()
+            "SELECT * FROM facts WHERE id = ? AND source = ? AND kind='message'",
+            (candidate_id.split(":", 1)[1], candidate_id.split(":", 1)[0])).fetchone()
 
     def images(self, message_id: str) -> tuple[list[dict], dict]:
         want = self.settings
@@ -454,7 +454,13 @@ class _MailReader:
         if files:
             out.append(f"- attachments: {', '.join(files[:12])}")
         if images:
-            saved, skipped = self.images(mid)
+            if fact["source"] == "purelymail":
+                from herald import purelymail
+                saved, skipped = purelymail.images(mid, self.dir / mid, self.seen,
+                                                   self.settings, self.left)
+                self.left -= len(saved)
+            else:
+                saved, skipped = self.images(mid)
             if saved:
                 out.append(f"- images ({len(saved)}), Read every one before you decide:")
                 for im in saved:

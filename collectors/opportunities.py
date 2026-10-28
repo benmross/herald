@@ -33,7 +33,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 from herald import collector, config, db  # noqa: E402
 
 NAME = "opportunities"
-REQUIRES = ('google',)
+REQUIRES = ()  # Derives from stored mail; does not contact either provider.
 
 # How often this is worth running:
 # derives from gmail facts already in the ledger
@@ -110,18 +110,27 @@ def _score(subject: str, body: str, sender: str) -> tuple[int, list[str]]:
 
 def collect(con) -> dict:
     rows = con.execute("""
-        SELECT id, ts, title, body, data FROM facts
-        WHERE source = 'gmail' AND kind = 'message'
+        SELECT id, source, ts, title, body, data FROM facts
+        WHERE source IN ('gmail', 'purelymail') AND kind = 'message'
           AND ts >= date('now', '-45 days')
+        ORDER BY CASE source WHEN 'gmail' THEN 0 ELSE 1 END, id
     """).fetchall()
 
     db.clear(con, NAME, "candidate")
     kept = 0
 
+    seen_mail = set()
     for r in rows:
         data = json.loads(r["data"] or "{}")
         if data.get("from_me"):
             continue
+        # Forwarding can put the same RFC message in both accounts. Keep the
+        # existing Gmail candidate identity when both copies are available.
+        message_id = (data.get("message_id") or "").strip()
+        if message_id and message_id in seen_mail:
+            continue
+        if message_id:
+            seen_mail.add(message_id)
         subject = r["title"] or ""
         # Scored on the snippet, as it always was. Whole bodies arrived on
         # 14 Sep 2026, and the boilerplate footer of every university newsletter
@@ -133,7 +142,7 @@ def collect(con) -> dict:
         score, reasons = _score(subject, body, sender)
 
         db.put_fact(
-            con, NAME, "candidate", external_id=f"gmail:{r['id']}", ts=r["ts"],
+            con, NAME, "candidate", external_id=f"{r['source']}:{r['id']}", ts=r["ts"],
             title=subject, body=body,
             data={
                 "from": sender,

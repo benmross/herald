@@ -1,0 +1,7 @@
+#!/usr/bin/env python
+"""Inspect Purelymail access or create a draft."""
+import pathlib
+import sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "lib"))
+from herald.purelymail import main
+raise SystemExit(main())
