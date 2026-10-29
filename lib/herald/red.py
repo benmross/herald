@@ -223,12 +223,30 @@ def _perform_issue(p: dict) -> tuple[str, str]:
             url.splitlines()[-1] if url else f"github:{p['repo']}")
 
 
+def _render_consent(p: dict) -> str:
+    question = p.get("question")
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("consent needs the complete proposed action")
+    text = f"Approve this action?\n\n{question}"
+    if len(text.encode("utf-16-le")) // 2 > tgtext.LIMIT - 100:
+        raise ValueError("the complete consent request must fit one Telegram message")
+    return text
+
+
+def _perform_consent(p: dict) -> tuple[str, str]:
+    _render_consent(p)
+    # This records permission, not completion of the described action. The
+    # caller still uses normal tools, whose mandatory gates remain in force.
+    return (f"consent granted: {p['question']}", "consent")
+
+
 KINDS = {
     "mail.send": (_render_mail, _perform_mail),
     "drill": (_render_drill, _perform_drill),
     "safety.allow": (_render_safety_allow, _perform_safety_allow),
     "github.pr": (_render_pr, _perform_pr),
     "github.issue": (_render_issue, _perform_issue),
+    "consent": (_render_consent, _perform_consent),
 }
 
 

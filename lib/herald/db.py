@@ -349,6 +349,25 @@ CREATE TABLE IF NOT EXISTS approvals (
     decided_by  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_pending ON approvals (state, ts);
+
+CREATE TABLE IF NOT EXISTS questions (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    question TEXT NOT NULL,
+    options TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
+    thread_id INTEGER,
+    message_id INTEGER,
+    approval_id INTEGER,
+    wake INTEGER NOT NULL DEFAULT 1,
+    expires_at REAL NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    answer TEXT,
+    answered_at TEXT,
+    answered_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_questions_message ON questions (chat_id, message_id);
 """
 
 

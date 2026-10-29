@@ -55,7 +55,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import activity, approvals, config, db, obligations, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
+from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
 from herald import private as private_mod, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -1553,6 +1553,64 @@ def _maybe_restart() -> None:
         # from here on never runs -- systemd has already sent the signal.
 
 
+def _question_answer(row: dict, update: dict, state: dict) -> None:
+    """Remove the buttons and deliver an asynchronous answer to its topic."""
+    answer = ("Approved" if row.get("approved") else "Declined") if row["approval_id"] else row["answer"]
+    original = (update.get("callback_query") or {}).get("message") or {}
+    if original.get("message_id"):
+        api("editMessageReplyMarkup", chat_id=row["chat_id"], message_id=row["message_id"],
+            reply_markup={"inline_keyboard": []})
+    send(row["chat_id"], f"Answer recorded: {answer}", row["thread_id"])
+    if not row["wake"]:
+        return  # The waiting command receives this answer directly.
+    text = f"Your question: {row['question']}\n\nMy answer: {answer}"
+    if row["approval_id"]:
+        text += (f"\nConsent receipt: {row['approval_id']}. "
+                 "This grants only the described action; mandatory tool approvals still apply.")
+    message = {"message_id": row["message_id"], "chat": {"id": row["chat_id"]},
+               "from": {"id": config.secret("telegram.user_id")},
+               "date": int(time.time()), "text": text}
+    if row["thread_id"]:
+        message["message_thread_id"] = row["thread_id"]
+    followup = {"update_id": update["update_id"], "message": message}
+    key = _topic_key(followup)
+    if not _try_steer(followup, key, state):
+        with _lock_for(key):
+            handle(followup, state)
+
+
+def _handle_question_callback(update: dict, state: dict) -> None:
+    cq = update["callback_query"]
+    sender = (cq.get("from") or {}).get("id")
+    if sender != config.secret("telegram.user_id"):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Not your Herald.")
+        return
+    parts = (cq.get("data") or "").split(":")
+    row = None
+    if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
+        try:
+            row = questions.answer(int(parts[1]), "", sender=sender,
+                                   message=cq.get("message") or {}, choice=int(parts[2]))
+        except ValueError:
+            pass
+    api("answerCallbackQuery", callback_query_id=cq["id"],
+        text="Answer recorded" if row else "That question is no longer available.")
+    if row:
+        _question_answer(row, update, state)
+
+
+def _question_text(update: dict, state: dict) -> bool:
+    msg = update.get("message") or {}
+    if (_topic_key(update) in _private
+            or not msg.get("reply_to_message") or not msg.get("text")):
+        return False
+    row = questions.reply(msg)
+    if not row:
+        return False
+    _question_answer(row, update, state)
+    return True
+
+
 def _handle_callback(update: dict) -> None:
     """A tap on an approval button.
 
@@ -2059,7 +2117,9 @@ def _dispatch(update: dict, state: dict) -> None:
     handed_off = False
     try:
         if update.get("callback_query"):
-            if (update["callback_query"].get("data") or "").startswith("model:"):
+            if (update["callback_query"].get("data") or "").startswith(questions.CALLBACK + ":"):
+                _handle_question_callback(update, state)
+            elif (update["callback_query"].get("data") or "").startswith("model:"):
                 _handle_model_callback(update, state)
             elif (update["callback_query"].get("data") or "").startswith("effort:"):
                 _handle_effort_callback(update, state)
@@ -2072,6 +2132,8 @@ def _dispatch(update: dict, state: dict) -> None:
                 _handle_callback(update)
         elif _is_stop_command(update):
             _handle_stop(update, key)
+        elif _question_text(update, state):
+            pass
         elif _is_debug_command(update):
             _handle_debug(update, key, state)
         elif command_word((update.get("message") or {}).get("text") or "") == "/usage":

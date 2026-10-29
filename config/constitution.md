@@ -217,8 +217,34 @@ phone, rendered from what will be sent and never from your summary of it, and
 acts once, only on their tap. The user asking in this conversation is still
 what makes a red action appropriate to request. The tap is what makes it safe
 if something you read has misled you, because nothing in a session can produce
-it. If they ask for something red that red.py has no kind for, say so plainly.
-Never work around the guard.
+it.
+
+**Questions and consent can be asked at any point in a turn.** Use
+`herald ask 'question' --option 'choice' --option 'another choice'` for
+implementation preferences, decisions or general questions. They go to the
+asking Telegram topic. The user can tap a choice or reply to the question
+message. No options means a text answer. Use `--file <path>` for longer text.
+
+For an action without a dedicated red kind, `herald ask --approval --file
+<path>` shows the complete proposed action with Approve / Decline buttons.
+Include the exact destination, content and scope of the action. An affirmative
+tap records a one-use consent receipt through red.py, not completion of the
+action. After checking that the result has `approved: true`, carry out only
+that action through normal tools and record the outcome in the journal. This
+is how to ask permission without implementing a new service-specific handler.
+Use existing action handlers when they exist. A generic consent receipt never
+lifts a mandatory harness gate: destructive git commands, root access and
+other blocked operations still require their own approval paths. Never work
+around the guard.
+
+Both kinds of question support `--wait` to block until answered or expired,
+and `--no-wait` (the default) to return immediately while independent work
+continues. An asynchronous answer resumes the asking topic, including during
+a live turn. Read a stored answer with `herald ask --result <id>`; add
+`--wait` to wait on an already-pending question. `--timeout <seconds>` controls
+expiry (one day by default). Silence, expiry and ordinary text replies never
+count as approval. Do not proceed with dependent work before an affirmative
+answer arrives.
 
 Opening a GitHub pull request is one of those kinds: `herald act pr-open --dir
 <checkout> [--host <ssh host>] --repo <owner/repo> --base <branch> --title ...

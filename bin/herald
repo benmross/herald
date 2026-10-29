@@ -1424,6 +1424,31 @@ def cmd_orient(args) -> int:
 
 
 
+def cmd_ask(args) -> int:
+    """Ask in the current topic; return a durable answer or consent receipt."""
+    from herald import questions  # noqa: PLC0415
+    try:
+        if args.question_id is not None:
+            row = questions.result(args.question_id)
+        else:
+            text = (pathlib.Path(args.file).expanduser().read_text()
+                    if args.file else args.question)
+            row = questions.request(text, options=args.option, approval=args.approval,
+                                    actor=args.actor, timeout=args.timeout,
+                                    wake=not args.wait, thread_id=args.telegram_thread)
+        if args.wait:
+            row = questions.wait(row["id"])
+    except (OSError, ValueError, RuntimeError, PermissionError) as exc:
+        print(f"cannot ask: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(row, ensure_ascii=False))
+    if row["state"] == "expired":
+        return 3
+    if row["approval_id"] and row["state"] == "answered" and not row.get("approved"):
+        return 3
+    return 0
+
+
 def cmd_act(args) -> int:
     """Carry out an outward action through the right door.
 
@@ -2391,6 +2416,23 @@ def main() -> int:
     mode.add_argument("--refresh", action="store_true", help="read fresh limits through the CLI")
     mode.add_argument("--cached", action="store_true", help="only read saved statistics")
     quota.set_defaults(fn=cmd_usage)
+
+    ask = sub.add_parser("ask", help="ask a question or request consent in your Telegram topic")
+    content = ask.add_mutually_exclusive_group(required=True)
+    content.add_argument("question", nargs="?", help="the complete question or proposed action")
+    content.add_argument("--file", help="read the complete question from a UTF-8 file")
+    content.add_argument("--result", dest="question_id", type=int, help="read an existing answer")
+    ask.add_argument("--option", action="append", default=[], help="a choice; repeat for each button")
+    ask.add_argument("--approval", action="store_true", help="require an explicit Approve / Decline tap")
+    waiting = ask.add_mutually_exclusive_group()
+    waiting.add_argument("--wait", action="store_true", help="block until answered or expired")
+    waiting.add_argument("--no-wait", dest="wait", action="store_false",
+                         help="return immediately and resume this topic when answered (default)")
+    ask.set_defaults(wait=False)
+    ask.add_argument("--timeout", type=int, default=86400, help="seconds before expiry (default: one day)")
+    ask.add_argument("--actor", default="session")
+    ask.add_argument("--telegram-thread", type=int, help="default: the asking topic, otherwise Updates")
+    ask.set_defaults(fn=cmd_ask)
 
     act = sub.add_parser("act", help="an outward action, through the right door")
     act_sub = act.add_subparsers(dest="kind", required=True)

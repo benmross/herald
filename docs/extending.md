@@ -2,6 +2,9 @@
 
 ## Adding a collector
 
+For questions and approval requests from an agent session, see
+[`questions.md`](questions.md).
+
 A collector reads one source and writes facts. **No model calls, ever**:
 ingestion runs every 30 minutes and must cost nothing.
 
