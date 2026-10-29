@@ -61,12 +61,19 @@ def run(name: str, fn: Callable[[object], dict | None]) -> int:
         counts = dict(result)
         # A collector may hand back its new position under this key.
         new_cursor = counts.pop("_cursor", None)
+        sync = counts.pop("_sync", {})
+        partial = not sync.get("complete", True)
+        if partial:
+            # A collector's partial-success result must never advance a cursor.
+            new_cursor = None
         con.commit()
-        db.mark_collector(con, name, ok=True, cursor=new_cursor)
+        db.mark_collector(con, name, ok=True, cursor=new_cursor, partial=partial,
+                          pending=int(sync.get("pending", 0)),
+                          error=sync.get("reason"), coverage=sync.get("coverage"))
 
         # The user was told this was broken; tell them it is not. An alert with
         # no all-clear leaves someone checking a thing that fixed itself.
-        if was_failing >= NOTIFY_AFTER_FAILURES:
+        if not partial and was_failing >= NOTIFY_AFTER_FAILURES:
             notify.tell(f"Herald: {name} is working again",
                         f"Recovered after {was_failing} failed runs.",
                         priority="low", tags="white_check_mark")

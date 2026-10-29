@@ -167,9 +167,14 @@ def cmd_status(args) -> int:
             state = _c("not a collector", DIM)
         elif fails:
             state = _c(f"failing x{fails}", BAD if fails > 2 else WARN)
+        elif r['sync_status'] == 'partial':
+            state = _c(f"partial ({r['pending_retries']} retries)", WARN)
+        elif r['sync_status'] == 'unknown':
+            state = _c("coverage unknown", WARN)
         else:
             state = _c("ok", OK)
-        print(f"  {r['collector']:<20} {state:<22} last ok {r['last_ok'] or 'never'}")
+        print(f"  {r['collector']:<20} {state:<22} "
+              f"last complete {r['last_complete'] or 'not established'}")
 
     _hdr("ledger")
     facts = db.query("SELECT source, kind, COUNT(*) n, MAX(ts) latest"

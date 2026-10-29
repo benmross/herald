@@ -724,6 +724,8 @@ def delta_for(ts: dict) -> str:
     """
     try:
         with db.session() as con:
+            from herald import changes
+            changes.scan_documents(con)
             text, fingerprint = _snapshot.delta(con, ts.get("pulse"))
         ts["pulse"] = fingerprint
     except Exception as exc:  # noqa: BLE001 -- never worth failing a turn

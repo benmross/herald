@@ -99,6 +99,10 @@ class CursorRecovery(unittest.TestCase):
         with db.session() as con:
             ids = {r[0] for r in con.execute(
                 "SELECT external_id FROM facts WHERE source='gmail' AND kind='message'")}
+            state = con.execute("SELECT * FROM collector_state WHERE collector='gmail'").fetchone()
+            self.assertEqual(state['sync_status'], 'partial')
+            self.assertEqual(state['pending_retries'], 1)
+            self.assertIsNone(state['last_complete']) if not previous else self.assertIsNotNone(state['last_complete'])
         self.assertEqual(ids, {"good"})
 
         failing[0] = False
@@ -107,6 +111,10 @@ class CursorRecovery(unittest.TestCase):
         with db.session() as con:
             count = con.execute(
                 "SELECT count(*) FROM facts WHERE source='gmail' AND kind='message'").fetchone()[0]
+            state = con.execute("SELECT * FROM collector_state WHERE collector='gmail'").fetchone()
+            self.assertEqual(state['sync_status'], 'complete')
+            self.assertEqual(state['pending_retries'], 0)
+            self.assertIsNotNone(state['last_complete'])
         self.assertEqual(count, 2)
         if previous:
             self.assertEqual([call.args[1] for call in history.call_args_list],
@@ -152,6 +160,9 @@ class CursorRecovery(unittest.TestCase):
         with db.session() as con:
             self.assertEqual(con.execute(
                 "SELECT count(*) FROM facts WHERE source='gcal' AND kind='event'").fetchone()[0], 3)
+            state = con.execute("SELECT * FROM collector_state WHERE collector='gcal'").fetchone()
+            self.assertEqual(state['sync_status'], 'partial')
+            self.assertEqual(state['pending_retries'], 1)
 
         failing[0] = False
         self.assertEqual(collector.run("gcal", gcal.collect), 0)

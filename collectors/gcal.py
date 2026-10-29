@@ -214,6 +214,11 @@ def collect(con) -> dict:
     # The timestamp is shared by every calendar. Keep the previous one if
     # any listing failed, including a later page, so its changes are retried.
     counts["skipped calendars"] = skipped
+    counts["_sync"] = {"complete": not skipped, "pending": skipped,
+                       "reason": "calendar listings remain incomplete" if skipped else None,
+                       "coverage": {"mode": mode, "start": lo, "end": hi,
+                                    "calendars": counts["calendars"],
+                                    "skipped": skipped}}
     counts["_cursor"] = None if skipped else now.isoformat(timespec="seconds")
     return counts
 

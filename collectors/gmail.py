@@ -330,6 +330,10 @@ def collect(con) -> dict:
             "threads": len(threads),
             "bulk": bulk_count, "awaiting reply": awaiting,
             "fetch failures": len(failed),
+            "_sync": {"complete": not failed, "pending": len(failed),
+                      "reason": "message fetches remain unresolved" if failed else None,
+                      "coverage": {"mode": mode, "query": WINDOW,
+                                   "attempted": len(ids), "fetched": len(fetched)}},
             "_cursor": None if failed else head_history}
 
 

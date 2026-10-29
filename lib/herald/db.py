@@ -243,7 +243,11 @@ CREATE TABLE IF NOT EXISTS collector_state (
     last_ok              TEXT,
     cursor               TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
-    last_error           TEXT
+    last_error           TEXT,
+    last_complete        TEXT,
+    sync_status          TEXT NOT NULL DEFAULT 'unknown',
+    pending_retries      INTEGER NOT NULL DEFAULT 0,
+    coverage             TEXT
 );
 
 -- What Herald sent you, so it can tell whether it is being noisy.
@@ -450,7 +454,14 @@ def _migrate(con: sqlite3.Connection) -> None:
     for col in ("watch_url", "watch_for", "watch_hash", "watch_checked",
                 "watch_hit", "watch_error"):
         _add_column_if_missing(con, "opportunities", col, "TEXT")
+    for col, typ in (("last_complete", "TEXT"),
+                     ("sync_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+                     ("pending_retries", "INTEGER NOT NULL DEFAULT 0"),
+                     ("coverage", "TEXT")):
+        _add_column_if_missing(con, "collector_state", col, typ)
     con.commit()
+    from . import changes
+    changes.install(con)
 
 
 def _one(cur: sqlite3.Cursor):
@@ -475,7 +486,7 @@ def put_fact(con: sqlite3.Connection, source: str, kind: str, *,
     whole window on every run without creating duplicates, which is much simpler
     to get right than incremental cursors.
     """
-    payload = json.dumps(data, default=str) if data is not None else None
+    payload = json.dumps(data, default=str, sort_keys=True) if data is not None else None
     cur = con.execute(
         """
         INSERT INTO facts (source, kind, external_id, ts, title, body, data, ingested_at)
@@ -612,7 +623,9 @@ def record_phases(con: sqlite3.Connection, run_id: int,
 
 
 def mark_collector(con: sqlite3.Connection, name: str, ok: bool,
-                   cursor: str | None = None, error: str | None = None) -> None:
+                   cursor: str | None = None, error: str | None = None, *,
+                   partial: bool = False, pending: int = 0,
+                   coverage: dict | None = None) -> None:
     t = now()
     if ok:
         con.execute(
@@ -639,6 +652,15 @@ def mark_collector(con: sqlite3.Connection, name: str, ok: bool,
             """,
             (name, t, error),
         )
+    status = "partial" if partial else "complete" if ok else "failed"
+    con.execute("UPDATE collector_state SET sync_status=?, pending_retries=?, "
+                "last_complete=CASE WHEN ?='complete' THEN ? ELSE last_complete END, "
+                "coverage=COALESCE(?,coverage), "
+                "last_error=CASE WHEN ?='partial' THEN ? ELSE last_error END "
+                "WHERE collector=?",
+                (status, pending, status, t,
+                 json.dumps(coverage, sort_keys=True) if coverage is not None else None,
+                 status, error, name))
     con.commit()
 
 

@@ -73,6 +73,23 @@ Return `_cursor` in the counts dict and it is stored in
 
 Always keep a full-resync fallback for when the stored position ages out.
 
+For a run that saves useful rows but cannot finish, return `_sync` metadata:
+
+```python
+return {"saved": n, "_cursor": None,
+        "_sync": {"complete": False, "pending": len(failed),
+                  "reason": "some pages could not be read",
+                  "coverage": {"start": lo, "end": hi}}}
+```
+
+The runner preserves successful facts, refuses cursor advancement on a partial
+result, and records partial coverage and pending retries. `last_ok` remains the
+time of a returned run for existing cadence callers; `last_complete` is the
+time a run last reported complete coverage. A legacy `last_ok` does not establish
+completeness. Include the scope of a complete run as well: a complete bounded
+window is not a claim about all history. Status and conversation notices expose
+partial sources so missing records are not mistaken for a complete answer.
+
 ### Failure handling is free
 
 `collector.run` does it: a failure streak is tracked, the user is told after two

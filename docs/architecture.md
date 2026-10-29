@@ -526,11 +526,23 @@ tokens either way and sits after everything cached. It reports new mail, amber
 writes Herald made while the conversation was happening, commitments opened and
 closed, and a catch-all count for anything else ingested.
 
-It must keep two properties. It compares row identifiers and never text: a
-textual diff of the card would fire on every single turn, because the card
-carries a generation timestamp and a "last fix N minutes ago" and neither is
-news. It also returns nothing when nothing moved, so a quiet turn carries
-nothing at all, which is the same test everything else here is held to.
+It uses `ledger_changes.seq`, a monotonic revision sequence, rather than source
+row IDs. SQLite triggers record substantive inserts, updates and removals of
+facts, commitments and deadlines, including direct SQL writes. An identical
+upsert changes only ingestion metadata and creates no revision. Notices compare
+the first previous state and final new state for each record, so a derived
+delete/rebuild or an edit that is reverted produces no notice when its content
+is unchanged. Counts count records rather than subtracting IDs. Overflow names
+the revision interval containing the full evidence.
+
+Maintained Markdown under identity, state and journal is indexed by content
+digest at conversation boundaries. The first scan establishes a baseline;
+later substantive changes and removals enter the same revision stream. The
+generated orientation file is excluded. Private sessions never update this
+index. Source-health notices distinguish incomplete reads from complete syncs.
+
+It returns nothing when nothing moved. The card's generation timestamp and
+location age do not constitute news, and the frozen system prompt stays frozen.
 
 This also makes the amber tier's "never silent" rule land sooner: a write made
 mid-conversation used to wait for the next digest, and now reaches them on their

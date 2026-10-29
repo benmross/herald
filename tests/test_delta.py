@@ -5,8 +5,7 @@ than anything it reports. If it fires on a quiet turn it is pure noise on every
 message forever, which is how a useful signal gets ignored. And if it fires on
 a *textual* change rather than a real one it will fire every time, because the
 orientation card it replaces carries a generation timestamp and a "last fix N
-minutes ago" -- both of which always change and neither of which is news. That
-is the specific reason this compares row identifiers instead of diffing text.
+minutes ago" -- both of which always change and neither of which is news. Revision tracking compares substantive records rather than the rendered card.
 """
 
 from __future__ import annotations
@@ -21,6 +20,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 sys.path.insert(0, str(ROOT))
 
 from cycles import _snapshot  # noqa: E402
+from herald import changes
 
 
 def _db() -> sqlite3.Connection:
@@ -28,12 +28,17 @@ def _db() -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.executescript("""
         CREATE TABLE facts (id INTEGER PRIMARY KEY, source TEXT, kind TEXT,
-                            ts TEXT, title TEXT, data TEXT);
+                            external_id TEXT, ts TEXT, title TEXT, body TEXT,
+                            data TEXT, ingested_at TEXT,
+                            UNIQUE(source,kind,external_id));
         CREATE TABLE actions (id INTEGER PRIMARY KEY, kind TEXT, target TEXT,
                               summary TEXT);
         CREATE TABLE commitments (id INTEGER PRIMARY KEY, text TEXT, due TEXT,
                                   status TEXT);
+        CREATE TABLE collector_state (collector TEXT PRIMARY KEY, sync_status TEXT,
+            last_complete TEXT, pending_retries INTEGER, coverage TEXT, last_error TEXT);
     """)
+    changes.install(con)
     return con
 
 
@@ -42,7 +47,7 @@ class QuietTurnsCostNothing(unittest.TestCase):
         con = _db()
         text, fp = _snapshot.delta(con, None)
         self.assertIsNone(text)
-        self.assertIn("fact_id", fp)
+        self.assertIn("change_seq", fp)
 
     def test_an_unchanged_world_reports_nothing(self):
         con = _db()

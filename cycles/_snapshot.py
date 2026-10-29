@@ -35,7 +35,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import config, db, extensions  # noqa: E402
+from herald import changes, config, db, extensions  # noqa: E402
 
 # Near-term detail, then everything else in brief. Nothing is hidden merely for
 # being distant: an exam eight weeks out still belongs in the picture, it just
@@ -177,6 +177,11 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
 
     def head(text: str) -> None:
         out.append(f"\n## {text}")
+
+    health = changes.health(con)
+    if health:
+        head("Incomplete source coverage")
+        out.extend(changes.health_lines(health))
 
     ctx = Context(con=con, cycle=cycle, now=now, today=today, since=since,
                   flag=flag, when_words=_when_words, who=WHO)
@@ -746,94 +751,95 @@ def _max_id(con, sql: str, params=()) -> int:
 
 
 def pulse(con) -> dict:
-    """A fingerprint of the mutable world: cheap to take, cheap to compare."""
+    """Stable revision high-water mark, not source row IDs or elapsed age."""
     today = dt.datetime.now(config.tz()).date().isoformat()
     loc = _rows(con, "SELECT title FROM facts WHERE kind='current' "
                      "ORDER BY ts DESC LIMIT 1")
     return {
         "day": today,
-        # The place, deliberately not the age. Age changes every minute and is
-        # never the thing worth interrupting a conversation about.
         "place": loc[0]["title"] if loc else None,
-        "fact_id": _max_id(con, "SELECT MAX(id) FROM facts"),
-        "mail_id": _max_id(con, "SELECT MAX(id) FROM facts "
-                                "WHERE source IN ('gmail', 'purelymail') AND kind='message'"),
+        "change_seq": changes.sequence(con),
         "action_id": _max_id(con, "SELECT MAX(id) FROM actions"),
-        "commit_id": _max_id(con, "SELECT MAX(id) FROM commitments"),
-        "open_n": _max_id(con, "SELECT COUNT(*) FROM commitments "
-                               "WHERE status='open'"),
+        "health": changes.health(con),
     }
 
 
 def delta(con, prev: dict | None) -> tuple[str | None, dict]:
-    """What has happened since `prev` was taken, and a fresh fingerprint.
-
-    Returns `(None, fingerprint)` when the world has not moved, so a caller can
-    append nothing at all rather than a paragraph saying nothing happened.
-    """
+    """Bounded notices of net changes; complete evidence remains queryable."""
     now = pulse(con)
     if not prev:
         return None, now
-
     lines: list[str] = []
-
     if prev.get("day") and now["day"] != prev["day"]:
         lines.append(f"- The date rolled over. It is now {now['day']}.")
-
     if now["place"] and now["place"] != prev.get("place"):
         lines.append(f"- Location changed: now {now['place']} "
                      f"(was {prev.get('place') or 'unknown'}).")
 
-    mail = _rows(con, """
-        SELECT id, title, json_extract(data,'$.from') sender FROM facts
-        WHERE source IN ('gmail', 'purelymail') AND kind='message' AND id > ?
-        ORDER BY id DESC LIMIT ?
-    """, (prev.get("mail_id", 0), DELTA_ITEM_LIMIT))
-    if mail:
-        lines.append(f"- {len(mail)} new email(s) since your last message "
-                     f"(`herald fact <id>` for the whole of one):")
-        for m in mail:
-            who = _clip((m["sender"] or "?").split("<")[0].strip().strip('"'), 32)
-            lines.append(f"  - #{m['id']} {who} - {_clip(m['title'], 68)}")
+    if "change_seq" not in prev:
+        # One-time upgrade of an existing topic. Old row IDs cannot reconstruct
+        # an interval of updates, so do not manufacture a revision cursor.
+        lines.append("- Revision tracking is now active. Earlier edits may not "
+                     "have appeared in update notices; query current records "
+                     "before relying on older context.")
+        revisions = []
+    else:
+        revisions = changes.net(con, prev["change_seq"], now["change_seq"])
 
-    # Amber writes Herald made while this conversation was happening. The
-    # "never silent" rule says these reach the user; a session that is mid
-    # conversation with them is the earliest chance to say so.
-    acts = _rows(con, """
-        SELECT kind, target, summary FROM actions
-        WHERE id > ? ORDER BY id DESC LIMIT ?
-    """, (prev.get("action_id", 0), DELTA_ITEM_LIMIT))
-    if acts:
-        lines.append(f"- Herald made {len(acts)} write(s) on their behalf "
-                     f"since your last message:")
-        for a in acts:
-            lines.append(f"  - {a['kind']} on {_clip(a['target'], 28)}: "
-                         f"{_clip(a['summary'], 80)}")
+    named, other = [], 0
+    for r in revisions:
+        before, after = r["before"], r["after"]
+        value = after or before
+        op = "removed" if after is None else "added" if before is None else "updated"
+        entity = r["entity"]
+        if entity == "document":
+            named.append(f"- Memory document {op}: {value['path']}.")
+        elif entity in ("commitments", "deadlines"):
+            label = "Commitment" if entity == "commitments" else "Deadline"
+            title = _clip(value.get("text") or value.get("title"), 75)
+            due = value.get("due") or "no date"
+            status = value.get("status") or "unknown"
+            ending = " (closed or dropped)" if entity == "commitments" and status != "open" else ""
+            named.append(f"- {label} {op}: {title}; due {due}; status {status}{ending}.")
+        elif entity == "facts":
+            data = value.get("data") or {}
+            if not isinstance(data, dict):
+                data = {}
+            kind, source = value.get("kind"), value.get("source")
+            if kind == "event" and data.get("role") == "mine":
+                title = _clip(value.get("title"), 65)
+                when = value.get("ts") or "no time"
+                location = _clip(data.get("location"), 45)
+                named.append(f"- Your event {op}: {title}; {when}"
+                             + (f"; {location}" if location else "") + ".")
+            elif source in ("gmail", "purelymail") and kind == "message":
+                sender = _clip((data.get("from") or "?").split("<")[0].strip().strip('"'), 32)
+                named.append(f"- Email {op}: {sender}: {_clip(value.get('title'), 68)}.")
+            else:
+                other += 1
+    lines.extend(named[:DELTA_ITEM_LIMIT])
+    if len(named) > DELTA_ITEM_LIMIT:
+        lines.append(f"- {len(named) - DELTA_ITEM_LIMIT} more named record changes; "
+                     "use the revision range below for all of them.")
+    if other:
+        lines.append(f"- {other} other fact record(s) changed.")
+    if revisions:
+        lines.append(f"- Full change evidence: query ledger_changes with "
+                     f"seq > {prev['change_seq']} AND seq <= {now['change_seq']}.")
 
-    commits = _rows(con, """
-        SELECT text, due FROM commitments WHERE id > ? ORDER BY id LIMIT ?
-    """, (prev.get("commit_id", 0), DELTA_ITEM_LIMIT))
-    if commits:
-        lines.append(f"- {len(commits)} new commitment(s) opened:")
-        for c in commits:
-            when = f" (due {str(c['due'])[:10]})" if c["due"] else ""
-            lines.append(f"  - {_clip(c['text'], 80)}{when}")
+    acts = _rows(con, "SELECT kind,target,summary FROM actions WHERE id>? ORDER BY id LIMIT ?",
+                 (prev.get("action_id", 0), DELTA_ITEM_LIMIT + 1))
+    for a in acts[:DELTA_ITEM_LIMIT]:
+        lines.append(f"- Herald write: {a['kind']} on {_clip(a['target'], 28)}: "
+                     f"{_clip(a['summary'], 80)}")
+    if len(acts) > DELTA_ITEM_LIMIT:
+        lines.append(f"- More writes are available in actions after id {prev.get('action_id', 0)}.")
 
-    closed = (prev.get("open_n", 0) - now["open_n"]) + len(commits)
-    if closed > 0:
-        lines.append(f"- {closed} commitment(s) closed or dropped. "
-                     f"{now['open_n']} still open.")
-
-    # A catch-all so a collector that landed something this function does not
-    # name specifically is still visible, rather than silently absent.
-    other = (now["fact_id"] - prev.get("fact_id", 0)) - len(mail)
-    if other > 0 and not mail:
-        lines.append(f"- {other} new fact(s) ingested (not mail). "
-                     f"Query `facts` with `id > {prev.get('fact_id', 0)}` "
-                     f"to see what.")
-    elif other > 0:
-        lines.append(f"- Plus {other} other new fact(s) ingested.")
-
+    if now["health"] != prev.get("health", {}):
+        lines.extend(changes.health_lines(now["health"]))
+        for name in prev.get("health", {}):
+            if name not in now["health"]:
+                lines.append(f"- {name}: source coverage recovered; the latest sync is complete.")
     if not lines:
         return None, now
     return ("## Since your last message\n"
