@@ -144,17 +144,14 @@ def _changed_since(svc, start_id: str) -> tuple[list[str], str | None]:
     return sorted(ids), latest
 
 
-def collect(con) -> dict:
+def collect(con, *, reconcile: bool = False) -> dict:
     svc = google.service("gmail", "v1")
 
     # Messages carry label *ids* ("Label_1735656434075..."); the names live
     # here. One call, rebuilt each run, so a query can say "labelled Work"
     # instead of memorising an id. The campus-events sync in the scout cycle
     # depends on it.
-    db.clear(con, NAME, "label")
-    for lb in svc.users().labels().list(userId="me").execute().get("labels", []):
-        db.put_fact(con, NAME, "label", external_id=lb["id"], title=lb.get("name"),
-                    data={"type": lb.get("type")})
+    label_definitions = svc.users().labels().list(userId='me').execute().get('labels', [])
     profile = svc.users().getProfile(userId="me").execute()
     me = profile["emailAddress"]
     head_history = profile.get("historyId")
@@ -166,6 +163,35 @@ def collect(con) -> dict:
         changed, latest = _changed_since(svc, since)
         if latest is not None:
             ids, mode = changed, "incremental"
+
+    query = WINDOW
+    listed = missing = 0
+    absent = []
+    if reconcile:
+        # Recover absent facts that body backfill can never see. Scope to the
+        # earliest retained message, or the normal window on an empty ledger.
+        oldest = con.execute("SELECT min(ts) FROM facts WHERE source=? AND kind='message'",
+                             (NAME,)).fetchone()[0]
+        if oldest:
+            start = dt.date.fromisoformat(oldest[:10]) - dt.timedelta(days=1)
+            query = f"after:{start:%Y/%m/%d}"
+        known_ids = {r[0] for r in con.execute(
+            "SELECT external_id FROM facts WHERE source=? AND kind='message'", (NAME,))}
+        page, remote = None, []
+        while True:
+            resp = svc.users().messages().list(
+                userId="me", q=query, maxResults=500, pageToken=page,
+                includeSpamTrash=True).execute()
+            remote.extend(m['id'] for m in resp.get('messages', []))
+            page = resp.get('nextPageToken')
+            if not page:
+                break
+        absent = [mid for mid in remote if mid not in known_ids]
+        listed, missing = len(remote), len(absent)
+        # Valid history still refreshes changed existing messages. Without it,
+        # refresh the entire explicit scope rather than claim gap repair only.
+        ids = list(dict.fromkeys((ids if mode == 'incremental' else remote) + absent))
+        mode = 'reconcile'
 
     if mode == "full":
         page = None
@@ -237,6 +263,11 @@ def collect(con) -> dict:
         """, (NAME, mid))
     failed = [mid for mid in failed if mid not in gone]
 
+    # Network work above must not hold the ledger's writer lock.
+    db.replace_facts(con, NAME, 'label', [
+        dict(external_id=lb['id'], title=lb.get('name'), data={'type': lb.get('type')})
+        for lb in label_definitions])
+
     bulk_count = 0
 
     for mid, msg in fetched.items():
@@ -295,7 +326,7 @@ def collect(con) -> dict:
             "subject": r["title"],
         })
 
-    db.clear(con, NAME, "thread")
+    thread_rows = []
 
     awaiting = 0
     for tid, msgs in threads.items():
@@ -305,8 +336,8 @@ def collect(con) -> dict:
         # and the user has not answered.
         needs_reply = (not last["from_me"]) and last["in_inbox"] and not last["bulk"]
         awaiting += int(needs_reply)
-        db.put_fact(
-            con, NAME, "thread", external_id=tid, ts=_ts(last["ts_ms"]),
+        thread_rows.append(dict(
+            external_id=tid, ts=_ts(last["ts_ms"]),
             title=last["subject"],
             data={
                 "messages": len(msgs),
@@ -317,7 +348,8 @@ def collect(con) -> dict:
                 "awaiting_reply": needs_reply,
                 "user_has_replied": any(m["from_me"] for m in msgs),
             },
-        )
+        ))
+    db.replace_facts(con, NAME, 'thread', thread_rows)
 
     if failed:
         # Keep the successful reads, but replay history next time. Advancing
@@ -327,15 +359,18 @@ def collect(con) -> dict:
               f" last: {last_error}", file=sys.stderr)
 
     return {"mode": mode, "fetched": len(fetched), "backfilled": len(backfill),
+            "listed": listed, "missing recovered candidates": missing,
+            "recovered": len(set(absent) & fetched.keys()),
             "threads": len(threads),
             "bulk": bulk_count, "awaiting reply": awaiting,
             "fetch failures": len(failed),
             "_sync": {"complete": not failed, "pending": len(failed),
                       "reason": "message fetches remain unresolved" if failed else None,
-                      "coverage": {"mode": mode, "query": WINDOW,
+                      "coverage": {"mode": mode, "query": query,
+                                   "listed": listed, "missing": missing,
                                    "attempted": len(ids), "fetched": len(fetched)}},
             "_cursor": None if failed else head_history}
 
 
 if __name__ == "__main__":
-    collector.main(NAME, collect)
+    collector.main(NAME, lambda con: collect(con, reconcile='--reconcile' in sys.argv))

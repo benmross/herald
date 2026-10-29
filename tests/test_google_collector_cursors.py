@@ -189,6 +189,57 @@ class CursorRecovery(unittest.TestCase):
     def test_calendar_partial_first_run_repeats_full_listing(self):
         self.check_calendar_recovery(None)
 
+    def test_gmail_reconciliation_finds_message_missing_behind_cursor(self):
+        self.seed('gmail', '100')
+        with db.session() as con:
+            db.put_fact(con, 'gmail', 'message', external_id='known',
+                        ts='2026-08-15T12:00:00+00:00',
+                        data={'body_format': 'text/plain'})
+        svc = self.gmail_service([False])
+        svc.users().messages().list().execute.return_value = {
+            'messages': [{'id': 'known'}, {'id': 'lost'}]}
+        self.patch(gmail.google, 'service', mock.Mock(return_value=svc))
+        self.patch(gmail.time, 'sleep', lambda _: None)
+        self.patch(gmail, '_changed_since', mock.Mock(return_value=([], '200')))
+        self.assertEqual(collector.run('gmail', lambda con: gmail.collect(con, reconcile=True)), 0)
+        with db.session() as con:
+            ids = {r[0] for r in con.execute("SELECT external_id FROM facts WHERE kind='message'")}
+            self.assertEqual(ids, {'known', 'lost'})
+            coverage = con.execute("SELECT coverage FROM collector_state WHERE collector='gmail'").fetchone()[0]
+            self.assertIn('after:2026/08/14', coverage)
+        requested = [c.kwargs['id'] for c in svc.users().messages().get.call_args_list]
+        self.assertEqual(requested, ['lost'])
+
+    def test_calendar_reconcile_prunes_only_complete_calendar_in_scope(self):
+        svc = mock.Mock()
+        svc.calendarList().list().execute.return_value = {'items': [
+            {'id': 'a', 'summary': 'A'}, {'id': 'b', 'summary': 'B'}]}
+        def listing(**kwargs):
+            if kwargs['calendarId'] == 'b':
+                return mock.Mock(execute=mock.Mock(side_effect=RuntimeError('503 unavailable')))
+            self.assertNotIn('updatedMin', kwargs)
+            self.assertTrue(kwargs['showDeleted'])
+            return mock.Mock(execute=mock.Mock(return_value={'items': []}))
+        svc.events().list.side_effect = listing
+        self.patch(gcal.google, 'service', mock.Mock(return_value=svc))
+        self.patch(gcal.config, 'get', lambda key, default=None: default)
+        with db.session() as con:
+            for cid, timestamp in [('a', db.now()), ('b', db.now()), ('a', '2000-01-01')]:
+                db.put_fact(con, 'gcal', 'event', external_id=cid + timestamp,
+                            ts=timestamp, data={'calendar_id': cid})
+        self.assertEqual(collector.run('gcal', lambda con: gcal.collect(con, reconcile=True)), 0)
+        with db.session() as con:
+            ids = {r[0] for r in con.execute("SELECT external_id FROM facts WHERE kind='event'")}
+            self.assertEqual(len(ids), 2)
+            self.assertIn('a2000-01-01', ids)
+            self.assertTrue(any(x.startswith('b') for x in ids))
+
+    def test_runner_refuses_cursor_from_partial_result(self):
+        self.seed('example', 'old')
+        result = {'_cursor': 'unsafe-new', '_sync': {'complete': False, 'pending': 3}}
+        self.assertEqual(collector.run('example', lambda con: result), 0)
+        self.assertEqual(self.saved_cursor('example'), 'old')
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -554,6 +554,10 @@ def orientation(con) -> str:
         out.append(f"\n## {text}")
 
     # --- where they are, if anything tracks it ---------------------------
+    health = changes.health(con)
+    if health:
+        head("Incomplete source coverage")
+        out.extend(changes.health_lines(health))
     loc = _rows(con, "SELECT * FROM facts WHERE kind='current' "
                      "ORDER BY ts DESC LIMIT 1")
     if loc:
@@ -729,8 +733,8 @@ def orientation(con) -> str:
 # Two rules it lives by. **It reports rows, not text.** A textual diff of the
 # card would fire on every single turn, because the card carries a generation
 # timestamp and a "last fix N minutes ago". Both always change and
-# neither is news. So this compares identifiers and returns what is
-# new. **And it returns nothing when nothing happened**, which is the
+# neither is news. Substantive record revisions distinguish in-place edits
+# from unchanged refreshes. **It returns nothing when nothing happened**, the
 # same test the rest of the architecture is held to: a turn where the world did
 # not move should cost nothing to tell you so.
 

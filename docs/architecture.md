@@ -541,6 +541,9 @@ later substantive changes and removals enter the same revision stream. The
 generated orientation file is excluded. Private sessions never update this
 index. Source-health notices distinguish incomplete reads from complete syncs.
 
+See [memory revisions and source coverage](memory.md) for the schema,
+reconciliation commands, checked scopes and regression tests.
+
 It returns nothing when nothing moved. The card's generation timestamp and
 location age do not constitute news, and the frozen system prompt stays frozen.
 

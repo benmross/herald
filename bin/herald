@@ -646,6 +646,10 @@ def cmd_collect(args) -> int:
 
     explicit = bool(args.names)
     names = args.names or list(available)
+    reconcile = getattr(args, 'reconcile', False)
+    if reconcile and (not explicit or any(n not in ('gmail', 'gcal') for n in names)):
+        print('--reconcile requires explicit gmail and/or gcal collectors', file=sys.stderr)
+        return 2
     rc, skipped, off = 0, [], []
 
     for n in names:
@@ -672,7 +676,8 @@ def cmd_collect(args) -> int:
                 skipped.append(f"{n} ({age}, every {minutes}m)")
                 continue
         print(_c(f"→ {n}", BOLD))
-        r = subprocess.run([config.python(), str(available[n])],
+        r = subprocess.run([config.python(), str(available[n])]
+                           + (["--reconcile"] if reconcile else []),
                            cwd=str(config.ROOT), env=_child_env())
         rc = rc or r.returncode
 
@@ -2863,6 +2868,8 @@ def main() -> int:
                    help="run these regardless of cadence; omit to run what is due")
     c.add_argument("--force", action="store_true",
                    help="run everything, ignoring cadence")
+    c.add_argument("--reconcile", action="store_true",
+                   help="audit and recover historical gaps for explicit gmail/gcal sources")
     c.set_defaults(fn=cmd_collect)
 
     md = sub.add_parser("mode", help="tracking, fork, or maintainer")

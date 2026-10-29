@@ -147,7 +147,8 @@ class MemoryRevisions(unittest.TestCase):
     def test_private_mode_does_not_scan_documents(self):
         with mock.patch.object(changes.private, 'active', return_value=True):
             changes.scan_documents(self.con)
-        self.assertEqual(self.con.execute('SELECT count(*) FROM memory_metadata').fetchone()[0], 0)
+        self.assertEqual(self.con.execute("SELECT count(*) FROM memory_metadata "
+                                          "WHERE key='documents_baselined'").fetchone()[0], 0)
 
     def test_health_preserves_last_complete_until_recovery(self):
         db.mark_collector(self.con, 'example', ok=True, cursor='old')
@@ -168,6 +169,19 @@ class MemoryRevisions(unittest.TestCase):
         state = self.con.execute("SELECT * FROM collector_state WHERE collector='legacy'").fetchone()
         self.assertEqual(state['sync_status'], 'unknown')
         self.assertIsNone(state['last_complete'])
+
+    def test_reconciled_snapshot_does_not_grow_history_on_quiet_run(self):
+        rows = [dict(external_id='a', title='Thread A'),
+                dict(external_id='b', title='Thread B')]
+        db.replace_facts(self.con, 'example', 'thread', rows)
+        seq = changes.sequence(self.con)
+        db.replace_facts(self.con, 'example', 'thread', rows)
+        self.assertEqual(changes.sequence(self.con), seq)
+        db.replace_facts(self.con, 'example', 'thread', rows[:1])
+        revisions = changes.net(self.con, seq)
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(revisions[0]['before']['title'], 'Thread B')
+        self.assertIsNone(revisions[0]['after'])
 
 
 if __name__ == '__main__':

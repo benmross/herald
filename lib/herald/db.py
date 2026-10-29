@@ -567,6 +567,26 @@ def mark_reported(con: sqlite3.Connection, refs) -> None:
     con.commit()
 
 
+def replace_facts(con: sqlite3.Connection, source: str, kind: str,
+                  rows: Iterable[dict]) -> None:
+    """Reconcile a complete derived snapshot without revising identical rows.
+
+    Only an authoritative complete snapshot may remove absent rows. Failed or
+    partial listings must preserve their previous snapshot instead.
+    """
+    rows = list(rows)
+    wanted = [r.get('external_id') for r in rows]
+    if None in wanted or len(set(wanted)) != len(wanted):
+        raise ValueError('snapshot rows require unique external_id values')
+    existing = {r['external_id']: r['id'] for r in con.execute(
+        'SELECT id,external_id FROM facts WHERE source=? AND kind=?', (source, kind))}
+    for row in rows:
+        put_fact(con, source, kind, **row)
+    wanted = set(wanted)
+    con.executemany('DELETE FROM facts WHERE id=?',
+                    [(fid,) for key, fid in existing.items() if key not in wanted])
+
+
 def clear(con: sqlite3.Connection, source: str, kind: str) -> int:
     """Drop every fact of one (source, kind). Returns how many went.
 

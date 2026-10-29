@@ -44,6 +44,8 @@ FIELDS = {
 def install(con) -> None:
     """Fresh and upgraded ledgers share this idempotent setup; no backfill."""
     con.executescript(SCHEMA)
+    if con.execute("SELECT value FROM memory_metadata WHERE key='trigger_version'").fetchone():
+        return
     for table, fields in FIELDS.items():
         columns = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
         if not columns:
@@ -67,6 +69,7 @@ def install(con) -> None:
             prefix = "OLD" if operation == "delete" else "NEW"
             when = (" WHEN " + " OR ".join(f"OLD.{f} IS NOT NEW.{f}" for f in fields)
                     if operation == "update" else "")
+            con.execute(f"DROP TRIGGER IF EXISTS memory_{table}_{operation}")
             con.executescript(f"""
                 CREATE TRIGGER IF NOT EXISTS memory_{table}_{operation}
                 AFTER {operation.upper()} ON {table}{when}
@@ -75,10 +78,12 @@ def install(con) -> None:
                   VALUES ('{table}',{key(prefix)},{before},{after});
                 END;
             """)
+    con.execute("INSERT INTO memory_metadata VALUES ('trigger_version','1')")
+    con.commit()
 
 
 def sequence(con) -> int:
-    # AUTOINCREMENT's high-water mark survives compaction of quiet rebuilds.
+    # AUTOINCREMENT prevents cursor reuse if revisions are archived later.
     row = con.execute("SELECT seq FROM sqlite_sequence WHERE name='ledger_changes'").fetchone()
     return row[0] if row else 0
 

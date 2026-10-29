@@ -90,7 +90,7 @@ def _iso(value: dict) -> tuple[str | None, bool]:
     return value.get("date"), True
 
 
-def collect(con) -> dict:
+def collect(con, *, reconcile: bool = False) -> dict:
     svc = google.service("calendar", "v3")
     now = dt.datetime.now(config.tz())
     lo = (now - dt.timedelta(days=PAST_DAYS)).isoformat()
@@ -98,20 +98,19 @@ def collect(con) -> dict:
 
     since = collector.cursor(con, NAME)
     updated_min = None
-    if since:
+    if since and not reconcile:
         try:
             updated_min = (dt.datetime.fromisoformat(since)
                            - dt.timedelta(minutes=OVERLAP_MINUTES))
         except (ValueError, TypeError):
             updated_min = None
 
-    mode = "incremental" if updated_min else "full"
+    mode = "reconcile" if reconcile else "incremental" if updated_min else "full"
     counts = {"mode": mode, "calendars": 0, "events": 0, "removed": 0}
     skipped = 0
 
     # The set of calendars is a snapshot: one the user unsubscribes from should
     # disappear, not linger as a fact.
-    db.clear(con, NAME, "calendar")
 
     page = None
     calendars = []
@@ -122,6 +121,35 @@ def collect(con) -> dict:
         if not page:
             break
 
+    # Finish network reads before taking SQLite's writer lock. A full repair
+    # can span many pages and must not block conversations while it downloads.
+    listings = {}
+    incomplete = set()
+    for cal in calendars:
+        page, events = None, []
+        while True:
+            params = dict(calendarId=cal['id'], timeMin=lo, timeMax=hi,
+                          singleEvents=True, orderBy='startTime',
+                          maxResults=2500, pageToken=page)
+            if reconcile:
+                params['showDeleted'] = True
+            if updated_min:
+                params['updatedMin'] = updated_min.astimezone(dt.timezone.utc).isoformat().replace('+00:00', 'Z')
+                params['showDeleted'] = True
+            try:
+                resp = svc.events().list(**params).execute()
+            except Exception as error:
+                print(f"  skipped {cal['id']}: {error}", file=sys.stderr)
+                skipped += 1
+                incomplete.add(cal['id'])
+                break
+            events.extend(resp.get('items', []))
+            page = resp.get('nextPageToken')
+            if not page:
+                break
+        listings[cal['id']] = events
+
+    calendar_rows = []
     unclassified = []
     for cal in calendars:
         cal_id = cal["id"]
@@ -130,8 +158,8 @@ def collect(con) -> dict:
                     or cal_id in (config.get("calendars.roles", {}) or {}))
         if not declared and not cal.get("primary"):
             unclassified.append(cal.get("summary") or cal_id)
-        db.put_fact(
-            con, NAME, "calendar", external_id=cal_id,
+        calendar_rows.append(dict(
+            external_id=cal_id,
             title=cal.get("summary"),
             data={
                 "role": role,
@@ -142,68 +170,58 @@ def collect(con) -> dict:
                 "timezone": cal.get("timeZone"),
                 "writable": cal.get("accessRole") in ("owner", "writer"),
             },
-        )
+        ))
         counts["calendars"] += 1
 
-        page = None
-        while True:
-            params = dict(calendarId=cal_id, timeMin=lo, timeMax=hi,
-                          singleEvents=True, orderBy="startTime",
-                          maxResults=2500, pageToken=page)
-            if updated_min:
-                # showDeleted so a cancellation arrives as a change rather than
-                # as silence -- otherwise a deleted event lives forever.
-                params["updatedMin"] = updated_min.astimezone(dt.timezone.utc)\
-                    .isoformat().replace("+00:00", "Z")
-                params["showDeleted"] = True
-            try:
-                resp = svc.events().list(**params).execute()
-            except Exception as e:                       # noqa: BLE001
-                # A calendar the user is subscribed to but cannot list should not
-                # take down the whole run.
-                print(f"  skipped {cal_id}: {e}", file=sys.stderr)
-                skipped += 1
-                break
+        listed_ids = set()
+        complete_calendar = cal_id not in incomplete
+        for ev in listings[cal_id]:
+            listed_ids.add(f"{cal_id}::{ev['id']}")
+            if ev.get("status") == "cancelled":
+                # A cancellation is information. Drop the row rather than
+                # leaving a meeting on the books that is not happening.
+                counts["removed"] += con.execute(
+                    "DELETE FROM facts WHERE source = ? AND kind = 'event'"
+                    " AND external_id = ?",
+                    (NAME, f"{cal_id}::{ev['id']}")).rowcount
+                continue
+            start, all_day = _iso(ev.get("start", {}))
+            end, _ = _iso(ev.get("end", {}))
+            db.put_fact(
+                con, NAME, "event",
+                external_id=f"{cal_id}::{ev['id']}",
+                ts=start,
+                title=ev.get("summary") or "(no title)",
+                body=ev.get("description") or None,
+                data={
+                    "calendar_id": cal_id,
+                    "calendar": cal.get("summary"),
+                    # Denormalised so no query can forget to join for it.
+                    "role": role,
+                    "end": end,
+                    "all_day": all_day,
+                    "location": ev.get("location"),
+                    "hangout": ev.get("hangoutLink"),
+                    "attendees": [a.get("email") for a in ev.get("attendees", [])][:25],
+                    "organizer": (ev.get("organizer") or {}).get("email"),
+                    "status": ev.get("status"),
+                    "recurring_event_id": ev.get("recurringEventId"),
+                    "html_link": ev.get("htmlLink"),
+                },
+            )
+            counts["events"] += 1
+        if reconcile and complete_calendar:
+            # A fully listed calendar is authoritative only inside its stated
+            # window. Never prune another calendar, a failed page, or history
+            # outside that window.
+            stale = [r['id'] for r in con.execute(
+                "SELECT id,external_id FROM facts WHERE source=? AND kind='event' "
+                "AND json_extract(data,'$.calendar_id')=? AND ts>=? AND ts<?",
+                (NAME, cal_id, lo, hi)) if r['external_id'] not in listed_ids]
+            con.executemany('DELETE FROM facts WHERE id=?', [(fid,) for fid in stale])
+            counts['removed'] += len(stale)
 
-            for ev in resp.get("items", []):
-                if ev.get("status") == "cancelled":
-                    # A cancellation is information. Drop the row rather than
-                    # leaving a meeting on the books that is not happening.
-                    counts["removed"] += con.execute(
-                        "DELETE FROM facts WHERE source = ? AND kind = 'event'"
-                        " AND external_id = ?",
-                        (NAME, f"{cal_id}::{ev['id']}")).rowcount
-                    continue
-                start, all_day = _iso(ev.get("start", {}))
-                end, _ = _iso(ev.get("end", {}))
-                db.put_fact(
-                    con, NAME, "event",
-                    external_id=f"{cal_id}::{ev['id']}",
-                    ts=start,
-                    title=ev.get("summary") or "(no title)",
-                    body=ev.get("description") or None,
-                    data={
-                        "calendar_id": cal_id,
-                        "calendar": cal.get("summary"),
-                        # Denormalised so no query can forget to join for it.
-                        "role": role,
-                        "end": end,
-                        "all_day": all_day,
-                        "location": ev.get("location"),
-                        "hangout": ev.get("hangoutLink"),
-                        "attendees": [a.get("email") for a in ev.get("attendees", [])][:25],
-                        "organizer": (ev.get("organizer") or {}).get("email"),
-                        "status": ev.get("status"),
-                        "recurring_event_id": ev.get("recurringEventId"),
-                        "html_link": ev.get("htmlLink"),
-                    },
-                )
-                counts["events"] += 1
-
-            page = resp.get("nextPageToken")
-            if not page:
-                break
-
+    db.replace_facts(con, NAME, 'calendar', calendar_rows)
     if unclassified:
         # A new calendar is being treated as a feed, which is the safe default
         # but may be wrong. Say so rather than silently deciding.
@@ -224,4 +242,4 @@ def collect(con) -> dict:
 
 
 if __name__ == "__main__":
-    collector.main(NAME, collect)
+    collector.main(NAME, lambda con: collect(con, reconcile='--reconcile' in sys.argv))
