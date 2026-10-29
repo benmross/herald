@@ -2,6 +2,32 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.5: 29 October 2026
+
+- Let sessions ask topic-bound questions without new action handlers
+- Preserve Google sync positions after incomplete reads
+- Keep mailbox access and drafts independent of Gmail forwarding
+- Scan untracked files for personal data, not only tracked ones
+- Push the ledger from the dawn cycle itself, and keep it out of the digest
+- Delete stale per-application identity answers instead of hiding them
+- Get Workday drafts back after a session expires
+- Fill complete packets straight away, and fix the Ashby gaps that blocked them
+- Keep a personal name out of packet comments
+- Review applications as packets on a desk instead of as live tabs
+- Clean up skipped browser fixtures and run Chromium recovery tests in CI
+- Preserve default browser support where managed worker services are unavailable
+- Remove stale application readiness when a browser generation changes
+- Share the review runtime across browsers and reject unverified attachment versions
+- Keep password manager errors separate from browser ownership failures
+- Revoke old screen sessions before returning browser control to automation
+- Keep browser fixtures isolated and prove account leases recover from process loss
+- Checkpoint application edits and hand verified groups to an independent review browser
+- Protect browser workspaces with durable review ownership and process leases
+- Preserve one education entry across Workday tenant variants
+- Handle lazy application choices and date segments accurately
+- Make application readiness depend on a completed form
+- Keep a reason for every Scout posting decision
+
 ## v0.4.4: 26 October 2026
 
 - Separate conversation answers from permission to perform an action
