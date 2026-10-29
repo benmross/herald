@@ -630,6 +630,14 @@ def orientation(con) -> str:
     # --- where to look, so one read replaces four ------------------------
     head("Where the answer lives")
     out.append(
+        "Use `herald context <topic>` first for a compact packet of maintained "
+        "notes and current status, or `herald context topics` for its topic index. "
+        "Long notes: `herald context <topic> --sections`, then `--section <sLINE>`. "
+        "Supported queries: `herald context --view commitments|deadlines|applications|"
+        "opportunities|schedule|counts`; `--schema` gives their columns. "
+        "Results name source records and expansions; do not treat excerpts as "
+        "complete policy. Link another lookup with its `--followup` id.\n")
+    out.append(
         "Read the one file that covers the question rather than the whole of\n"
         "`identity/`. In rough order of how often each is the right answer:\n"
         "\n"

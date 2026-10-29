@@ -26,6 +26,7 @@ import os
 import pathlib
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import textwrap
@@ -56,7 +57,7 @@ from herald import (activity, capabilities, config,  # noqa: E402
                     constitution as constitution_mod, db, extensions,
                     migrations as migrations_mod, notify,
                     think as think_mod, upstream)
-from herald import factview, sessioninfo  # noqa: E402
+from herald import context as context_mod, factview, sessioninfo  # noqa: E402
 from herald import private as private_mod  # noqa: E402
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
@@ -2395,10 +2396,51 @@ def cmd_amber(args) -> int:
 
 
 
+def cmd_context(args) -> int:
+    """One bounded retrieval, with metadata-only measurements outside private mode."""
+    topic = ' '.join(args.topic)
+    started = time.perf_counter()
+    if args.budget < 0 or (args.budget and args.budget < 256):
+        print('--budget must be 0 or at least 256 approximate tokens', file=sys.stderr)
+        return 2
+    if args.offset < 0 or not 1 <= args.limit <= 100 or not 1 <= args.days <= 3660:
+        print('choose offset >= 0, limit 1..100, days 1..3660', file=sys.stderr)
+        return 2
+    if args.id is not None and args.view not in context_mod.VIEWS:
+        print('--id requires a record view', file=sys.stderr)
+        return 2
+    try:
+        with db.session() as con:
+            if topic == 'stats':
+                print(context_mod.stats(con), end='')
+                return 0
+            result = context_mod.packet(con, topic=topic, view=args.view, file=args.file,
+                                        section=args.section, list_sections=args.sections,
+                                        days=args.days, offset=args.offset, limit=args.limit,
+                                        record_id=args.id, all_statuses=args.all, schema=args.schema)
+            output, shown, more = context_mod.render(result, args.budget)
+            try:
+                retrieval_id = context_mod.record(con, result['category'], started, output, shown, more,
+                                                  parent=args.followup)
+            except sqlite3.Error:
+                con.rollback()
+                retrieval_id = None
+                print('Retrieval measurements unavailable; evidence read succeeded.', file=sys.stderr)
+        print(output, end='')
+        if retrieval_id is not None:
+            print(f'[retrieval {retrieval_id}; link a further lookup with --followup {retrieval_id}]', file=sys.stderr)
+        return 0
+    except (ValueError, OSError, sqlite3.Error) as error:
+        # Do not echo a topic, SQL parameters, source text or exception payload.
+        message = str(error) if isinstance(error, ValueError) else 'context unavailable; inspect source health or permissions'
+        print(message, file=sys.stderr)
+        return 2
+
+
 # What `herald` will run from inside a private session: the subcommands that
 # only read. An allowlist, so a subcommand added later is refused there until
 # someone decides it is a read.
-PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check"}
+PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check", "context"}
 PRIVATE_READ_OPS = {"obligation": ("op", {"list"}), "deadline": ("op", {"list"}),
                     "safety": ("op", {"status", "test"}), "root": ("op", {"status"}),
                     "secret": ("op", {"has", "status"}),
@@ -2417,6 +2459,22 @@ def main() -> int:
         prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent(__doc__ or ""))
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    ctx = sub.add_parser('context', help='compact topic notes and current structured status')
+    ctx.add_argument('topic', nargs='*', help='topic name, topics for index, stats for measurements')
+    ctx.add_argument('--view', choices=[*context_mod.VIEWS, 'counts'])
+    ctx.add_argument('--file', help='Markdown path within the ledger')
+    ctx.add_argument('--sections', action='store_true', help='list headings and source lines')
+    ctx.add_argument('--section', help='heading text or unambiguous sLINE key')
+    ctx.add_argument('--schema', action='store_true', help='compact columns for supported views')
+    ctx.add_argument('--id', type=int, help='retrieve a whole structured record')
+    ctx.add_argument('--all', action='store_true', help='include historical statuses and dates')
+    ctx.add_argument('--days', type=int, default=30)
+    ctx.add_argument('--offset', type=int, default=0, help='row or section-relative line offset')
+    ctx.add_argument('--limit', type=int, default=10)
+    ctx.add_argument('--budget', type=int, default=1500, help='approximate tokens (UTF-8 bytes / 4); 0 for whole evidence')
+    ctx.add_argument('--followup', type=int, help='link an additional retrieval to a previous retrieval id')
+    ctx.set_defaults(fn=cmd_context)
 
     sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)

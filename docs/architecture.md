@@ -544,6 +544,13 @@ index. Source-health notices distinguish incomplete reads from complete syncs.
 See [memory revisions and source coverage](memory.md) for the schema,
 reconciliation commands, checked scopes and regression tests.
 
+`herald context <topic>` provides the next retrieval layer: introductory notes,
+section pointers and current operational records in one bounded read. Supported
+views cover obligations, dates, applications, opportunities, counts and personal
+events. The source tables retain authority and long notes remain expandable.
+See [compact context retrieval](context.md) for scopes, private-mode behavior
+and measurements that exclude query text and source content.
+
 It returns nothing when nothing moved. The card's generation timestamp and
 location age do not constitute news, and the frozen system prompt stays frozen.
 

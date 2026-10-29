@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS run_phases (
 CREATE INDEX IF NOT EXISTS idx_run_phases_run ON run_phases (run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_run_phases_kind ON run_phases (kind, name);
 
+-- Retrieval measurements contain no query, topic name, source text or answers.
+CREATE TABLE IF NOT EXISTS retrievals (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    category TEXT NOT NULL,
+    elapsed_ms REAL NOT NULL,
+    output_bytes INTEGER NOT NULL,
+    estimated_tokens INTEGER NOT NULL,
+    item_count INTEGER NOT NULL,
+    has_more INTEGER NOT NULL,
+    turn_key TEXT,
+    parent_id INTEGER REFERENCES retrievals(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_retrievals_ts ON retrievals(ts);
+CREATE INDEX IF NOT EXISTS idx_retrievals_turn ON retrievals(turn_key,id);
+
 -- Open loops. The thing that makes Herald feel like it is paying attention.
 CREATE TABLE IF NOT EXISTS commitments (
     id          INTEGER PRIMARY KEY,

@@ -226,7 +226,7 @@ def main() -> int:
         json_schema=SCHEMA,
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep",
-                       "Bash(herald db *)", "Bash(herald status *)", "Skill",
+                       "Bash(herald db *)", "Bash(herald status *)", "Bash(herald context *)", "Skill",
                        "Bash(herald obligation *)", "Bash(herald deadline *)",
                        *amber.CYCLE_TOOLS],
     )

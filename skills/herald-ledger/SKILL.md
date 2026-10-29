@@ -9,6 +9,42 @@ Everything Herald has ingested lives in one SQLite database. Query it; do not
 read files into context. A query returns twenty rows and the corpus is thirty
 thousand.
 
+## Start with compact context
+
+For a known course or project, use `herald context <topic>` before opening its
+whole area file or assembling SQL. It combines maintained notes, current
+structured status, source references and incomplete-source warnings. This is
+deterministic retrieval, not semantic search. If it already answers the question
+with current evidence, do not repeat the same discovery in SQL.
+
+```bash
+herald context topics                         # topic names and source paths
+herald context <topic> --budget 1500            # approximate token budget
+herald context <topic> --sections               # headings, keys and source lines
+herald context <topic> --section <sLINE>         # read one policy or topic section
+herald context --view commitments              # open loops, including overdue
+herald context --view deadlines --days 14       # live upcoming dates
+herald context --view applications             # recorded status, not inferred
+herald context --view opportunities             # open rows with unexpired dates
+herald context --view schedule --days 2         # personal events only
+herald context --view counts                    # all retained status counts
+herald context --view applications --schema     # compact supported columns
+herald context --view opportunities --id <id>   # full record, within budget
+```
+
+Use `--offset`/`--limit` to page rows or the section-relative line offset to
+continue a note. Excerpts are explicit and include whole-source commands;
+`--budget 0` requests the whole result. Verify the original for consequential
+policy questions, even when a summary appears sufficient. Empty results from
+incomplete sources do not prove there is nothing there.
+
+Measurements store categories, bytes, timings and additional-lookups only,
+never the query or returned content. `herald context stats` reports them. An
+opaque invocation id correlates multiple context calls during an engine turn;
+this shows additional lookups, not necessarily retrieval failure. Use
+`--followup <retrieval id>` to link one explicitly. Private context reads work
+without any measurements or file writes.
+
 ```bash
 herald db --schema              # what is in there and how to reach it
 herald db "select ..."          # table output

@@ -80,6 +80,9 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     sandbox, in its own process group so a cancel reaches the engine and not
     only the sandbox in front of it."""
     env = config.agent_env()
+    # Opaque invocation correlation for additional context lookups. Never a
+    # user prompt or topic name; private retrievals never persist measurements.
+    env['HERALD_RETRIEVAL_TURN'] = uuid.uuid4().hex
     # Which Telegram topic this run answers, so `herald notify --file` and
     # `herald quiz` can land in it exactly instead of guessing from whichever
     # turn happens to be live. Only a bridge turn passes a "<chat>:<thread>" key.

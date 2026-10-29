@@ -270,8 +270,9 @@ October 2026 the user missed a two-week window that had been flagged six
 weeks earlier because that was all there was. `herald watch list` shows what
 is watched.
 
-Then rewrite `ledger/state/opportunities.md` as the readable view: what is live,
-sorted by deadline, each with its next action. Append a short entry to today's
+Keep reasoning and next actions in each structured opportunity's fit/notes.
+Do not rewrite or append history to `ledger/state/opportunities.md`: Python
+regenerates that compact view after this pass. Append a short entry to today's
 journal at `ledger/journal/YYYY-MM-DD.md`.
 
 Finally, return the schema. `push_now` is for things worth interrupting for
@@ -796,7 +797,7 @@ def main() -> int:
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                        "WebSearch", "WebFetch",
-                       "Bash(herald db *)", "Bash(herald status *)",
+                       "Bash(herald db *)", "Bash(herald status *)", "Bash(herald context *)",
                        "Bash(herald obligation *)", "Bash(herald deadline *)",
                        f"Bash({config.ROOT / 'skills' / 'google-workspace' / 'scripts' / 'grun'} *)",
                        *amber.CYCLE_TOOLS],
@@ -842,6 +843,8 @@ def main() -> int:
         # build_snapshot reports its own ids rather than the caller guessing
         # them from a sorted list that was never the display order.
         _remember(con, seen | reviewed_ids(con, shown_ids, payload.get("posting_decisions") or []))
+        from herald import context as context_mod
+        context_mod.refresh_opportunities(con)
         live = con.execute(
             "SELECT COUNT(*) FROM opportunities WHERE status IN"
             " ('new','surfaced','interested')").fetchone()[0]
