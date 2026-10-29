@@ -320,8 +320,9 @@ def collect(con) -> dict:
         )
 
     if failed:
-        # Loud, but not fatal: a partial inbox is still worth having, and the
-        # next run picks up what this one missed.
+        # Keep the successful reads, but replay history next time. Advancing
+        # past an unfetched message would lose it: body backfill only finds
+        # messages that already have a fact row.
         print(f"  {len(failed)} of {len(ids)} message fetches failed after retry;"
               f" last: {last_error}", file=sys.stderr)
 
@@ -329,7 +330,7 @@ def collect(con) -> dict:
             "threads": len(threads),
             "bulk": bulk_count, "awaiting reply": awaiting,
             "fetch failures": len(failed),
-            "_cursor": head_history}
+            "_cursor": None if failed else head_history}
 
 
 if __name__ == "__main__":

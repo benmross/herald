@@ -107,6 +107,7 @@ def collect(con) -> dict:
 
     mode = "incremental" if updated_min else "full"
     counts = {"mode": mode, "calendars": 0, "events": 0, "removed": 0}
+    skipped = 0
 
     # The set of calendars is a snapshot: one the user unsubscribes from should
     # disappear, not linger as a fact.
@@ -161,6 +162,7 @@ def collect(con) -> dict:
                 # A calendar the user is subscribed to but cannot list should not
                 # take down the whole run.
                 print(f"  skipped {cal_id}: {e}", file=sys.stderr)
+                skipped += 1
                 break
 
             for ev in resp.get("items", []):
@@ -209,8 +211,10 @@ def collect(con) -> dict:
         print(f"  calendars not in config/herald.json calendars.roles, "
               f"defaulting to 'feed': {', '.join(unclassified)}", file=sys.stderr)
 
-    # Where we got to, for the next run.
-    counts["_cursor"] = now.isoformat(timespec="seconds")
+    # The timestamp is shared by every calendar. Keep the previous one if
+    # any listing failed, including a later page, so its changes are retried.
+    counts["skipped calendars"] = skipped
+    counts["_cursor"] = None if skipped else now.isoformat(timespec="seconds")
     return counts
 
 
