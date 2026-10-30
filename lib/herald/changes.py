@@ -4,14 +4,22 @@ SQLite triggers also cover direct SQL writers and source deletions. Snapshots
 retain evidence for removals; read-time coalescing makes rebuilds and reverted
 edits silent. Source ingestion timestamps alone never constitute a revision.
 No model calls, external writes, or source content in the document index.
+
+A rebuild that restores what it removed is not a revision, so the collector
+runner calls compact() after every run and the memory collector prunes what
+has aged out. Without both, a collector that rewrites ten thousand identical
+rows an hour stores twenty thousand full copies an hour, forever.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 
 from . import config, private
+
+TRIGGER_VERSION = "2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS ledger_changes (
@@ -38,13 +46,19 @@ FIELDS = {
     "commitments": ("text", "kind", "due", "status", "notes"),
     "deadlines": ("source", "ref", "course", "kind", "title", "due", "end_at",
                   "notes", "status"),
+    # The tables that own lifecycle status. A rejection recorded by another
+    # session has to reach a conversation the same way a moved deadline does.
+    "opportunities": ("title", "org", "kind", "deadline", "url", "fit", "score",
+                      "status", "notes"),
+    "applications": ("company", "title", "url", "status", "submitted_at", "notes"),
 }
 
 
 def install(con) -> None:
     """Fresh and upgraded ledgers share this idempotent setup; no backfill."""
     con.executescript(SCHEMA)
-    if con.execute("SELECT value FROM memory_metadata WHERE key='trigger_version'").fetchone():
+    row = con.execute("SELECT value FROM memory_metadata WHERE key='trigger_version'").fetchone()
+    if row and row[0] == TRIGGER_VERSION:
         return
     for table, fields in FIELDS.items():
         columns = {r[1] for r in con.execute(f"PRAGMA table_info({table})")}
@@ -78,7 +92,8 @@ def install(con) -> None:
                   VALUES ('{table}',{key(prefix)},{before},{after});
                 END;
             """)
-    con.execute("INSERT INTO memory_metadata VALUES ('trigger_version','1')")
+    con.execute("INSERT OR REPLACE INTO memory_metadata VALUES ('trigger_version',?)",
+                (TRIGGER_VERSION,))
     con.commit()
 
 
@@ -116,6 +131,44 @@ def net(con, since: int, through: int | None = None) -> list[dict]:
             row.update(before=before, after=after)
             out.append(row)
     return sorted(out, key=lambda r: r["seq"])
+
+
+def compact(con, since: int = 0, through: int | None = None) -> int:
+    """Delete revisions whose net effect over the interval is nothing.
+
+    Only groups that net to no change go, so a real change made by another
+    writer inside the interval always survives. Returns rows removed.
+    """
+    groups: dict[tuple, dict] = {}
+    for r in con.execute("SELECT seq,entity,record_key,before_json,after_json FROM ledger_changes "
+                         "WHERE seq>? AND seq<=? AND entity<>'document' ORDER BY seq",
+                         (since, through if through is not None else sequence(con))):
+        group = groups.setdefault((r["entity"], r["record_key"]),
+                                  {"seqs": [], "before": r["before_json"]})
+        group["seqs"].append(r["seq"])
+        group["after"] = r["after_json"]
+    drop = [(seq,) for g in groups.values()
+            if g["before"] == g["after"] or _canonical(g["before"]) == _canonical(g["after"])
+            for seq in g["seqs"]]
+    con.executemany("DELETE FROM ledger_changes WHERE seq=?", drop)
+    return len(drop)
+
+
+def prune(con, days: int) -> int:
+    """Forget revisions older than `days`; current records are untouched."""
+    cutoff = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+    last = con.execute("SELECT MAX(seq) FROM ledger_changes WHERE changed_at<?", (cutoff,)).fetchone()[0]
+    if last is None:
+        return 0
+    removed = con.execute("DELETE FROM ledger_changes WHERE seq<=?", (last,)).rowcount
+    con.execute("INSERT INTO memory_metadata VALUES ('pruned_through',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(last),))
+    return removed
+
+
+def pruned_through(con) -> int:
+    row = con.execute("SELECT value FROM memory_metadata WHERE key='pruned_through'").fetchone()
+    return int(row[0]) if row else 0
 
 
 def scan_documents(con) -> None:

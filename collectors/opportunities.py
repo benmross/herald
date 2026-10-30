@@ -116,8 +116,7 @@ def collect(con) -> dict:
         ORDER BY CASE source WHEN 'gmail' THEN 0 ELSE 1 END, id
     """).fetchall()
 
-    db.clear(con, NAME, "candidate")
-    kept = 0
+    candidates = []
 
     seen_mail = set()
     for r in rows:
@@ -141,8 +140,8 @@ def collect(con) -> dict:
 
         score, reasons = _score(subject, body, sender)
 
-        db.put_fact(
-            con, NAME, "candidate", external_id=f"{r['source']}:{r['id']}", ts=r["ts"],
+        candidates.append(dict(
+            external_id=f"{r['source']}:{r['id']}", ts=r["ts"],
             title=subject, body=body,
             data={
                 "from": sender,
@@ -152,8 +151,8 @@ def collect(con) -> dict:
                 "list_id": data.get("list_id"),
                 "gmail_id": data.get("thread_id"),
             },
-        )
-        kept += 1
+        ))
+    db.replace_facts(con, NAME, "candidate", candidates)
 
     live = con.execute(
         "SELECT COUNT(*) FROM opportunities WHERE status IN ('new','surfaced','interested')"
@@ -166,7 +165,7 @@ def collect(con) -> dict:
           AND deadline IS NOT NULL AND substr(deadline, 1, 10) < date('now')
     """).rowcount
 
-    return {"scanned": len(rows), "candidates": kept,
+    return {"scanned": len(rows), "candidates": len(candidates),
             "live opportunities": live, "expired": expired}
 
 

@@ -16,7 +16,10 @@ Source facts (a message, an event, an assignment) are immutable history — upse
 them with db.put_fact and they accumulate correctly. Derived facts (a thread is
 waiting on a reply, this is the current course list) are conclusions, and a
 conclusion that stops being recomputed keeps asserting yesterday's answer
-forever. Call db.clear(con, source, kind) before rewriting those.
+forever. Hand the whole new set to db.replace_facts(con, source, kind, rows),
+which keeps unchanged rows and their ids, or call db.clear(con, source, kind)
+before rewriting them. The runner removes revisions that net to nothing either
+way, so a rebuild never costs change history.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ import time
 import traceback
 from typing import Callable
 
-from . import db, notify
+from . import changes, db, notify
 
 # One failure is a blip, two in a row is a problem.
 NOTIFY_AFTER_FAILURES = 2
@@ -57,7 +60,9 @@ def run(name: str, fn: Callable[[object], dict | None]) -> int:
     was_failing = (row["consecutive_failures"] if row else 0) or 0
 
     try:
+        first_change = changes.sequence(con)
         result = fn(con) or {}
+        changes.compact(con, first_change)
         counts = dict(result)
         # A collector may hand back its new position under this key.
         new_cursor = counts.pop("_cursor", None)

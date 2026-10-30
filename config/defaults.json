@@ -72,6 +72,10 @@
   "google": {
     "credentials_dir": "~/.config/google-agent"
   },
+  "memory": {
+    "_comment": "Revisions in ledger_changes older than this many days are forgotten by the daily memory collector. Current records are unaffected. A conversation idle for longer is told that the interval is incomplete.",
+    "change_retention_days": 30
+  },
   "deadlines": {
     "_comment": "Quizzes, tests and due dates, kept on a calendar by lib/herald/deadlines.py. Off until `calendar` names one. A quiz or test on a day its course meets retitles that class meeting (`<prefix>: <title>`) and recolours it; everything else is its own event. `feeds` copies calendar_feeds facts in: {source, kind, course_field, skip_titles (regex)}. Colours are Google colorIds.",
     "calendar": "",
