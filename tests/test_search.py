@@ -65,7 +65,7 @@ class Search(unittest.TestCase):
 
     def test_notes_journals_and_conversations_are_found_with_a_way_back(self):
         self.index()
-        found = search.find('boiler')
+        found = search.find('boiler', scope='all')
         kinds = {r['kind'] for r in found['results']}
         self.assertEqual(kinds, {'note', 'journal', 'conversation'})
         note = next(r for r in found['results'] if r['kind'] == 'note')
@@ -76,7 +76,7 @@ class Search(unittest.TestCase):
         self.assertEqual(search.find('SECRETCOMMAND')['results'], [])
         self.assertEqual(search.find('TOOLOUTPUT')['results'], [])
         self.assertEqual(search.find('noise')['results'], [])
-        turn = next(r for r in search.find('boiler')['results'] if r['kind'] == 'conversation')
+        turn = next(r for r in search.find('boiler', scope='history')['results'] if r['kind'] == 'conversation')
         self.assertIn('We kept the old boiler', search.show(turn['key']))
 
     def test_secrets_are_redacted_before_indexing(self):
@@ -99,7 +99,29 @@ class Search(unittest.TestCase):
         (self.root / 'state/areas/HOUSE.md').write_text('# House\nNo heating here.\n')
         (self.root / 'journal/2026-10-01.md').unlink()
         self.index()
-        self.assertEqual({r['kind'] for r in search.find('boiler')['results']}, {'conversation'})
+        self.assertEqual({r['kind'] for r in search.find('boiler', scope='all')['results']}, {'conversation'})
+
+    def test_current_scope_excludes_captures_and_history_but_preserves_source_mail(self):
+        for folder in ('documents/development', 'state/reference/history', 'state/reference/topics'):
+            (self.root/folder).mkdir(parents=True, exist_ok=True)
+            (self.root/folder/'old.md').write_text('# Boiler record\nThe boiler used gas.\n')
+        db.put_fact(self.con, 'gmail', 'message', external_id='notice', title='Boiler notice', body='Appointment moved.')
+        self.index()
+        current = search.find('boiler')
+        self.assertEqual(current['scope'], 'current')
+        self.assertEqual({r['layer'] for r in current['results']}, {'maintained', 'reference', 'source'})
+        self.assertFalse(any(r['layer'] == 'history' for r in current['results']))
+        self.assertIn('excluded', search.render(current))
+        historical = search.find('boiler', scope='history')
+        self.assertIn('conversation', {r['kind'] for r in historical['results']})
+        self.assertNotIn('maintained', {r['layer'] for r in historical['results']})
+        self.assertIn('history', {r['layer'] for r in search.find('boiler', scope='all')['results']})
+
+    def test_history_kind_implies_history_scope_and_invalid_scope_is_rejected(self):
+        self.index()
+        self.assertEqual(search.find('boiler', kinds=['conversation'])['scope'], 'history')
+        with self.assertRaises(ValueError):
+            search.find('boiler', scope='unsupported')
 
     def test_filters_and_any_word_fallback(self):
         self.index()

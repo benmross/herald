@@ -1,5 +1,43 @@
 # Compact context retrieval
 
+## Current notes, reference and history
+
+A maintained topic may have a short `## Current` and metadata near its top:
+
+```markdown
+# Project
+<!-- aliases: other name -->
+<!-- reference: state/reference/topics/PROJECT.md -->
+<!-- history: state/reference/history/PROJECT.md -->
+<!-- operational: commitments -->
+
+## Current
+Present conclusion, constraints, source dates and unresolved uncertainty.
+```
+
+Default packets prefer the exact Current/Current status section over heuristic
+heading previews. `--sections` on a topic lists current and reference headings;
+an explicit section name missing from the topic is looked up in its reference.
+History is opened explicitly by its file pointer. Reference targets must remain
+Markdown inside the ledger. Metadata goes in the first twelve lines.
+
+The operational list selects relevant views from commitments, deadlines,
+schedule, applications and opportunities. `none` suppresses them for a pure
+reference topic. Notes without metadata retain the existing behavior. Keep
+statuses in the tables, not copied into a second Markdown lifecycle.
+
+`herald search` defaults to current maintained notes, detailed references and
+source records. `--scope history` includes journals, conversations, archived
+captures, topic histories and source records; `--scope all` searches both.
+Explicit journal/conversation kinds imply history unless a scope was supplied.
+Results label their layer. Scope describes where evidence came from, not proof
+that every statement is current or correct. Older messages remain retrievable in
+current scope as sources. An empty scope is not proof that no other record exists.
+
+History remains indexed, including removed-source cleanup. Rebuild with
+`herald collect search_index` after reorganizing notes. No index schema change is
+needed because layer/scope derives from existing keys and kinds.
+
 `herald context` combines maintained topic notes with current structured status.
 It uses deterministic file routing and SQL. It does not call a model, embed
 content, or infer relationships from event listings. A name no note carries
@@ -22,7 +60,8 @@ first twelve lines. Spaces and punctuation in names are normalized for lookup.
 Ambiguous topics require an explicit file. Unknown topics can still match
 structured records, but never acquire invented notes or membership.
 
-A note of 4 KB or less comes back whole. A longer one gives its introduction,
+Without an explicit Current section, a note of 4 KB or less comes back whole.
+A longer one gives its introduction,
 short previews of up to three current/status/contact sections, and a heading
 index. Matching operational records follow, found by the note's name and any
 alias of five or more characters. Status counts are behind `--view counts`.
@@ -82,9 +121,10 @@ herald search "exact phrase" --kind conversation --since 2026-10-01
 herald search --show conv:<session>:<turn>
 ```
 
-`herald search` ranks keyword matches across notes, journals, past Telegram
-conversations, mail, mail readings, messages, course items, contacts, tasks and
-your own calendar events. Every word is required first, then any word. Results
+Across its scopes, `herald search` ranks keyword matches in notes, journals,
+past Telegram conversations, mail, mail readings, messages, course items,
+contacts, tasks and personal calendar events. Every word is required first,
+then any word. Results
 carry a date and the command that reads the original. The index is `search.db`,
 which can be deleted and rebuilt, and the `search_index` collector refreshes it
 every 30 minutes by reading only what changed.

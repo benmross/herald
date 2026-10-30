@@ -39,7 +39,9 @@ Retrieve only what the task needs:
   topics; `--sections` and `--section sLINE` expand long notes. Excerpts are not
   complete policies; verify the original before consequential decisions.
 - `herald search <words>`: notes, journals, conversation history and ingested
-  sources. Try alternate terms before concluding something is absent.
+  sources. Defaults to maintained notes and sources; use `--scope history` for
+  journals, old conversations and archives, or `--scope all`. Try alternate terms
+  before concluding something is absent.
 - `herald db "<sql>"`: precise structured queries; `--schema` lists columns.
   `herald fact <id> [<id> ...]` reads whole records.
 
@@ -49,6 +51,9 @@ Read relevant identity notes rather than all of them at startup. Do not rewrite
 the user's own words without asking. Never edit a past journal day.
 
 Write durable conclusions and substantial work to the ledger before ending.
+Keep topic notes current-first: a short `## Current`, reference pointers for
+policy/runbooks, and history in journals or `state/reference/history/`. Dates and
+workflow statuses stay authoritative in their tables, not duplicated prose lists.
 Maintain existing conclusions when new evidence changes them; do not repeatedly
 re-derive unchanged decisions. Correct stale state when noticed, preserving the
 source and verification date. `herald context lint` checks stale references.

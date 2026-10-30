@@ -251,10 +251,21 @@ def _score(row, today) -> float:
     except ValueError:
         age = 365
     recency = 0.7 + 0.3 / (1 + age / 120)
-    return row["rank"] * WEIGHT.get(row["kind"], 1.0) * recency
+    layer_weight = {'maintained': 1.5, 'reference': 0.85}.get(_layer(row), 1.0)
+    return row["rank"] * WEIGHT.get(row["kind"], 1.0) * recency * layer_weight
 
 
-def find(query: str, *, kinds=None, since=None, until=None, limit=8) -> dict:
+def _layer(row) -> str:
+    key = row['key']
+    if (row['kind'] in ('journal', 'conversation') or key.startswith('file:documents/')
+            or key.startswith('file:state/reference/history/')):
+        return 'history'
+    if key.startswith('file:state/reference/'):
+        return 'reference'
+    return 'maintained' if key.startswith('file:') else 'source'
+
+
+def find(query: str, *, kinds=None, since=None, until=None, limit=8, scope=None) -> dict:
     """Ranked matches. Every word first, then any word if that finds too little."""
     terms = _terms(query)
     if not terms:
@@ -262,9 +273,17 @@ def find(query: str, *, kinds=None, since=None, until=None, limit=8) -> dict:
     if not path().exists():
         raise ValueError("no search index yet; run `herald collect search_index`")
     today = dt.datetime.now(config.tz()).date()
+    scope = scope or ('history' if kinds and set(kinds) & {'journal', 'conversation'} else 'current')
+    if scope not in ('current', 'history', 'all'):
+        raise ValueError('scope must be current, history or all')
     con = connect()
     try:
         where, params = [], []
+        historical = "(d.kind IN ('journal','conversation') OR d.key LIKE 'file:documents/%' OR d.key LIKE 'file:state/reference/history/%')"
+        if scope == 'current':
+            where.append('NOT ' + historical)
+        elif scope == 'history':
+            where.append('(' + historical + " OR d.key LIKE 'fact:%')")
         if kinds:
             where.append("d.kind IN (" + ",".join("?" for _ in kinds) + ")")
             params.extend(kinds)
@@ -290,8 +309,8 @@ def find(query: str, *, kinds=None, since=None, until=None, limit=8) -> dict:
         else:
             ranked = sorted(rows, key=lambda r: _score(r, today))
         stamp = con.execute("SELECT stamp FROM files WHERE path='index:updated'").fetchone()
-        return {"results": [dict(r) for r in ranked[:limit]], "total": len(ranked),
-                "matched": matched, "updated": stamp[0] if stamp else None}
+        return {"results": [dict(r, layer=_layer(r)) for r in ranked[:limit]], "total": len(ranked),
+                "matched": matched, "scope": scope, "updated": stamp[0] if stamp else None}
     finally:
         con.close()
 
@@ -311,11 +330,13 @@ def show(key: str) -> str:
 def render(found: dict, budget: int = 1500) -> str:
     out = [f"{len(found['results'])} of {found['total']} matches ({found['matched']}); "
            f"index updated {found['updated'] or 'unknown'}. "
-           "Keyword search: no match does not establish absence."]
+           f"Scope: {found.get('scope', 'all')}. Keyword search: no match does not establish absence."]
+    if found.get('scope') == 'current':
+        out.append('Archives, journals and conversations are excluded; use --scope history or --scope all for past work.')
     cap = budget * 4
     for r in found["results"]:
         date = (r["ts"] or "")[:10]
-        block = f"\n[{r['kind']} {date}] {' '.join((r['title'] or '').split())[:110]}\n" \
+        block = f"\n[{r['kind']} {date}; {r.get('layer', 'source')}] {' '.join((r['title'] or '').split())[:110]}\n" \
                 f"{' '.join((r['snip'] or '').split())}\nRead: {r['ref']}\n"
         if len("\n".join(out).encode()) + len(block.encode()) > cap:
             out.append("\n[more matches omitted by the budget; narrow with --kind or --since]")

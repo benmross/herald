@@ -64,6 +64,29 @@ class ContextReads(unittest.TestCase):
         headings = context.sections(self.note)
         self.assertNotIn('Not a heading', [s['heading'] for s in headings])
 
+    def test_current_summary_and_reference_expansion_do_not_reload_historical_intro(self):
+        folder = self.root/'state/reference/topics'
+        folder.mkdir(parents=True)
+        (folder/'COURSE101.md').write_text('# Policy reference\n## Assessment policy\nKeep the exact policy.\n')
+        self.note.write_text('# Course 101\n<!-- reference: state/reference/topics/COURSE101.md -->\n'
+                             '<!-- operational: deadlines -->\n## Current\nExam location is uncertain.\n'
+                             '## Historical instructor\n' + 'Old instructor details.\n'*300)
+        self.deadline()
+        text = self.output(topic='COURSE101')
+        self.assertIn('Exam location is uncertain', text)
+        self.assertNotIn('Old instructor details', text)
+        self.assertIn('COURSE101 Exam', text)
+        self.assertIn('Keep the exact policy', self.output(topic='COURSE101', section='Assessment policy'))
+        self.assertIn('state/reference/topics/COURSE101.md', self.output(topic='COURSE101', list_sections=True))
+
+    def test_operational_none_and_reference_path_cannot_escape_ledger(self):
+        self.deadline()
+        self.note.write_text('# Course 101\n<!-- operational: none -->\n## Current\nReference only.\n')
+        self.assertNotIn('COURSE101 Exam', self.output(topic='COURSE101'))
+        self.note.write_text('# Course 101\n<!-- reference: ../../outside.md -->\n## Current\nSee policy.\n')
+        with self.assertRaises(ValueError):
+            self.output(topic='COURSE101', list_sections=True)
+
     def test_ambiguous_heading_requires_explicit_key(self):
         self.note.write_text('# Course\n## Policy\nOne\n## Policy\nTwo\n')
         with self.assertRaisesRegex(ValueError, 'ambiguous'):

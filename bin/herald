@@ -2452,7 +2452,7 @@ def cmd_search(args) -> int:
             print(search_mod.show(args.show), end='')
             return 0
         found = search_mod.find(' '.join(args.query), kinds=args.kind, since=args.since,
-                                until=args.until, limit=args.limit)
+                                until=args.until, limit=args.limit, scope=args.scope)
         output = search_mod.render(found, args.budget)
         print(output, end='')
     except (ValueError, sqlite3.Error) as error:
@@ -2506,6 +2506,8 @@ def main() -> int:
     srch = sub.add_parser('search', help='ranked keyword search over notes, journals, conversations, mail and messages')
     srch.add_argument('query', nargs='*', help='words; "quote" a phrase')
     srch.add_argument('--kind', action='append', choices=search_mod.KINDS, help='repeat to allow several')
+    srch.add_argument('--scope', choices=['current', 'history', 'all'],
+                      help='default: current notes and sources; journal/conversation kinds imply history')
     srch.add_argument('--since', help='YYYY-MM-DD')
     srch.add_argument('--until', help='YYYY-MM-DD')
     srch.add_argument('--limit', type=int, default=8)

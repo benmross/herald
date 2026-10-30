@@ -17,9 +17,18 @@ structured status, source references and incomplete-source warnings. This is
 deterministic retrieval, not semantic search. If it already answers the question
 with current evidence, do not repeat the same discovery in SQL.
 
+Maintained topics start with a short Current section. Policy/runbook detail is
+linked by reference metadata; topic `--sections` includes those reference sections.
+History is separate and explicitly dated. Update the current conclusion rather
+than appending another chronological status paragraph. Use history/all search
+for old conversations, artifacts or prior decisions; ordinary search excludes
+archives and old topic histories but still includes source messages.
+
 ```bash
 herald context topics                         # every topic and its other names
-herald search <words>                         # notes, journals, past conversations, mail, messages
+herald search <words>                         # current notes, references and source records
+herald search <words> --scope history         # journals, past conversations, archives and sources
+herald search <words> --scope all             # every retained search layer
 herald search <words> --kind conversation     # also: note journal reading mail message chat event person course task
 herald context <topic> --budget 1500            # approximate token budget
 herald context <topic> --sections               # headings, keys and source lines

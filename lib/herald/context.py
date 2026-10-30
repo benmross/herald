@@ -90,6 +90,19 @@ def aliases(path: pathlib.Path) -> list[str]:
     return []
 
 
+def metadata(path: pathlib.Path, key: str) -> str | None:
+    for line in path.read_text().splitlines()[:12]:
+        match = re.fullmatch(r'<!--\s*' + re.escape(key) + r':\s*(.*?)\s*-->', line.strip())
+        if match:
+            return match[1]
+    return None
+
+
+def reference(path: pathlib.Path):
+    target = metadata(path, 'reference')
+    return ledger_path(target) if target else None
+
+
 def topics() -> list[dict]:
     out = []
     for folder in ('state/areas', 'state/projects', 'state/reference'):
@@ -283,13 +296,26 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
         else:
             raise ValueError('choose one topic or --file before selecting sections')
         if list_sections:
-            rel = path.relative_to(config.LEDGER.resolve()).as_posix()
-            index = sections(path)
-            items = [{'source': f'{rel}:{s["line"]}', 'text': f'{s["key"]}: {s["heading"]} (lines {s["line"]}-{s["end"]})',
-                      'expand': f'herald context --file {shlex.quote(rel)} --section {s["key"]}'} for s in index[offset:offset+limit]]
+            paths = [path]
+            if not file and (ref := reference(path)):
+                paths.append(ref)
+            index = [(p, s) for p in paths for s in sections(p)]
+            items = []
+            for p, s in index[offset:offset+limit]:
+                rel = p.relative_to(config.LEDGER.resolve()).as_posix()
+                items.append({'source': f'{rel}:{s["line"]}',
+                              'text': f'{s["key"]}: {s["heading"]} (lines {s["line"]}-{s["end"]})',
+                              'expand': f'herald context --file {shlex.quote(rel)} --section {s["key"]}'})
             more = offset + len(items) < len(index)
         else:
-            items = [_note(path, section, offset)]
+            if not file and section and not any(
+                    section == s['key'] or section.casefold() in s['heading'].casefold()
+                    for s in sections(path)) and (ref := reference(path)):
+                path = ref
+            current = next((s for s in sections(path) if s['level'] == 2 and
+                            s['heading'].casefold() in ('current', 'current status')), None)
+            items = ([_note(path), _note(path, current['key'])]
+                     if not section and not offset and current else [_note(path, section, offset)])
     else:
         if len(routes) > 1:
             raise ValueError('topic is ambiguous: ' + ', '.join(t['topic'] for t in routes) + '; choose --file')
@@ -297,7 +323,15 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
         if routes:
             path = ledger_path(routes[0]['path'])
             index = sections(path)
-            if path.stat().st_size <= WHOLE_NOTE_BYTES:
+            current = next((s for s in index if s['level'] == 2 and
+                            s['heading'].casefold() in ('current', 'current status')), None)
+            if current:
+                items.append(_note(path))
+                items.append(_note(path, current['key']))
+                items.append({'source': routes[0]['path'],
+                              'text': 'Policy and runbook detail: expand reference sections. Historical material is separate.',
+                              'expand': f'herald context {shlex.quote(routes[0]["topic"])} --sections --limit 100'})
+            elif path.stat().st_size <= WHOLE_NOTE_BYTES:
                 items.append(_note(path, whole=True))
             else:
                 items.append(_note(path))
@@ -320,7 +354,10 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
             items.append({'source': 'topic index', 'text': 'No maintained note has this name. Structured matches and search results follow; nothing here establishes a relationship or membership.',
                           'expand': 'herald context topics'})
         if terms:
-            for name in ('commitments', 'deadlines', 'schedule', 'applications', 'opportunities'):
+            configured = metadata(path, 'operational') if routes else None
+            views = ([v.strip() for v in configured.split(',') if v.strip() in VIEWS]
+                     if configured is not None else VIEWS)
+            for name in views:
                 result = operational(con, name, topic=terms, days=days, limit=3)
                 if result['total']:
                     items.extend(result['items'])
