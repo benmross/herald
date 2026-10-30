@@ -336,6 +336,34 @@ def sync(con, *, dry_run: bool = False, report=print) -> dict:
     return counts
 
 
+_CHANGE = re.compile(r"due date|date changed|\bchanged\b|\bmoved\b|reschedul|postpone|cancel|extended|extension", re.I)
+
+
+def disputes(con, rows, days: int = 7) -> dict:
+    """{deadline id: subject} where recent mail says this date may have moved.
+
+    A feed refreshes on its own schedule and a teacher's mail does not wait for
+    it, so a row can be stale for hours after mail said so. Nothing here changes
+    the row: it stops a session stating the old date without saying why to check.
+    """
+    since = (dt.datetime.now(config.tz()) - dt.timedelta(days=days)).isoformat(timespec="seconds")
+    subjects = [r["title"] for r in con.execute(
+        "SELECT title FROM facts WHERE source IN ('gmail','purelymail') AND kind='message' AND ts>=?",
+        (since,)) if r["title"] and _CHANGE.search(r["title"])]
+    found = {}
+    for row in rows:
+        name = (row["title"] or "").strip()
+        if row["course"] and name.upper().startswith(row["course"].upper()):
+            name = name[len(row["course"]):].strip()
+        if len(name) < 8:
+            continue
+        for subject in subjects:
+            if name.casefold() in subject.casefold():
+                found[row["id"]] = subject
+                break
+    return found
+
+
 def upcoming(con, days: int = 14) -> list[dict]:
     today = dt.date.today()
     return [dict(r) for r in con.execute(

@@ -548,6 +548,8 @@ reconciliation commands, checked scopes and regression tests.
 section pointers and current operational records in one bounded read. Supported
 views cover obligations, dates, applications, opportunities, counts and personal
 events. The source tables retain authority and long notes remain expandable.
+`herald search` adds ranked keyword search over notes, journals, conversations,
+mail and messages from a rebuildable index, `search.db`.
 See [compact context retrieval](context.md) for scopes, private-mode behavior
 and measurements that exclude query text and source content.
 

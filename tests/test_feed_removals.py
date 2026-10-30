@@ -58,6 +58,19 @@ class FeedRemovals(unittest.TestCase):
         row = self.con.execute('SELECT status,notes FROM deadlines WHERE id=?', (rid,)).fetchone()
         self.assertEqual((row['status'], row['notes']), ('live', None))
 
+    def test_mail_about_a_changed_date_flags_the_row(self):
+        rid = deadlines.add(self.con, source='lms', ref='a', course='FIRE120', kind='due',
+                            title='FIRE120 Stream Outcome', due=self.day)
+        other = deadlines.add(self.con, source='lms', ref='b', course='FIRE120', kind='due',
+                              title='FIRE120 Other Thing', due=self.day)
+        now = dt.datetime.now(dt.timezone.utc).isoformat(timespec='seconds')
+        db.put_fact(self.con, 'gmail', 'message', external_id='m', ts=now,
+                    title='Assignment Due Date Changed: Stream Outcome, FIRE120')
+        rows = self.con.execute('SELECT id,title,course FROM deadlines').fetchall()
+        found = deadlines.disputes(self.con, rows)
+        self.assertIn(rid, found)
+        self.assertNotIn(other, found)
+
     def test_a_user_cancelled_deadline_is_not_revived(self):
         rid = deadlines.add(self.con, source='lms', ref='a', course='C', kind='due', title='Essay', due=self.day)
         self.con.execute("UPDATE deadlines SET status='cancelled' WHERE id=?", (rid,))

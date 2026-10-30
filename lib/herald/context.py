@@ -165,9 +165,16 @@ def operational(con, view: str, *, topic='', days=30, offset=0, limit=10,
     count = con.execute(f'SELECT count(*) FROM {table} WHERE {where}', params).fetchone()[0]
     rows = con.execute(f"SELECT id,{','.join(columns)} FROM {table} WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
                        [*params, limit, offset]).fetchall()
+    disputed = {}
+    if table == 'deadlines':
+        from . import deadlines
+        disputed = deadlines.disputes(con, con.execute(
+            f"SELECT id,title,course FROM deadlines WHERE id IN ({','.join(str(r['id']) for r in rows) or 'NULL'})").fetchall())
     items = []
     for r in rows:
         value = dict(r)
+        if r['id'] in disputed:
+            value['recent_mail_may_change_this'] = disputed[r['id']]
         if view == 'schedule' and record_id is None:
             data = json.loads(value.pop('data') or '{}')
             value.update(role=data.get('role'), location=data.get('location'), end=data.get('end'))

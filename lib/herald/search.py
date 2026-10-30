@@ -94,6 +94,7 @@ def connect(*, write: bool = False) -> sqlite3.Connection:
     if write:
         con = sqlite3.connect(path(), timeout=30)
         con.executescript(SCHEMA)
+        path().chmod(0o600)
     else:
         # Read-only so a private session, whose filesystem is read-only, can use it.
         con = sqlite3.connect(f"file:{path()}?mode=ro", uri=True, timeout=5)

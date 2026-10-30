@@ -37,7 +37,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import changes, config, db, extensions, mailreadings, mailtext  # noqa: E402
+from herald import changes, config, db, deadlines, extensions, mailreadings, mailtext  # noqa: E402
 
 # Near-term detail, then everything else in brief. Nothing is hidden merely for
 # being distant: an exam eight weeks out still belongs in the picture, it just
@@ -175,6 +175,18 @@ def _event_time(value) -> str:
     if len(value) <= 10:
         return f"{when:%a %-d %b}"
     return f"{when.astimezone(config.tz()):%a %-d %b}, {config.clock(when.astimezone(config.tz()))}"
+
+
+def _disputed_dates(con, today: dt.date) -> list[str]:
+    """Live dates that recent mail suggests have moved, however the row reads."""
+    horizon = (today + dt.timedelta(days=DUE_HORIZON_DAYS)).isoformat()
+    rows = _rows(con, "SELECT id,title,course,due FROM deadlines WHERE status='live' "
+                      "AND substr(due,1,10)>=? AND substr(due,1,10)<=? ORDER BY due",
+                 (today.isoformat(), horizon))
+    found = deadlines.disputes(con, rows)
+    return [f"- {r['title']}, recorded as {_when_words(str(r['due'])[:10], today)}: recent mail "
+            f"“{_clip(found[r['id']], 90)}”. Read it before stating this date."
+            for r in rows if r["id"] in found]
 
 
 def _calendar_changes(con, since, today: dt.date) -> list[str]:
@@ -532,6 +544,10 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         out.append("These come from the calendar, which outranks any mail about "
                    "the same event.")
         out.extend(moved)
+    disputed = _disputed_dates(con, today)
+    if disputed:
+        head("Dates that recent mail may have changed")
+        out.extend(disputed)
 
     head("New mail since the last cycle")
     if since:
@@ -711,6 +727,10 @@ def orientation(con) -> str:
         head(f"Due inside {ORIENTATION_DUE_DAYS} days")
         for r in due:
             out.append(f"- {_when_words(str(r['due'])[:10], now.date())}: {r['text']}")
+    disputed = _disputed_dates(con, now.date())
+    if disputed:
+        head("Dates that recent mail may have changed")
+        out.extend(disputed)
     open_n = _rows(con, "SELECT COUNT(*) n FROM commitments WHERE status='open'")
     if open_n:
         out.append(f"\n{open_n[0]['n']} open obligations (`herald obligation list`, the "

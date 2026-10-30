@@ -45,7 +45,7 @@ REQUIRES = ("calendar_feeds",)
 
 # How often this is worth running:
 # a published feed changes when someone edits it, not hourly
-CADENCE_MINUTES = 180
+CADENCE_MINUTES = 60
 
 # "Week 1: In-Class Activity [BIO201]" -> title, tag
 _SUFFIX = re.compile(r"^(?P<title>.*?)\s*\[(?P<tag>[^\]]+)\]\s*$")

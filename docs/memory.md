@@ -68,6 +68,15 @@ one was cancelled. `_snapshot._calendar_changes` reads revisions since the last
 cycle and states what was cancelled, moved or renamed. Invitation replies are
 marked as saying nothing about whether an event is on.
 
+## Disputed dates
+
+A row can be stale for hours after mail said otherwise, because a feed refreshes
+on its own schedule. `deadlines.disputes` matches recent mail whose subject
+suggests a change against live deadline titles. The match never edits a row: it
+appears in the startup card, the morning brief and the deadlines view, so a
+session cannot state the old date without seeing why to check it. An upcoming
+item that leaves its feed is cancelled, and revives if it returns.
+
 ## Session handoff
 
 A new session in a Telegram topic receives the last request and reply of the

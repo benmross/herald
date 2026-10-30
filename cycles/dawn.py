@@ -179,6 +179,11 @@ last cycle" lists what was cancelled, moved or renamed, and it outranks any mail
 and anything in the previous `now.md`. Do not carry a line over from the previous
 `now.md` without checking it against this snapshot.
 
+**A disputed date goes on its row.** When sources disagree about a date, write the
+disagreement into that deadline's or commitment's notes in step 3, as well as
+into the digest. A later session asking about the date reads the row, and
+`now.md` will not save it.
+
 What makes a good digest:
 
 - Lead with what changes the next few hours, not with a summary of the snapshot.

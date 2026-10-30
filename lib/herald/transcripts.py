@@ -23,6 +23,8 @@ MAX_TURN_CHARS = 4_000
 def clean_user(text: str) -> str:
     """The message itself, without what the bridge and the engine wrapped it in."""
     text = _TAGGED.sub("", text or "")
+    if text.startswith("Base directory for this skill:"):
+        return ""
     found = list(_BRIDGE.finditer(text))
     if found:
         text = text[found[-1].end():]
