@@ -16,7 +16,10 @@ caller *picks* an engine (`engine="codex"`, `/codex` in Telegram, or
 `engines.default_engine` in the config) and the run lives and dies there. A
 usage limit or a timeout is still a failure with a clear error, not a run
 that quietly finishes somewhere else, and a session is never resumed across
-engines because neither can read the other's transcript.
+engines because neither can read the other's transcript. The one route between
+them, since 30 October 2026, sits above this module: `routing.py`, an install's
+explicit Auto policy, lets the Telegram bridge start a new call on the other
+engine from the topic's saved work. This module still runs one engine per call.
 
 The two are made to look the same from the outside -- one `Result`, one
 `Progress` stream, one `runs` row -- so that nothing above this module knows
@@ -432,6 +435,8 @@ class Result:
     cancelled: bool = False
     rate_limited: bool = False
     denials: list = field(default_factory=list)
+    context_tokens: int | None = None
+    context_window: int | None = None
 
     def json(self) -> dict | None:
         """The reply parsed as JSON, whether it came back structured or fenced."""
@@ -665,7 +670,7 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
                 permission_mode: str, add_dirs: list[str] | None,
                 on_progress=None, cancel_key: str | None = None,
                 submitted: list[str] | None = None,
-                timing: dict | None = None,
+                timing: dict | None = None, lean: bool = False,
                ) -> tuple[int, dict | None, int | None, str, str, bool]:
     staged, tmp = _stage_prompt(prompt, cwd)
 
@@ -698,6 +703,12 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
            # anything that would have prompted.
            "--permission-prompts", "none"]
 
+    if lean:
+        # Still the signed-in CLI on its subscription: only the tools, settings,
+        # servers and instructions a one-word reply has no use for are gone.
+        cmd += ["--tools", "", "--strict-mcp-config", "--setting-sources", "",
+                "--disable-slash-commands", "--no-session-persistence",
+                "--system-prompt", "Reply with one word."]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -935,7 +946,7 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
                add_dirs: list[str] | None,
                on_progress=None, cancel_key: str | None = None,
                submitted: list[str] | None = None,
-               timing: dict | None = None,
+               timing: dict | None = None, lean: bool = False,
               ) -> tuple[int, dict | None, int | None, str, str, bool]:
     """`codex exec`, shaped to match `_run_claude` from the outside.
 
@@ -977,6 +988,8 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
            # only raises the read ceiling; keep actual instructions compact.
            "-c", "project_doc_max_bytes=65536",
            "-c", "project_doc_fallback_filenames=" + json.dumps(["CLAUDE.md"])]
+    if lean:
+        cmd += ["--ephemeral", "-c", "project_doc_max_bytes=0"]
     if permission_mode == "plan":
         cmd += ["-c", 'sandbox_mode="read-only"']
     else:
@@ -1076,7 +1089,7 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
     readers = []
     thread_id, turn_id, completed = resume, None, False
     next_id, interrupted_at = 0, None
-    usage, previous_usage, context_tokens = {}, None, None
+    usage, previous_usage, context_tokens, context_window = {}, None, None, None
     code = 1
 
     def active(accepting: bool) -> None:
@@ -1252,6 +1265,7 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
                     usage[name] = usage.get(name, 0) + delta
                 previous_usage = total
                 context_tokens = last.get("inputTokens")
+                context_window = tokens.get("modelContextWindow") or context_window
             elif method in ("item/started", "item/completed"):
                 item = dict(params.get("item") or {})
                 if params.get("turnId") != turn_id:
@@ -1330,6 +1344,8 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
             payload["structured_output"] = json.loads(payload.get("result") or "")
         except ValueError:
             pass
+    if payload and context_window:
+        payload["context_window"] = context_window
     return code, payload, context_tokens, "".join(out), "" if payload else "".join(err), cancelled.is_set()
 
 
@@ -1622,8 +1638,10 @@ def _log_anomaly(stage: str, label: str, model: str, resume: str | None,
 
 
 def _ok_result(payload: dict, engine: str, model: str | None,
-               duration_ms: int) -> tuple[Result, dict]:
+               duration_ms: int, context_tokens: int | None = None) -> tuple[Result, dict]:
     usage = payload.get("usage") or {}
+    windows = [m.get("contextWindow") for m in (payload.get("modelUsage") or {}).values()
+               if isinstance(m, dict) and m.get("contextWindow")]
     result = Result(
         ok=True,
         text=payload.get("result", "") or "",
@@ -1634,6 +1652,8 @@ def _ok_result(payload: dict, engine: str, model: str | None,
         duration_ms=duration_ms,
         structured=payload.get("structured_output"),
         denials=payload.get("permission_denials") or [],
+        context_tokens=context_tokens,
+        context_window=payload.get("context_window") or (max(windows) if windows else None),
     )
     return result, usage
 
@@ -1723,7 +1743,7 @@ def think(prompt: str, *, label: str,
           on_progress=None,
           engine: str | None = None, effort: str | None = None,
           codex_transport: str = "exec",
-          private: Path | str | None = None) -> Result:
+          private: Path | str | None = None, lean: bool = False) -> Result:
     """Run one metered agent invocation.
 
     `label` is what shows up in the runs table — use `cycle:dawn`,
@@ -1752,12 +1772,16 @@ def think(prompt: str, *, label: str,
     directory for every turn of one session: the transcript a later turn
     resumes is in it.
 
+    `lean` strips the run to a reply with no tools, project instructions or
+    saved session, for a call whose only purpose is to reach the provider.
+    Pass an empty `cwd` with it.
+
     `cancel_key`, if given, registers the underlying subprocess with
     `cancel()` under that key for exactly as long as this call is running --
     pass the same key to `cancel()` from another thread to interrupt this
     call in flight (see `bin/herald-telegram`'s `/stop`).
 
-    There is no fallback between engines. A rate limit, a timeout or a crash
+    There is no fallback between engines here. A rate limit, a timeout or a crash
     comes back as `ok=False` with the session id attached where one exists, so
     the caller can resume into the work that did happen rather than starting
     over on top of half-finished files -- on the same engine, since a
@@ -1823,7 +1847,7 @@ def think(prompt: str, *, label: str,
     # the architecture already assumed was true.
     add_dirs = list(add_dirs or [])
     home = str(config.HOME.resolve())
-    if home not in add_dirs:
+    if home not in add_dirs and not lean:
         add_dirs.append(home)
 
     def _launch(text: str, resume_id: str | None, timing: dict):
@@ -1834,13 +1858,14 @@ def think(prompt: str, *, label: str,
                 timeout=timeout, idle_timeout=idle_timeout,
                 append_system_prompt=append_system_prompt, json_schema=json_schema,
                 resume=resume_id, permission_mode=permission_mode, add_dirs=add_dirs,
-                on_progress=on_progress, cancel_key=cancel_key, timing=timing)
+                on_progress=on_progress, cancel_key=cancel_key, timing=timing,
+                **({"lean": True} if lean else {}))
         return _run_claude(
             text, model=model, effort=claude_effort(effort), cwd=cwd,
             timeout=timeout, idle_timeout=idle_timeout, allowed_tools=allowed_tools,
             append_system_prompt=append_system_prompt, json_schema=json_schema,
             resume=resume_id, permission_mode=permission_mode, add_dirs=add_dirs,
-            on_progress=on_progress, cancel_key=cancel_key, timing=timing)
+            on_progress=on_progress, cancel_key=cancel_key, timing=timing, lean=lean)
 
     started = time.monotonic()
     timing: dict = {}
@@ -1864,7 +1889,8 @@ def think(prompt: str, *, label: str,
     anomalous = engine == "claude" and payload is not None and _is_anomalous(payload)
 
     if payload and not payload.get("is_error") and code == 0 and not anomalous:
-        result, usage = _ok_result(payload, engine, model, payload.get("duration_ms", elapsed))
+        result, usage = _ok_result(payload, engine, model, payload.get("duration_ms", elapsed),
+                                   context_tokens)
         _record(timing=timing, label=label, engine=engine, model=model,
                 session_id=result.session_id, duration_ms=result.duration_ms,
                 cost_usd=result.cost_usd,
@@ -1919,7 +1945,7 @@ def think(prompt: str, *, label: str,
 
         if r_payload and not r_payload.get("is_error") and r_code == 0 \
                 and not _is_anomalous(r_payload):
-            result, usage = _ok_result(r_payload, engine, model, elapsed + r_elapsed)
+            result, usage = _ok_result(r_payload, engine, model, elapsed + r_elapsed, r_ctx)
             _record(timing=timing, label=label, engine=engine, model=model,
                     session_id=result.session_id, duration_ms=r_elapsed,
                     cost_usd=result.cost_usd,

@@ -2,8 +2,10 @@
 
 Only the words of the user and the agent. Tool calls and their results are left
 out on purpose: they carry mail, files and command output that belong to their
-own sources, and they are where a secret would be. Private sessions are never
-booked in `runs` and leave no transcript to find.
+own sources, and they are where a secret would be. `outcomes` is the one
+exception, and it keeps only file paths and the names of commands, never their
+arguments. Private sessions are never booked in `runs` and leave no transcript
+to find.
 """
 
 from __future__ import annotations
@@ -67,6 +69,51 @@ def _codex(path: pathlib.Path):
                          if isinstance(c, dict) and c.get("text"))
         if text.strip():
             yield d.get("timestamp"), p["role"], text
+
+
+# Codex wraps a command in a script, so a call can open with a quote.
+_ACTION = re.compile(r"(?:^|[;&|\"'\n]\s*)(git (?:commit|push)|gh pr \w+|herald (?:act \S+|deadline add|"
+                     r"obligation add|restart|release))\b")
+_PATCHED = re.compile(r"\*\*\* (?:Add|Update) File: ([^\n\"'\\]+)")
+
+
+def outcomes(path: pathlib.Path) -> dict:
+    """{files, actions} a session's tool calls touched, in order. Never arguments."""
+    files, actions = [], []
+
+    def command(text) -> None:
+        actions.extend(m[1] for m in _ACTION.finditer(text if isinstance(text, str) else ""))
+
+    lines = path.read_text(errors="replace").splitlines()
+    for line in lines:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get("isSidechain"):
+            continue
+        p = d.get("payload") or {}
+        if d.get("type") == "response_item" and p.get("type") == "custom_tool_call":
+            files.extend(_PATCHED.findall(p.get("input") or ""))
+            command(p.get("input"))
+        elif d.get("type") == "response_item" and p.get("type") == "function_call":
+            try:
+                args = json.loads(p.get("arguments") or "{}")
+            except ValueError:
+                continue
+            value = args.get("cmd") or args.get("command") or ""
+            command(" ".join(value) if isinstance(value, list) else value)
+        elif d.get("type") == "assistant":
+            content = (d.get("message") or {}).get("content")
+            for c in content if isinstance(content, list) else []:
+                if not isinstance(c, dict) or c.get("type") != "tool_use":
+                    continue
+                given = c.get("input") or {}
+                if c.get("name") in ("Write", "Edit") and given.get("file_path"):
+                    files.append(given["file_path"])
+                elif c.get("name") == "Bash":
+                    command(given.get("command"))
+    return {"files": list(dict.fromkeys(files)), "actions": list(dict.fromkeys(actions))}
 
 
 def turns(path: pathlib.Path) -> list[dict]:

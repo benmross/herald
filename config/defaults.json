@@ -12,8 +12,15 @@
     "narration": "messages"
   },
   "engines": {
-    "_comment": "Choose claude, codex, or both during setup. enabled lists the providers you use (null keeps both available for existing installs). default_engine is your choice for cycles, terminal sessions and new Telegram topics; null requires a choice. Model and effort null use the selected CLI defaults. No provider is preferred and failures never switch providers. engines.primary remains a compatibility alias for engines.claude.",
+    "_comment": "Choose claude, codex, or both during setup. enabled lists the providers you use (null keeps both available for existing installs). default_engine is your choice for cycles, terminal sessions and new Telegram topics; null requires a choice. Model and effort null use the selected CLI defaults. No provider is preferred, and a failure switches providers only under auto below. engines.primary remains a compatibility alias for engines.claude.",
     "default_engine": null,
+    "_auto_comment": "auto keeps Telegram topics running across subscriptions. When a topic's provider is at limit_percent of a quota, its next turn moves to another enabled provider and continues from the topic's saved work. It reads cached quota, buys no overage, and leaves topics pinned with /claude, /codex or a model choice alone. Off, a failure stays a failure. Setup offers it to anyone using both providers.",
+    "auto": {
+      "enabled": false,
+      "limit_percent": 99
+    },
+    "_renewal_comment": "A Telegram topic starts a new native session between turns once its last turn used this share of the context window the model reports, and carries its work across. Without a reported window the turn ceiling applies.",
+    "renewal_context_share": 0.75,
     "codex": {
       "_comment": "Model and effort null use the Codex CLI configuration. Sandbox and approval policy are native CLI settings; Herald guard hooks apply to both providers.",
       "cmd": "codex",
@@ -41,7 +48,15 @@
     "work_threshold": 60,
     "work_horizon_hours": 24,
     "work_lead_hours": 2,
-    "max_age_minutes": 45
+    "max_age_minutes": 45,
+    "anchors": {
+      "_comment": "On by default for every install. Sends one word to a cheap model when a five-hour window is idle and the plan says it should open, so resets land where they help: see lib/herald/anchors.py. Uses about four calls a day per provider, only after min_days of history, never past weekly_limit_percent of a weekly quota, and stops after idle_days without use. A model the plan lacks falls back to the engine's configured one.",
+      "enabled": true,
+      "models": {"claude": "haiku", "codex": "gpt-6-luna"},
+      "min_days": 7,
+      "idle_days": 7,
+      "weekly_limit_percent": 90
+    }
   },
   "notify": {
     "ntfy_url": "https://ntfy.sh",

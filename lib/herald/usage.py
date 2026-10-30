@@ -16,7 +16,7 @@ import re
 import time
 from zoneinfo import ZoneInfo
 
-from . import config, db, notify, think
+from . import anchors, config, db, notify, think
 
 SOURCE = "subscription_usage"
 
@@ -282,21 +282,30 @@ def reminders(con, snapshot: dict) -> int:
 
 
 def collect(con) -> dict:
-    if not config.get("usage.enabled", False):
+    # Reminders are opt-in. Anchoring is on by default, so it reads quota on
+    # installs that never asked for reminders, and stays silent when it cannot.
+    watching = bool(config.get("usage.enabled", False))
+    plan = anchors.current(con) if anchors.enabled() else None
+    if not watching and not plan:
         return {}
     counts = {"readings": 0, "reminders": 0}
     errors = []
+    snapshots = {}
     for engine in config.enabled_engines():
         previous = _saved(con, "status", engine)
         try:
-            snapshot = refresh(con, engine)
+            snapshots[engine] = refresh(con, engine)
             counts["readings"] += 1
-            counts["reminders"] += reminders(con, snapshot)
+            if watching:
+                counts["reminders"] += reminders(con, snapshots[engine])
         except UsageError as exc:
+            if not watching:
+                continue
             errors.append(f"{engine}: {exc}")
             # A changed screen is reported on its first failure, then deduped.
             if not previous or previous.get("ok") or previous.get("error") != str(exc):
                 notify.tell(f"{engine.capitalize()} usage check failed", str(exc))
+    counts["windows_opened"] = anchors.maintain(con, snapshots, plan)
     if errors:
         raise UsageError("; ".join(errors))
     return counts
@@ -342,4 +351,5 @@ def report(con, engines=None, *, force: bool = False, cached_only: bool = False)
             lines.append(f"  {window['label']}: {window['used_percent']:g}% used; "
                          f"resets {reset.strftime('%a %d %b')} {config.clock(reset)}")
         failed = failed or stale
-    return "\n".join(lines), failed
+    plan = anchors.describe(con)
+    return "\n".join([*lines, *([plan] if plan else [])]), failed

@@ -68,7 +68,9 @@ sends a notification; the snapshot is free and silent.
    speaks to a model API. That is what keeps it on the user's subscription instead
    of metered billing, and it is a terms-of-service requirement.
    The engine is chosen before the run (`engine=`, `/codex`, `/claude`,
-   `engines.default_engine`); a failure on one never starts the other.
+   `engines.default_engine`); a failure on one never starts the other. The one
+   exception is opt-in and lives above think.py: `routing.py`, under
+   `engines.auto.enabled`, moves an unpinned Telegram topic at a quota limit.
 2. **Never `--bare`.** Bare mode does not read the subscription login.
 3. **Never set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`.** `config.agent_env()`
    strips both deliberately. An API key would work perfectly and bill them.

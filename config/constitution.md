@@ -25,7 +25,9 @@ need a migration that preserves existing installs.
 Only `lib/herald/think.py` launches model engines, through first-party `claude`
 or `codex` subprocesses. Never call a model HTTP API or use subscription OAuth
 in an SDK or other caller. Never use `--bare` or supply model API keys. Use the
-chosen engine, model and effort; failures never switch providers.
+chosen engine, model and effort. A failure never switches providers, except that
+an install with `engines.auto.enabled` moves an unpinned Telegram topic on a
+verified quota limit, through `routing.py` and from the topic's saved work.
 
 ## Memory and evidence
 

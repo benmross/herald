@@ -49,9 +49,10 @@ restarting after three failures in an hour rather than flapping.
 
 ## Cost
 
-There are two engines and no fallback between them. When `claude` or `codex`
-hits a usage limit or hangs, the run fails with that error and the user is
-told; the other engine does not take over. See "Two engines, chosen, never
+A cycle's engine has no fallback. When `claude` or `codex` hits a usage limit
+or hangs, the run fails with that error and the user is told; the other engine
+does not take over. A Telegram topic does move on a quota limit if
+`engines.auto.enabled` is on, unless it was pinned by a command or `/models`. See "Two engines, chosen, never
 fallen back to" in `docs/architecture.md` for what that traded away. A
 Telegram topic can be moved by hand with `/codex` or `/claude`, and `herald
 status` shows which engines are installed.
@@ -168,6 +169,23 @@ The whole approval must fit one Telegram message. Longer issues are refused
 before a request is sent; shorten the body rather than approving a truncated
 preview. This command currently targets GitHub.com and uses your local `gh`
 login. Adding the command does not publish anything by itself.
+
+## Five-hour window scheduling
+
+`lib/herald/anchors.py` is on by default on every install. It reads `runs` for
+when you usually start, plans when each provider's five-hour window should open,
+and sends one word to a cheap model when a window is idle and one is due. The
+result is that the windows covering your usual start are nearly empty, and two
+providers reset about two and a half hours apart. Five windows would take 25
+hours, so each provider runs four a day and has a four-hour gap, which the plan
+places where history shows nothing runs. Anything that runs in the gap opens a
+window off schedule; the schedule recovers the next day.
+
+It waits for seven days of history and replans weekly. It stops after seven days
+without use and at 90% of a weekly quota. `herald usage` prints the plan. Turn
+it off with `herald config set usage.anchors.enabled false`. It costs about four
+calls a day per provider, recorded in `runs` as `usage:anchor`: about 2,100 tokens
+on Claude and 14,000 mostly cached on Codex, measured 30 October 2026.
 
 ## Subscription usage
 

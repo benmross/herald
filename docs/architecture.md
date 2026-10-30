@@ -358,11 +358,35 @@ missing (macOS, some containers) it refuses to start and says why. It never
 falls back to an ordinary session, because the user would have been told
 it was private.
 
-The cost accepted in exchange is that **there is still no engine redundancy.**
+The cost accepted in exchange is that **a cycle has no engine redundancy.**
 A usage limit or an engine timeout during a cycle is a failure with a clear
 error and a notification, and the run never finishes on the other engine. A
 failed run still carries its session id, so the next turn, on the same engine,
 can resume into the work that did happen rather than redoing it.
+
+Telegram topics can opt out of that since 30 October 2026. With
+`engines.auto.enabled`, set at setup, `lib/herald/routing.py` moves an unpinned
+topic to another enabled provider when a cached reading shows its own at a
+limit, or when a turn fails on one. Only a verified quota limit qualifies: an
+authentication error needs reconnecting and a bug needs fixing, and another
+provider fixes neither. A topic stays where it is until then, and `think()` still
+runs one engine per call. Nothing is bought. Every move is a `route` fact.
+
+## Topics and sessions
+
+A topic is the conversation and native sessions are replaceable underneath it.
+Between turns, once the last turn used `engines.renewal_context_share` of the
+context window the model reported, the bridge starts a new session without being
+asked. If no window is reported, the turn ceiling applies. `lib/herald/handoff.py`
+carries the work: `ts["work"]` holds the first request, the files changed and the
+names of commands that change things, taken from transcripts, so it survives a
+crash and a provider change, and the next session also gets the end of the last
+transcript. A summary is fallible, so it is labelled as something to check, and
+it carries no approval.
+
+`/new` is different in kind. It abandons the objective, so it drops that record
+and no handoff follows. The old session stays reachable by replying to one of
+its messages. General also drops the record after five idle hours.
 
 The two are made to look identical above `think.py`: one `Result`, one
 `Progress` stream, one `runs` row, one `Progress` display in Telegram. The

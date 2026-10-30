@@ -8,7 +8,7 @@ from herald import collector, usage
 
 NAME = "usage"
 REQUIRES = ()
-CADENCE_MINUTES = 30
+CADENCE_MINUTES = 25  # under the 30-minute timer, whose jitter would skip a tick
 
 
 def collect(con):

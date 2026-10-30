@@ -106,6 +106,44 @@ class ReplyResume(unittest.TestCase):
     def pointer(self):
         return self.state["threads"][KEY]["session_id"]
 
+    def test_new_abandons_the_work_and_a_renewal_continues_it(self):
+        self.say("build the thing")
+        ts = self.state["threads"][KEY]
+        self.assertEqual(ts["work"]["request"], "build the thing")
+        ts.update(context_tokens=900, context_window=1000)
+        self.say("keep going")
+        self.assertEqual(ts["session_id"], "sess-B")
+        self.assertEqual(ts["work"]["request"], "build the thing")
+        ts["handoff_from"] = "stale"
+        self.say("/new")
+        self.assertNotIn("handoff_from", ts)
+        self.say("something else")
+        self.assertEqual(ts["work"]["request"], "something else")
+
+    def test_auto_finishes_the_turn_on_the_other_provider_at_a_limit(self):
+        results = iter([
+            types.SimpleNamespace(ok=False, cancelled=False, rate_limited=True, text="",
+                                  session_id="sess-A", cost_usd=None, error="limit"),
+            types.SimpleNamespace(ok=True, cancelled=False, text="done on codex",
+                                  session_id="sess-X", cost_usd=None, error=None)])
+        engines = []
+
+        def limited(prompt, **kw):
+            engines.append(kw["engine"])
+            return next(results)
+
+        with mock.patch.object(self.tg.think, "think", limited), \
+                mock.patch.object(self.tg.routing, "enabled", return_value=True), \
+                mock.patch.object(self.tg.routing, "before_turn", return_value=None), \
+                mock.patch.object(self.tg.routing, "alternative", return_value="codex"), \
+                mock.patch.object(self.tg.think, "resolve_engine", side_effect=lambda e: e or "claude"):
+            self.say("finish this")
+        ts = self.state["threads"][KEY]
+        self.assertEqual(engines, ["claude", "codex"])
+        self.assertEqual((ts["engine"], ts["session_id"]), ("codex", "sess-X"))
+        self.assertTrue(any("hit its limit" in m for m in self.sent))
+        self.assertTrue(any("done on codex" in m for m in self.sent))
+
     def test_new_cards_follow_static_preamble_and_precede_request(self):
         for provider in ("claude", "codex"):
             with self.subTest(provider=provider):

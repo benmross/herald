@@ -30,6 +30,10 @@ def prompt(state: State) -> Prompt:
                       choices=["Choose if using both", "claude", "codex"],
                       default=config.get("engines.default_engine") or "Choose if using both",
                       help="Used for scheduled jobs, the terminal and new Telegram topics."),
+                Field(key="auto", label="Keep going when one provider hits a limit (recommended when using both)",
+                      type="bool", default=enabled is None or bool(config.get("engines.auto.enabled")),
+                      help="A Telegram topic continues on your other subscription from where "
+                           "it stopped. Nothing is bought, and you can pin a topic to one provider."),
                 Field(key="remote_control", label="Enable Claude Remote Control", type="bool",
                       default=config.remote_control_enabled(),
                       help="Optional Claude app/web surface, available when Claude is selected. "
@@ -47,6 +51,7 @@ def apply(state: State, answers: dict) -> Outcome:
         return Outcome(ok=False, message="Claude Remote Control requires selecting Claude.")
     was_remote = config.remote_control_enabled()
     config.set_users({"engines.enabled": enabled, "engines.default_engine": default,
+                      "engines.auto.enabled": len(enabled) > 1 and bool(answers.get("auto")),
                       "surfaces.remote_control.enabled": bool(answers.get("remote_control"))})
     warnings = []
     if was_remote and not config.remote_control_enabled():

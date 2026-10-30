@@ -233,7 +233,8 @@ def main() -> int:
                 f"it imports {', '.join(foreign) or 'something relative'}; a root "
                 f"process must not load code the user's account can edit")
 
-    # Two engines, and neither falls back to the other. The fallback that
+    # Neither engine falls back to the other inside a run. Auto, which moves
+    # a topic between runs, lives in routing.py and the bridge. The fallback that
     # came out on 9 September 2026 carried a transcript between them; what
     # exists since 22 September 2026 is a choice made before the run. The
     # tell-tale of a fallback creeping back is a second engine launched from

@@ -16,7 +16,8 @@ Herald, and it starts cheap. So this bridge owns the lifecycle explicitly:
   - a conversation continues while it is live, so follow-ups keep their thread
   - it rotates after a stretch of silence, because the next message is a new
     subject and does not need the last one
-  - it rotates after enough turns that compaction would otherwise kick in
+  - it renews before its context fills, between turns and without being asked,
+    carrying the topic's work into the next session (see `handoff.py`)
 
 Whatever mattered went into the ledger during the conversation. That is what
 makes throwing the session away safe, and it is the whole design.
@@ -56,7 +57,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import private as private_mod, usage  # noqa: E402
+from herald import handoff, private as private_mod, routing, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -81,9 +82,11 @@ TOOL_BULLET = "\u2023"      # a single right-pointing bracket
 # rotation now only destroys continuity the user asked for. Sending a message to a
 # topic from last week should pick up where it left off.
 #
-# What handles growth instead is Claude Code's own compaction, plus the rule
-# that anything durable belongs in the ledger rather than the transcript. The
-# turn ceiling is a safety valve against a pathological thread, not a policy.
+# What handles growth instead is renewal: between turns, once the last turn used
+# `engines.renewal_context_share` of the context window its model reports, the
+# topic moves to a new native session and carries its work. The engines' own
+# compaction remains for a single turn too long to reach a boundary. The turn
+# ceiling is the fallback when no window is reported.
 #
 # The cost of this is honest and worth stating: resuming a long-idle topic
 # re-sends its accumulated context uncached, so an old thread costs more per
@@ -109,6 +112,10 @@ MAX_DOWNLOAD = 45 * 1024 * 1024      # Telegram's own bot download cap is 20 MB
 
 # Topic choices override the same provider/model settings used by cycles.
 # Provider-specific model shortcuts are explicit choices, never defaults.
+# Every other command still works when typed. Topics and these three are all
+# anyone should need, so they are all the menu offers.
+MENU = (("new", "Start this topic over"), ("stop", "Stop what I'm doing"),
+        ("private", "Private conversation, nothing saved"))
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
 ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex"}
 # Per-topic thinking level, for either engine: `/effort high`, or the level
@@ -762,9 +769,8 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
     try:
         with db.session() as con:
             text = _snapshot.orientation(con)
-            from herald import handoff
-            text += handoff.brief(con, ts.get("session_id") or ts.get("previous_session"),
-                                  ts.get("last_ts", 0))
+            handoff.absorb(ts, ts.get("handoff_from"))
+            text += handoff.brief(con, ts.get("handoff_from"), ts.get("last_ts", 0), ts.get("work"))
     except Exception as exc:  # noqa: BLE001 -- never worth failing a turn
         print(f"orientation unavailable ({type(exc).__name__}: {exc})")
         return None
@@ -819,9 +825,37 @@ def should_rotate(ts: dict, is_general: bool = False) -> str | None:
             return f"{idle_hours:.1f} hours since the last message (General)"
     elif idle_hours / 24 >= IDLE_ROTATE_DAYS:
         return f"{idle_hours / 24:.0f} days since the last message"
+    window, used = ts.get("context_window"), ts.get("context_tokens")
+    share = float(config.get("engines.renewal_context_share", 0.75))
+    if window and used and used >= window * share:
+        return f"context at {used / window:.0%}"
     if ts.get("turns", 0) >= MAX_TURNS:
         return f"{ts['turns']} turns"
     return None
+
+
+def _clear_context(ts: dict) -> None:
+    ts.pop("context_tokens", None)
+    ts.pop("context_window", None)
+
+
+def _hand_off(ts: dict, session_id: str | None) -> None:
+    """The next session continues this one's work."""
+    ts["handoff_from"] = session_id or ts.get("handoff_from")
+    ts["previous_session"] = session_id or ts.get("previous_session")
+    ts["session_id"] = None
+    ts["turns"] = 0
+    _clear_context(ts)
+
+
+def _move_to(ts: dict, engine: str, key: str, why: str) -> None:
+    """Continue this topic on another provider, keeping its work."""
+    with db.session() as con:
+        routing.record(con, key, ts.get("engine"), engine, why)
+    _hand_off(ts, ts.get("session_id"))
+    ts.update(engine=engine, model=None, effort=None)
+    ts.pop("effort_caps", None)
+    print(f"[{key}] moved to {engine}: {why}")
 
 
 # Voice notes are deliberately not transcribed here.
@@ -1057,9 +1091,12 @@ def handle(update: dict, state: dict) -> None:
         ts["session_id"] = None
         ts["turns"] = 0
         ts["last_ts"] = time.time()
-        note = send(chat_id, "Fresh start in this topic. Anything worth keeping "
-                             "is in the ledger. Reply to any earlier message "
-                             "here to pick that conversation back up.", thread_id)
+        # Unlike a renewal, this abandons what the topic was doing.
+        ts.pop("handoff_from", None)
+        ts.pop("work", None)
+        _clear_context(ts)
+        note = send(chat_id, "Fresh start in this topic. To go back, reply to "
+                             "any earlier message here.", thread_id)
         # The command and its answer are the last two messages of the
         # conversation they ended, so a reply to either one resumes it. This
         # also saves the session itself, which is what makes a conversation
@@ -1088,14 +1125,13 @@ def handle(update: dict, state: dict) -> None:
             ts["effort"] = "auto"
         ts["engine"] = engine
         ts["model"] = model
+        ts["pinned"] = True
         if switched:
             # The other engine cannot read this one's transcript, so the
             # next message starts over from the ledger. Said out loud,
             # because "same conversation" would be a lie here. The handoff
             # reads the transcript as text, so it still crosses engines.
-            ts["previous_session"] = ts.get("session_id") or ts.get("previous_session")
-            ts["session_id"] = None
-            ts["turns"] = 0
+            _hand_off(ts, ts.get("session_id"))
             ts["last_ts"] = time.time()
         shown = f"{engine}/{model}" if model else engine
         send(chat_id, f"This topic runs on {shown} from here on, until you "
@@ -1157,6 +1193,8 @@ def handle(update: dict, state: dict) -> None:
         # Its own card, not the one the topic was last on: the system prompt
         # has to match what that session was started with.
         ts["orientation"] = target["orientation"]
+        ts.pop("handoff_from", None)
+        _clear_context(ts)
         notices = send(chat_id, f"*Back in the conversation from "
                                 f"{when.strftime('%-d %b, %-I:%M %p')}.*", thread_id)
         print(f"[{key}] resumed {target['session_id'][:8]} by reply")
@@ -1168,6 +1206,10 @@ def handle(update: dict, state: dict) -> None:
         reason = None if ts.get("session_id") else "no session yet"
     else:
         reason = None if target else should_rotate(ts, is_general)
+    if pv is None and reason and ts.get("session_id"):
+        if reason.endswith("(General)"):
+            ts.pop("work", None)
+        _hand_off(ts, ts.get("session_id"))
     resume = None if reason else ts.get("session_id")
 
     sent_at = sent_at_line(msg)
@@ -1213,24 +1255,40 @@ def handle(update: dict, state: dict) -> None:
         send(chat_id, str(exc), thread_id)
         return
     ts["engine"] = engine
+    auto = pv is None and not target and routing.enabled(ts)
+    if auto:
+        with db.session() as con:
+            move = routing.before_turn(con, engine)
+        if move:
+            engine, until = move
+            lifted = config.clock(datetime.fromtimestamp(until, tz=EASTERN))
+            notices += send(chat_id, f"{ts['engine'].capitalize()} is at its limit until "
+                                     f"{lifted}, so I'm continuing on {engine.capitalize()}.", thread_id)
+            _move_to(ts, engine, key, "at limit before the turn")
+            reason, resume = "moved provider", None
+    if pv is None:
+        handoff.begin(ts, text or "(a file)")
     model = ts.get("model") or config.get(f"engines.{engine}.model")
     effort = ts.get("effort")
+
+    def attempt(working, fresh: bool, resume_id: str | None):
+        prompt, system_card = session_input(lead, body, ts, fresh)
+        return think.think(
+            prompt, label=label, model=model, cwd=config.ROOT, resume=resume_id,
+            engine=engine, effort=effort, codex_transport="app-server",
+            # None: think() takes it from safety.engine_mode for the
+            # "telegram" surface, so the setting applies here too.
+            permission_mode=None,
+            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
+                           "WebSearch", "WebFetch", "Bash"],
+            append_system_prompt=system_card,
+            on_progress=working.on_progress, cancel_key=key,
+            private=pv["scratch"] if pv else None)
+
     with activity.Turn("telegram", key):
         posted: list[int] = [*(m.get("message_id") for m in parts), *notices]
         with Working(chat_id, thread_id) as working:
-            prompt, system_card = session_input(lead, body, ts, bool(reason))
-            result = think.think(
-                prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
-                engine=engine, effort=effort, codex_transport="app-server",
-                # None: think() takes it from safety.engine_mode for the
-                # "telegram" surface, so the setting applies here too.
-                permission_mode=None,
-                allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
-                               "WebSearch", "WebFetch", "Bash"],
-                append_system_prompt=system_card,
-                on_progress=working.on_progress, cancel_key=key,
-                private=pv["scratch"] if pv else None,
-            )
+            result = attempt(working, bool(reason), resume)
             took = working.elapsed
             working.settle(result.text if result.ok else "",
                            stopped=result.cancelled or not result.ok)
@@ -1246,24 +1304,35 @@ def handle(update: dict, state: dict) -> None:
                 and transcript_missing(result.error):
             print(f"[{key}] resume failed, retrying fresh")
             posted += working.message_ids
+            ts["handoff_from"] = resume
             with Working(chat_id, thread_id) as working:
-                prompt, system_card = session_input(lead, body, ts, True)
-                result = think.think(
-                    prompt, label=label, model=model, cwd=config.ROOT, resume=None,
-                    engine=engine, effort=effort, codex_transport="app-server",
-                    permission_mode=None,
-                    allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
-                                   "WebSearch", "WebFetch", "Bash"],
-                    append_system_prompt=system_card,
-                    on_progress=working.on_progress, cancel_key=key,
-                    private=pv["scratch"] if pv else None)
+                result = attempt(working, True, None)
             if result.ok:
                 posted += send(chat_id, "*(lost this topic's earlier transcript, "
                                         "so I re-read the ledger instead)*", thread_id)
                 reason = "resume failed"
 
+        # A verified limit under Auto, and only then: the same message runs once
+        # more on the other provider, told the first attempt may have got partway.
+        if auto and result.rate_limited and not result.cancelled:
+            with db.session() as con:
+                other = routing.alternative(con, engine)
+            if other:
+                posted += working.message_ids
+                posted += send(chat_id, f"{engine.capitalize()} hit its limit, so I'm "
+                                        f"continuing on {other.capitalize()}.", thread_id)
+                ts["session_id"] = result.session_id or resume
+                _move_to(ts, other, key, "limit during the turn")
+                engine, model, effort = other, config.get(f"engines.{other}.model"), None
+                reason = "moved provider"
+                with Working(chat_id, thread_id) as working:
+                    result = attempt(working, True, None)
+
         posted += working.message_ids
         if result.ok:
+            ts.pop("handoff_from", None)
+            ts["context_tokens"] = getattr(result, "context_tokens", None)
+            ts["context_window"] = getattr(result, "context_window", None)
             if not working.already_sent(result.text):
                 posted += send(chat_id, result.text or "(no reply)", thread_id)
             ts["session_id"] = result.session_id or ts.get("session_id")
@@ -1274,6 +1343,8 @@ def handle(update: dict, state: dict) -> None:
             # have been mid-tool-call when it died, so don't trust --resume
             # with it; next message in this topic starts clean.
             print(f"[{key}] cancelled by user")
+            if pv is None:
+                _hand_off(ts, result.session_id or resume)
             ts["session_id"] = None
         else:
             send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id)
@@ -1321,9 +1392,10 @@ def _lock_for(key: str) -> threading.Lock:
 
 def _select_model(ts: dict, engine: str, model: str) -> str:
     switched = engine != (ts.get("engine") or config.default_engine())
-    ts.update(engine=engine, model=model)
+    ts.update(engine=engine, model=model, pinned=True)
     if switched:
-        ts.update(session_id=None, turns=0, last_ts=time.time())
+        _hand_off(ts, ts.get("session_id"))
+        ts["last_ts"] = time.time()
     return (f"This topic now uses {engine}/{model}. " +
             ("Your next message starts a fresh session; your ledger carries over."
              if switched else "Your conversation continues."))
@@ -2207,6 +2279,11 @@ def main() -> int:
     swept = private_mod.sweep(NAME)
     if swept:
         print(f"deleted {swept} private session(s) left by the last run")
+
+    try:
+        api("setMyCommands", commands=[{"command": c, "description": d} for c, d in MENU])
+    except Exception as exc:  # noqa: BLE001 -- the menu is a convenience
+        print(f"command menu not set ({type(exc).__name__}: {exc})")
 
     state = load_state()
     threads = state.get("threads", {})
