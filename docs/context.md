@@ -2,7 +2,8 @@
 
 `herald context` combines maintained topic notes with current structured status.
 It uses deterministic file routing and SQL. It does not call a model, embed
-content, search conversation history, or infer relationships from event listings.
+content, or infer relationships from event listings. A name no note carries
+falls through to `herald search`.
 
 ## Topics and sections
 
@@ -15,16 +16,18 @@ herald context COURSE101 --section s120 --offset 10
 herald context --file state/areas/COURSE101.md --section s120 --budget 0
 ```
 
-The topic index comes from maintained area, project and reference filenames
-and their first headings. Spaces and punctuation in names are normalized for
-lookup. Ambiguous topics require an explicit file. Unknown topics can still
-match structured records, but never acquire invented notes or membership.
-There is no natural-language router or semantic search in this phase.
+The topic index comes from maintained area, project and reference filenames,
+their first headings, and an optional `<!-- aliases: a, b -->` line in a note's
+first twelve lines. Spaces and punctuation in names are normalized for lookup.
+Ambiguous topics require an explicit file. Unknown topics can still match
+structured records, but never acquire invented notes or membership.
 
-A topic packet contains the introductory note, short previews of up to two
-current/status/contact sections, a partial heading index, status counts,
-matching operational records and source freshness. Long notes are not returned
-in full by default. An introductory excerpt cannot substitute for a
+A note of 4 KB or less comes back whole. A longer one gives its introduction,
+short previews of up to three current/status/contact sections, and a heading
+index. Matching operational records follow, found by the note's name and any
+alias of five or more characters. Status counts are behind `--view counts`.
+Sources appear only when they are incomplete. Long notes are not returned in
+full by default. An introductory excerpt cannot substitute for a
 policy section or its original source. Source references and commands identify
 how to obtain the remaining evidence.
 
@@ -70,6 +73,30 @@ with another UTC offset. SQL values remain parameters. Topic matching is lexical
 against the relevant fields, so an untagged obligation or paraphrased reference
 can be missed. Empty results are not proof of absence, especially with incomplete
 source coverage. Use the ordinary ledger tools for sources outside these views.
+
+## Search
+
+```bash
+herald search hackathon billing
+herald search "exact phrase" --kind conversation --since 2026-10-01
+herald search --show conv:<session>:<turn>
+```
+
+`herald search` ranks keyword matches across notes, journals, past Telegram
+conversations, mail, mail readings, messages, course items, contacts, tasks and
+your own calendar events. Every word is required first, then any word. Results
+carry a date and the command that reads the original. The index is `search.db`,
+which can be deleted and rebuilt, and the `search_index` collector refreshes it
+every 30 minutes by reading only what changed.
+
+Conversations contribute the words of the user and the agent. Tool calls and
+results are excluded. Private sessions leave no transcript to index. Values from
+`secrets.json` and text shaped like a credential are redacted before indexing.
+Keyword search misses paraphrases; embeddings remain deferred until the
+evaluation shows that costing answers.
+
+`herald context lint` reports a stale `now.md`, a note unchanged for 45 days with
+no `Verified:` line, and references to ledger files that no longer exist.
 
 ## Output limits and measurements
 

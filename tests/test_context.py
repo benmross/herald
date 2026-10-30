@@ -53,8 +53,8 @@ class ContextReads(unittest.TestCase):
         self.assertIn('Current course notes', text)
         self.assertIn('Instructor: A. Teacher', text)
         self.assertIn('COURSE101 Exam', text)
-        self.assertIn('deadlines:', text)
-        self.assertIn('s7 Assessment policy', text)
+        self.assertIn('Read the original policy', text)
+        self.assertNotIn('Status counts', text)
 
     def test_section_parent_includes_nested_policy_but_not_next_section(self):
         text = self.output(topic='COURSE101', section='Assessment policy')
@@ -130,7 +130,7 @@ class ContextReads(unittest.TestCase):
         result = context.operational(self.con, 'deadlines', topic="' OR 1=1 --")
         self.assertEqual(result['total'], 0)
         text = self.output(topic='UnrecordedProject')
-        self.assertIn('No matching maintained topic', text)
+        self.assertIn('No maintained note has this name', text)
         self.assertNotIn('Current course notes', text)
 
     def test_paths_cannot_escape_ledger_even_through_symlinks(self):
@@ -150,6 +150,40 @@ class ContextReads(unittest.TestCase):
         self.assertTrue(more)
         self.assertIn('excerpt', text)
         self.assertIn('--budget 0', text)
+
+    def test_alias_routes_and_finds_rows_filed_under_the_code(self):
+        self.note.write_text('# Course 101\n<!-- aliases: intro stuff, c101 -->\nNotes.\n')
+        self.deadline()
+        self.assertEqual(context.resolve('Intro Stuff')[0]['topic'], 'COURSE101')
+        self.assertIn('COURSE101 Exam', self.output(topic='intro stuff'))
+
+    def test_a_short_note_comes_back_whole_without_lexical_row_noise(self):
+        (self.root/'state/now.md').write_text('# Now\n\n## Today: Friday\nExam at noon.\n')
+        self.con.execute("INSERT INTO commitments(created_at,text) VALUES('now','Know the snow rules')")
+        text = self.output(topic='now')
+        self.assertIn('Exam at noon', text)
+        self.assertNotIn('snow rules', text)
+
+    def test_long_note_previews_and_lists_its_sections(self):
+        self.note.write_text('# Course 101\nIntro.\n\n## Assessment policy\n' + 'Policy line.\n' * 500)
+        text = self.output(topic='COURSE101')
+        self.assertIn('s4 Assessment policy', text)
+        self.assertNotIn('Policy line.', text)
+
+    def test_topic_index_is_complete_in_one_call(self):
+        for i in range(30):
+            (self.root/f'state/areas/T{i}.md').write_text('# T\n')
+        self.assertIn('T29', self.output(topic='topics'))
+
+    def test_lint_finds_a_dangling_reference_and_a_stale_note(self):
+        self.note.write_text('# Course 101\nSee `documents/gone.md`.\n')
+        os.utime(self.note, (0, 0))
+        found = '\n'.join(context.lint())
+        self.assertIn('documents/gone.md', found)
+        self.assertIn('no Verified line', found)
+        self.note.write_text('# Course 101\nVerified: 2026-10-30, syllabus.\n')
+        os.utime(self.note, (0, 0))
+        self.assertEqual(context.lint(), [])
 
     def test_partial_source_warning_survives_context(self):
         db.mark_collector(self.con, 'calendar', ok=True, partial=True, pending=2)

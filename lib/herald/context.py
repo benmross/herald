@@ -1,7 +1,7 @@
 """Bounded topic context and reusable operational reads, without model calls.
 
-This is a lookup interface, not semantic search or a second source of truth.
-Only filenames and headings route notes. Operational tables own their statuses.
+This is a lookup interface, not a second source of truth. Filenames, headings
+and a note's own `aliases:` line route notes; `herald search` covers the rest. Operational tables own their statuses.
 Metrics contain categories, sizes and timings, never queries or source text.
 """
 
@@ -78,6 +78,18 @@ def sections(path: pathlib.Path) -> list[dict]:
     return headings
 
 
+_ALIASES = re.compile(r'^\s*(?:<!--\s*)?aliases:\s*(.+?)\s*(?:-->)?\s*$', re.I)
+
+
+def aliases(path: pathlib.Path) -> list[str]:
+    """Other names for a note, from `<!-- aliases: a, b -->` near its top."""
+    with path.open(errors='replace') as stream:
+        for _, line in zip(range(12), stream):
+            if match := _ALIASES.match(line):
+                return [a.strip() for a in match[1].split(',') if a.strip()]
+    return []
+
+
 def topics() -> list[dict]:
     out = []
     for folder in ('state/areas', 'state/projects', 'state/reference'):
@@ -88,21 +100,22 @@ def topics() -> list[dict]:
             try:
                 with path.open() as stream:
                     first = next((s.strip('# \n') for s in stream if s.startswith('# ')), path.stem)
-                out.append({'topic': path.stem, 'title': first,
+                out.append({'topic': path.stem, 'title': first, 'aliases': aliases(path),
                             'path': path.relative_to(config.LEDGER).as_posix()})
             except OSError:
                 continue
     for name in ('now', 'opportunities', 'commitments'):
         path = config.STATE / f'{name}.md'
         if path.is_file():
-            out.append({'topic': name, 'title': name.title(), 'path': f'state/{name}.md'})
+            out.append({'topic': name, 'title': name.title(), 'aliases': [], 'path': f'state/{name}.md'})
     return out
 
 
 def resolve(topic: str) -> list[dict]:
     key = normalized(topic)
     index = topics()
-    exact = [t for t in index if key in (normalized(t['topic']), normalized(t['title']))]
+    exact = [t for t in index if key in (normalized(t['topic']), normalized(t['title']))
+             or key in map(normalized, t.get('aliases', []))]
     if exact:
         return exact
     words = [normalized(w) for w in topic.split() if normalized(w)]
@@ -111,11 +124,20 @@ def resolve(topic: str) -> list[dict]:
 
 def _match(fields, topic, params):
     # Values remain parameters even when a topic contains SQL metacharacters.
+    # A resolved note hands over every name it goes by, so a course found by
+    # nickname still finds the rows filed under its code.
     if not topic:
         return ''
-    params.extend([normalized(topic)] * len(fields))
-    expr = " OR ".join(f"replace(replace(replace(lower(coalesce({f},'')),' ',''),'-',''),'_','') LIKE '%' || ? || '%'" for f in fields)
-    return ' AND (' + expr + ')'
+    terms = [normalized(t) for t in ([topic] if isinstance(topic, str) else topic)]
+    terms = [t for t in terms if len(t) >= 2]
+    if not terms:
+        return ' AND 0'
+    clauses = []
+    for term in terms:
+        for f in fields:
+            params.append(term)
+            clauses.append(f"replace(replace(replace(lower(coalesce({f},'')),' ',''),'-',''),'_','') LIKE '%' || ? || '%'")
+    return ' AND (' + ' OR '.join(clauses) + ')'
 
 
 def operational(con, view: str, *, topic='', days=30, offset=0, limit=10,
@@ -168,10 +190,14 @@ def counts(con, topic='') -> list[dict]:
     return out
 
 
-def _note(path, section=None, offset=0) -> dict:
+def _note(path, section=None, offset=0, whole=False) -> dict:
     all_sections = sections(path)
     selected = all_sections
-    if section:
+    if whole:
+        first = dict(all_sections[0], end=len(path.read_text().splitlines()))
+        first['text'] = path.read_text()
+        selected = [first]
+    elif section:
         exact = [s for s in all_sections if s['key'] == section or s['heading'].casefold() == section.casefold()]
         selected = exact or [s for s in all_sections if section.casefold() in s['heading'].casefold()]
         if len(selected) != 1:
@@ -194,6 +220,22 @@ def _note(path, section=None, offset=0) -> dict:
             'continuation_base': base, 'line_offset': offset, 'prefix_lines': 1}
 
 
+WHOLE_NOTE_BYTES = 4096
+PREVIEW = re.compile(r'\b(current|status|instructor|contact|constraints|overview|upcoming|next)\b', re.I)
+
+
+def _search_items(topic: str) -> list[dict]:
+    """Search results for a name no note carries. Absent index: nothing to add."""
+    try:
+        from . import search
+        found = search.find(topic, limit=4)
+    except (ValueError, sqlite3.Error):
+        return []
+    return [{'source': f"search {r['kind']} {(r['ts'] or '')[:10]}",
+             'text': ' '.join((r['title'] or '').split())[:110] + '\n' + ' '.join((r['snip'] or '').split()),
+             'expand': r['ref']} for r in found['results']]
+
+
 def packet(con, *, topic='', view=None, file=None, section=None, list_sections=False,
            days=30, offset=0, limit=10, record_id=None, all_statuses=False, schema=False):
     if topic and not normalized(topic):
@@ -212,9 +254,10 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
     elif topic == 'topics' and not file and not view:
         category = 'index'
         index = topics()
-        items = [{'source': t['path'], 'text': t['topic'] + ': ' + t['title'],
-                  'expand': 'herald context ' + shlex.quote(t['topic'])} for t in index[offset:offset+limit]]
-        more = offset + len(items) < len(index)
+        lines = [t['topic'] + (f" ({', '.join(t['aliases'])})" if t['aliases'] else '')
+                 + ': ' + t['title'] for t in index[offset:]]
+        items = [{'source': 'maintained topics', 'text': '\n'.join(lines),
+                  'expand': ''}]
     elif view:
         category = view
         if view == 'counts':
@@ -243,44 +286,46 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
     else:
         if len(routes) > 1:
             raise ValueError('topic is ambiguous: ' + ', '.join(t['topic'] for t in routes) + '; choose --file')
+        terms = topic
         if routes:
             path = ledger_path(routes[0]['path'])
-            items.append(_note(path))
             index = sections(path)
-            for entry in [s for s in index[1:] if re.search(
-                    r'\b(current|status|instructor|contact|constraints|overview)\b', s['heading'], re.I)][:2]:
-                preview = _note(path, entry['key'])
-                lines = preview['text'].splitlines()
-                if len(lines) > 15:
-                    preview['text'] = '\n'.join(lines[:15]) + '\n[section preview; use the source expansion for the rest]'
-                items.append(preview)
-            headings = '; '.join(f'{s["key"]} {s["heading"]}' for s in index[1:9])
-            items.append({'source': routes[0]['path'], 'text': 'Section index (partial): ' + (headings or 'no additional headings'),
-                          'expand': f'herald context --file {shlex.quote(routes[0]["path"])} --sections --limit 100'})
+            if path.stat().st_size <= WHOLE_NOTE_BYTES:
+                items.append(_note(path, whole=True))
+            else:
+                items.append(_note(path))
+                for entry in [s for s in index[1:] if PREVIEW.search(s['heading'])][:3]:
+                    preview = _note(path, entry['key'])
+                    lines = preview['text'].splitlines()
+                    if len(lines) > 15:
+                        preview['text'] = '\n'.join(lines[:15]) + '\n[section preview; use the source expansion for the rest]'
+                    items.append(preview)
+                headings = '; '.join(f'{s["key"]} {s["heading"]}' for s in index[1:13])
+                items.append({'source': routes[0]['path'], 'text': 'Sections: ' + (headings or 'none'),
+                              'expand': f'herald context --file {shlex.quote(routes[0]["path"])} --sections --limit 100'})
+            # A word like "now" is a name for that file, not a term to find in rows.
+            if routes[0]['path'].startswith('state/') and '/' in routes[0]['path'][6:]:
+                # Short nicknames are for people, and match too much in rows.
+                terms = [routes[0]['topic'], *(a for a in routes[0]['aliases'] if len(normalized(a)) >= 5)]
+            else:
+                terms = None
         elif topic:
-            items.append({'source': 'topic index', 'text': 'No matching maintained topic file. Structured matches follow; no relationship or membership is inferred.',
-                          'expand': 'herald context topics --limit 100'})
-        items.extend(counts(con, topic))
-        for name in ('commitments', 'deadlines', 'schedule', 'applications', 'opportunities'):
-            result = operational(con, name, topic=topic, days=days, limit=2)
-            if result['total']:
-                items.append({'source': name, 'text': f"{result['total']} matching current records.",
-                              'expand': f'herald context {shlex.quote(topic)} --view {name}'})
-                items.extend(result['items'])
-                more |= result['has_more']
-    if category not in ('schema', 'index', 'sections'):
-        sources = ('gcal', 'deadlines', 'applications', 'obligations', 'opportunities')
-        freshness = [dict(r) for r in con.execute(
-            "SELECT collector,sync_status,last_complete FROM collector_state WHERE collector IN (?,?,?,?,?)",
-            sources)]
-        if freshness:
-            items.insert(0, {'source': 'source freshness', 'text': '\n'.join(
-                f"{r['collector']}: {r['sync_status']}; last complete {r['last_complete'] or 'not established'}"
-                for r in freshness),
-                             'expand': 'herald status'})
+            items.append({'source': 'topic index', 'text': 'No maintained note has this name. Structured matches and search results follow; nothing here establishes a relationship or membership.',
+                          'expand': 'herald context topics'})
+        if terms:
+            for name in ('commitments', 'deadlines', 'schedule', 'applications', 'opportunities'):
+                result = operational(con, name, topic=terms, days=days, limit=3)
+                if result['total']:
+                    items.extend(result['items'])
+                    if result['has_more']:
+                        more = True
+                        items.append({'source': name, 'text': f"{result['total']} matching records in all.",
+                                      'expand': f'herald context --view {name} ' + shlex.quote(topic)})
+        if topic and not routes:
+            items.extend(_search_items(topic))
     health = changes.health(con)
     notes = changes.health_lines(health)
-    notes.append('Evidence is selective ledger data. Verify the full source for policy or submission decisions. Empty matches do not establish absence from an incomplete source.')
+    notes.append('Selective evidence: check the original for policy or submission decisions.')
     return {'category': category, 'items': items, 'has_more': more, 'notes': notes,
             'incomplete_sources': sorted(health),
             'generated': dt.datetime.now(config.tz()).isoformat(timespec='seconds')}
@@ -347,6 +392,32 @@ def record(con, category, started, output, shown, more, parent=None):
     return cur.lastrowid
 
 
+_LEDGER_PATH = re.compile(r'`(?:ledger/)?((?:state|identity|journal|documents)/[^`*<>\s]+\.[a-z]{2,5})`')
+_VERIFIED = re.compile(r'^\s*\**verified\b', re.I | re.M)
+STALE_DAYS = 45
+
+
+def lint() -> list[str]:
+    """Problems a loop can find in maintained notes. No model, no writes."""
+    problems = []
+    now = dt.datetime.now(config.tz())
+    current = config.STATE / 'now.md'
+    if current.is_file():
+        age = now.timestamp() - current.stat().st_mtime
+        if age > 26 * 3600:
+            problems.append(f'state/now.md has not been rewritten for {age / 3600:.0f} hours')
+    for t in topics():
+        path = config.LEDGER / t['path']
+        text = path.read_text(errors='replace')
+        days = (now.timestamp() - path.stat().st_mtime) / 86_400
+        if days > STALE_DAYS and t['path'].count('/') > 1 and not _VERIFIED.search(text):
+            problems.append(f"{t['path']}: unchanged for {days:.0f} days and no Verified line")
+        for ref in sorted(set(_LEDGER_PATH.findall(text))):
+            if not (config.LEDGER / ref).exists() and '*' not in ref:
+                problems.append(f"{t['path']}: names {ref}, which does not exist")
+    return problems
+
+
 def stats(con) -> str:
     rows = con.execute('SELECT category,count(*) calls,round(avg(elapsed_ms),2) avg_ms,round(avg(output_bytes)) avg_bytes,sum(has_more) with_more,count(parent_id) followup_calls FROM retrievals GROUP BY category ORDER BY calls DESC').fetchall()
     return json.dumps([dict(r) for r in rows], indent=2) + '\n'
@@ -386,6 +457,14 @@ def refresh_opportunities(con) -> pathlib.Path | None:
         org = ' '.join((r.get('org') or 'organization unspecified').split())[:80]
         lines.append(f"- {json.dumps(title, ensure_ascii=False)} ({json.dumps(org, ensure_ascii=False)}), {r['deadline']}. "
                      f"Details: `herald context --view opportunities --id {r['id']}`.")
+    # Most live rows have no deadline, and a deadline list alone would hide them.
+    top = con.execute("SELECT id,title,org,score FROM opportunities WHERE status IN ('new','surfaced','interested') "
+                      "AND (deadline IS NULL OR deadline='') ORDER BY score DESC,id DESC LIMIT 6").fetchall()
+    if top:
+        lines += ['', '## Strongest open rows without a deadline', '']
+        lines += [f"- {json.dumps(' '.join((r['title'] or '').split())[:180], ensure_ascii=False)} "
+                  f"({json.dumps(' '.join((r['org'] or 'organization unspecified').split())[:80], ensure_ascii=False)}), "
+                  f"score {r['score']}. Details: `herald context --view opportunities --id {r['id']}`." for r in top]
     lines += ['', 'Full reasoning and notes remain in the opportunities table. Confirm the source before acting.',
               'Past scout decisions remain in daily journals. Earlier narrative overviews are preserved under `documents/archive/opportunities-*.md`.',
               'Do not append pass-by-pass history to this generated file.', '']

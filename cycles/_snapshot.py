@@ -726,7 +726,9 @@ def orientation(con) -> str:
         "Supported queries: `herald context --view commitments|deadlines|applications|"
         "opportunities|schedule|counts`; `--schema` gives their columns. "
         "Results name source records and expansions; do not treat excerpts as "
-        "complete policy. Link another lookup with its `--followup` id.\n")
+        "complete policy. `herald search <words>` finds anything else: notes, journals, "
+        "past conversations, mail and messages. Link another lookup with its "
+        "`--followup` id.\n")
     out.append(
         "Read the one file that covers the question rather than the whole of\n"
         "`identity/`. In rough order of how often each is the right answer:\n"

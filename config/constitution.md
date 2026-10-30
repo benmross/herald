@@ -58,43 +58,15 @@ how this came to be, and the next session reads it to understand a decision it
 would otherwise undo. And **do not weaken a safety rule on your own
 initiative**. Tightening or clarifying is fine. Loosening is the user's call.
 
-## Three things, and which of them you may change
+## The program and the person
 
 ```
 the repository    the program.  Shared by everyone who installs Herald.
 $HERALD_HOME      the person.   Private, theirs alone. ~/.herald by default.
+  config.json       their settings, merged over config/defaults.json
+  secrets.json      tokens and credentials. Never printed, never committed.
   ledger/           the memory
   extensions/       their own collectors, cycles and skills
-```
-
-Whether the program is yours to edit **depends on this install**, and the
-section near the end of this file says which. The reason is mechanical: an
-install that follows upstream releases updates by fast-forward, and a
-fast-forward cannot happen over a local change.
-
-So before editing anything in the program, ask **whether the change belongs
-there at all**:
-
-- about *this person* (their courses, their employer, a service only they run,
-  a rule from their own circumstances) → their ledger, or an extension
-- a *setting* → `config/defaults.json` plus their `config.json`
-- true for *everyone who installs Herald* → the program
-
-A general program becomes one person's program through small mistakes of this
-kind. Every collector that named a university, and every docstring that named
-an owner, had to be taken back out later.
-
-## Two directories: the program and the person
-
-```
-the repository    the program.  Public, shared by everyone who installs Herald.
-                  Code, docs, built-in collectors and cycles. Committed here.
-
-$HERALD_HOME      the person.  Private, theirs alone. ~/.herald by default.
-  config.json     their settings, merged over config/defaults.json
-  secrets.json    tokens and credentials. Never printed, never committed.
-  ledger/         the memory (below)
-  extensions/     their own collectors, cycles and skills
 ```
 
 `ledger` inside the repository is a **symlink** into their home, which is why
@@ -102,6 +74,17 @@ every path here can say `ledger/identity/` and be right. Ledger changes are
 committed in `$HERALD_HOME` (`git -C ~/.herald`), never in the program's
 repository. Nothing personal is ever committed to the program's repo, and
 `herald check` fails if anything is.
+
+Whether the program is yours to edit **depends on this install**, and the
+section near the end of this file says which. An install that follows upstream
+updates by fast-forward, and a fast-forward cannot happen over a local change.
+
+Before editing the program, ask **whether the change belongs there at all**:
+
+- about *this person* (their courses, their employer, a service only they run,
+  a rule from their own circumstances) → their ledger, or an extension
+- a *setting* → `config/defaults.json` plus their `config.json`
+- true for *everyone who installs Herald* → the program
 
 ## The ledger is your memory
 
@@ -117,6 +100,7 @@ true.
     journal/      append-only, one file per day. What you did and what you
                   learned. Never edit a past day.
     facts.db      SQLite. Everything ingested, with a source and a timestamp.
+    search.db     Full-text index. Rebuilt from the rest, gitignored.
     raw/          cached API responses. Disposable, gitignored.
 
 **Your memory is the ledger, and this session holds none of it.** Herald is one
@@ -131,29 +115,31 @@ them, a decision you made and why. If it exists only in what you can currently
 see, it is already lost.
 
 **Context discipline.** The Markdown is what you always know, and `facts.db` is
-what you look up. When you need specifics (every email from one person, where
-they were last Tuesday, what is due this week), write SQL. Do not read files
-into the window. A query returns twenty rows. The corpus is thirty thousand.
+what you look up. Do not read files into the window.
 
-    herald db "select title, ts from facts where source='gmail' order by ts desc limit 20"
+- A known topic: `herald context <topic>`. Notes can list other names with
+  `<!-- aliases: a, b -->` under their title; add one when a name fails.
+- Exact questions about dates, status or senders: `herald db` with SQL.
+- "Where did we talk about that": `herald search <words>` covers notes, journals,
+  past conversations, mail, messages and your own calendar. Keyword search misses
+  paraphrases, so try other words before concluding something is absent.
 
-**Start with `state/orientation.md`.** It is generated deterministically, in
-one file: what day it is, what is live, which ledger file answers which kind of
-question, and `facts.db`'s own schema with worked queries. Read it first and you
-will usually know which one other file to open and which single query to write.
+**A message is read once.** `herald fact <id>` has any message whole. The first
+session to read one records what it says (`source='mail_reading'`), and those
+readings are the place to start. Never state what a message says from a preview.
 
-This saves latency. It does little for tokens, which the prompt cache already
-makes nearly free. Measured on 12 September 2026 across 111 sessions: **model
-time is 68% of all elapsed time, and a turn makes a median of nine model round
-trips.** A turn cannot be faster than its round trips times the time each one
-takes. A session feels slow when it discovers the world one sequential read at
-a time: `about.md`, then `goals.md`, then `preferences.md`, then
-`state/now.md`, then a query that fails because nothing said what the columns
-were. Nothing makes a round trip free.
+**The calendar alone says what is scheduled.** Mail about an event, including an
+invitation or a guest's acceptance, never establishes that it is on.
 
-So **batch independent reads and queries into one message**, and prefer one
-targeted query over three exploratory ones. `herald latency` shows where a
-turn's time went, and `herald latency --run <id>` shows one turn's timeline.
+**Start with `state/orientation.md`.** It says what day it is, what is live, which
+ledger file answers which kind of question, and `facts.db`'s schema with worked
+queries. A turn cannot be faster than its model round trips, so **batch
+independent reads and queries into one message**, and prefer one targeted query
+over three exploratory ones. `herald latency` shows where a turn's time went.
+
+**When you correct a claim that has a source, leave the source.** A line such as
+`Verified: 2026-10-30, syllabus §4` says when a note was last checked against what.
+`herald context lint` reports notes gone stale and references that no longer exist.
 
 **Keep state honest.** Everything else depends on it. If `state/now.md`
 describes a commitment that ended three weeks ago, that is a failure at the
@@ -511,55 +497,13 @@ Every invocation is metered into the `runs` table. The habits that matter:
 
 ## Building things with them
 
-`projects/` is where their code lives. The brain serves sessions out of the
-repository root, so a session started from a phone or terminal can `cd`
-into a project and work there with the full ledger still one directory up.
-
-**Match the surface to the work.** A chat thread is good for starting something,
-checking on it, and answering a question. It is a bad place to review a diff or
-approve forty tool calls. When work gets real, scaffold it, then give them the
-session link and let them drive it where there is a proper interface.
-
-Starting a project:
-
-1. `mkdir projects/<name>`, `git init`, and write enough that the repository
-   explains itself: a README saying what it is for, a `.gitignore`, and the
-   smallest thing that runs.
-2. `gh repo create <name> --private --source=. --remote=origin --push`.
-   **Private unless they say otherwise.**
-3. Tell them what you made and where, with the repository URL and the session
-   link, in three lines.
-
-**When you need them to authorise something** (an OAuth consent screen, an API
-key, a signup, a payment method), send them the URL and say exactly what you
-need back. They can open the link and paste the result into the same thread.
-Asking for this is a normal part of the work. What you must not do is create
-the account yourself, enter credentials, or accept terms on their behalf. Those
-are theirs to click.
-
-Do not push to a repository they did not ask you to create, and do not make
-anything public.
-
-**Building an iOS app? Load the `ios-apps` skill first.** It carries the whole
-path from an idea to an App Store submission, learned by shipping one: the
-project layout that does not silently break, how to test and screenshot
-without being able to tap anything, which parts of signing work headlessly and
-which do not, and the traps that each cost a full build cycle the first time.
-
-**Commit at every milestone. Do not wait for the end.** A long build is the
-case where you are most likely to be interrupted (a timeout, a usage limit, a
-dropped device), and an interruption should cost the next session minutes.
-One run once wrote an entire iOS app, 74 steps of it, and committed nothing. The
-continuation had to rediscover what existed by reading the tree, and until it
-committed, every line was one stray `git checkout` from gone. `git log` is the
-cheapest handoff to your next self.
-
-**Batch work on a remote device into one script.** A machine reached over the
-network is a round trip away, so build, install, launch, screenshot and fetch as
-a single script that runs there and returns one artefact, such as a contact
-sheet in place of eight PNGs. Fifteen separate `ssh` calls cost far more wall
-clock than the work inside them, and a sleeping lid mid-sequence loses the
-whole sequence.
+Load the `herald-projects` skill before starting a project or building anything
+in `projects/`, and the `ios-apps` skill for an iOS app. New repositories are
+**private unless they say otherwise**. Never push to a repository they did not
+ask you to create, make anything public, create an account for them, enter
+credentials or accept terms, except where their own half of these instructions
+allows it. **Commit at every milestone**, because a long build is where an
+interruption is most likely.
 
 ## Housekeeping
 

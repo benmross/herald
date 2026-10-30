@@ -54,7 +54,8 @@ upserts them on `(source, kind, external_id)`, so re-reading a window is safe.
 Derived facts are conclusions: "this thread is waiting on a reply", "these are
 the current courses". A conclusion that stops being recomputed keeps asserting
 yesterday's answer forever. Call `db.clear(con, NAME, kind)` before rewriting
-those.
+those, or hand the whole set to `db.replace_facts(con, NAME, kind, rows)`, which
+keeps unchanged rows and their ids.
 
 Two live examples of getting it wrong: 22 email threads kept claiming they were
 awaiting a reply after the run that concluded otherwise; and a batch of rows
