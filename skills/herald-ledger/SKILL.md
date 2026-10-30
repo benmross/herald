@@ -18,7 +18,9 @@ deterministic retrieval, not semantic search. If it already answers the question
 with current evidence, do not repeat the same discovery in SQL.
 
 ```bash
-herald context topics                         # topic names and source paths
+herald context topics                         # every topic and its other names
+herald search <words>                         # notes, journals, past conversations, mail, messages
+herald search <words> --kind conversation     # also: note journal reading mail message chat event person course task
 herald context <topic> --budget 1500            # approximate token budget
 herald context <topic> --sections               # headings, keys and source lines
 herald context <topic> --section <sLINE>         # read one policy or topic section

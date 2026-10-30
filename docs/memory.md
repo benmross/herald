@@ -34,6 +34,47 @@ Existing topics with an old ID-based cursor receive a one-time upgrade notice.
 Earlier changes cannot be reconstructed from that cursor, so the notice asks
 the agent to check current records before relying on old context.
 
+## Retention
+
+The collector runner removes revisions that net to nothing after every run, so
+a collector that clears and rewrites a window costs no history. `db.replace_facts`
+remains better for a large set, because it also keeps row ids. The daily `memory`
+collector repeats that over the whole table, to catch cycles and sessions, and
+forgets revisions older than `memory.change_retention_days` (30). A conversation
+idle for longer is told its interval is incomplete. Space freed this way is
+reused by SQLite; only `VACUUM` shrinks the file.
+
+## Update notices
+
+Notices rank what changed. Commitments, deadlines, your own events and status
+changes on applications and opportunities come first, and mail cannot cut them.
+Direct mail follows. Bulk mail earns a line only when its subject suggests a
+change or a date; the rest is a count. Incoming messages collapse to senders,
+document changes to one line, and routine writes to a count per target.
+
+## Mail readings
+
+A cycle given a message's text returns one sentence saying what it says, stored
+as `source='mail_reading'`, keyed `<source>:<external id>`. Dawn shows that
+sentence for a message already read, and the text for one that was not, so one
+reading serves every later cycle. Scout still reads each new message whole,
+because it judges them for a different purpose. A reading is a model's summary
+of untrusted text: reference, and `herald fact` keeps the original.
+
+## Calendar authority
+
+A cancelled event leaves no row, so a brief built from current rows cannot say
+one was cancelled. `_snapshot._calendar_changes` reads revisions since the last
+cycle and states what was cancelled, moved or renamed. Invitation replies are
+marked as saying nothing about whether an event is on.
+
+## Session handoff
+
+A new session in a Telegram topic receives the last request and reply of the
+previous one, read from its transcript without a model, and whether that turn
+failed. This replaces a checkpoint obligation, which would fail in the crashes it
+exists for.
+
 ## Source health
 
 `collector_state` separates these values:

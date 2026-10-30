@@ -57,7 +57,7 @@ from herald import (activity, capabilities, config,  # noqa: E402
                     constitution as constitution_mod, db, extensions,
                     migrations as migrations_mod, notify,
                     think as think_mod, upstream)
-from herald import context as context_mod, factview, sessioninfo  # noqa: E402
+from herald import context as context_mod, factview, search as search_mod, sessioninfo  # noqa: E402
 from herald import private as private_mod  # noqa: E402
 
 BOLD, DIM, OFF = "\033[1m", "\033[2m", "\033[0m"
@@ -2418,6 +2418,9 @@ def cmd_context(args) -> int:
             if topic == 'stats':
                 print(context_mod.stats(con), end='')
                 return 0
+            if topic == 'lint':
+                print('\n'.join(context_mod.lint()) or 'no problems found')
+                return 0
             result = context_mod.packet(con, topic=topic, view=args.view, file=args.file,
                                         section=args.section, list_sections=args.sections,
                                         days=args.days, offset=args.offset, limit=args.limit,
@@ -2441,10 +2444,30 @@ def cmd_context(args) -> int:
         return 2
 
 
+def cmd_search(args) -> int:
+    """Ranked keyword search across notes, journals, conversations and sources."""
+    started = time.perf_counter()
+    try:
+        if args.show:
+            print(search_mod.show(args.show), end='')
+            return 0
+        found = search_mod.find(' '.join(args.query), kinds=args.kind, since=args.since,
+                                until=args.until, limit=args.limit)
+        output = search_mod.render(found, args.budget)
+        print(output, end='')
+    except (ValueError, sqlite3.Error) as error:
+        print(str(error) if isinstance(error, ValueError) else 'search unavailable', file=sys.stderr)
+        return 2
+    with db.session() as con:
+        context_mod.record(con, 'search', started, output, len(found['results']),
+                           found['total'] > len(found['results']))
+    return 0
+
+
 # What `herald` will run from inside a private session: the subcommands that
 # only read. An allowlist, so a subcommand added later is refused there until
 # someone decides it is a read.
-PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check", "context"}
+PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check", "context", "search"}
 PRIVATE_READ_OPS = {"obligation": ("op", {"list"}), "deadline": ("op", {"list"}),
                     "safety": ("op", {"status", "test"}), "root": ("op", {"status"}),
                     "secret": ("op", {"has", "status"}),
@@ -2479,6 +2502,16 @@ def main() -> int:
     ctx.add_argument('--budget', type=int, default=1500, help='approximate tokens (UTF-8 bytes / 4); 0 for whole evidence')
     ctx.add_argument('--followup', type=int, help='link an additional retrieval to a previous retrieval id')
     ctx.set_defaults(fn=cmd_context)
+
+    srch = sub.add_parser('search', help='ranked keyword search over notes, journals, conversations, mail and messages')
+    srch.add_argument('query', nargs='*', help='words; "quote" a phrase')
+    srch.add_argument('--kind', action='append', choices=search_mod.KINDS, help='repeat to allow several')
+    srch.add_argument('--since', help='YYYY-MM-DD')
+    srch.add_argument('--until', help='YYYY-MM-DD')
+    srch.add_argument('--limit', type=int, default=8)
+    srch.add_argument('--budget', type=int, default=1500, help='approximate tokens')
+    srch.add_argument('--show', help='the whole conversation turn behind a result')
+    srch.set_defaults(fn=cmd_search)
 
     sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)

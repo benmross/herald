@@ -28,6 +28,8 @@ GITIGNORE = """\
 ledger/facts.db
 ledger/facts.db-wal
 ledger/facts.db-shm
+ledger/search.db
+ledger/search.db-journal
 ledger/raw/
 ledger/documents/
 

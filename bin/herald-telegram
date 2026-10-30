@@ -758,6 +758,8 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
     try:
         with db.session() as con:
             text = _snapshot.orientation(con)
+            from herald import handoff
+            text += handoff.brief(con, ts.get("session_id"), ts.get("last_ts", 0))
     except Exception as exc:  # noqa: BLE001 -- never worth failing a turn
         print(f"orientation unavailable ({type(exc).__name__}: {exc})")
         return None
