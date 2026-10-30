@@ -107,6 +107,24 @@ def _feed_url(feed: dict) -> str:
     raise RuntimeError(f"calendar feed {feed.get('source')!r} has neither url nor url_secret")
 
 
+def _forget_removed(con, source: str, seen: set[str]) -> int:
+    """Drop upcoming items the feed no longer carries.
+
+    A feed has no deletions: an assignment whose due date is removed simply
+    stops appearing, and its row went on asserting that date. Past items stay,
+    since feeds age them out. A feed that lost most of its future rows looks
+    like a bad fetch and removes nothing.
+    """
+    today = dt.date.today().isoformat()
+    future = con.execute("SELECT id,external_id FROM facts WHERE source=? AND kind IN ('assignment','event') "
+                         "AND ts>=?", (source, today)).fetchall()
+    gone = [r["id"] for r in future if r["external_id"] not in seen]
+    if not seen or len(gone) > max(3, (len(future) - len(gone))):
+        return 0
+    con.executemany("DELETE FROM facts WHERE id=?", [(i,) for i in gone])
+    return len(gone)
+
+
 def _read_feed(con, feed: dict) -> dict:
     from icalendar import Calendar
 
@@ -123,6 +141,7 @@ def _read_feed(con, feed: dict) -> dict:
     cal = Calendar.from_ical(raw)
     counts = {"assignments": 0, "events": 0, "tags": 0}
     tags: dict[str, dict] = {}
+    seen: set[str] = set()
 
     for comp in cal.walk("VEVENT"):
         uid = str(comp.get("UID") or "").strip()
@@ -140,6 +159,7 @@ def _read_feed(con, feed: dict) -> dict:
         ts, all_day = _when(comp)
         description = str(comp.get("DESCRIPTION") or "").strip()
         kind = _kind(uid)
+        seen.add(uid)
 
         db.put_fact(
             con, source, kind,
@@ -161,6 +181,8 @@ def _read_feed(con, feed: dict) -> dict:
 
         if tag and tag not in tags:
             tags[tag] = {"tag": tag, "context_id": context_id, "feed": source}
+
+    counts["removed"] = _forget_removed(con, source, seen)
 
     # A distinct fact per tag, so "what is in this feed" is a query rather than
     # a scan over every event. Derived from the feed, so rebuilt rather than

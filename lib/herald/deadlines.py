@@ -40,6 +40,7 @@ from . import calsync, config, db, gwrite
 ACTOR = "collector:deadlines"
 KEY_PREFIX = "deadline:"
 KINDS = ("quiz", "test", "due", "event")
+REMOVED_NOTE = "Removed from its feed, which usually means the date was taken away."
 
 # A pass that wants to restore more class meetings than this is reading a
 # broken table, not a real change. Same reasoning as calsync's caps.
@@ -79,9 +80,12 @@ def add(con, *, source: str, ref: str | None, course: str | None, kind: str,
                           (source, ref)).fetchone()
         if row:
             con.execute("UPDATE deadlines SET course=?, kind=?, title=?, due=?,"
-                        " end_at=?, notes=coalesce(?, notes), updated_at=?"
+                        " end_at=?, updated_at=?,"
+                        " status=CASE WHEN notes=? THEN 'live' ELSE status END,"
+                        " notes=CASE WHEN notes=? THEN ? ELSE coalesce(?, notes) END"
                         " WHERE id=?",
-                        (course, kind, title, due, end_at, notes, now, row[0]))
+                        (course, kind, title, due, end_at, now, REMOVED_NOTE,
+                         REMOVED_NOTE, notes, notes, row[0]))
             return row[0]
     cur = con.execute(
         "INSERT INTO deadlines (source, ref, course, kind, title, due, end_at,"
@@ -116,6 +120,23 @@ def import_feeds(con) -> int:
 # --------------------------------------------------------------------------
 # Matching a quiz or test to the class meeting it happens in
 # --------------------------------------------------------------------------
+
+def retire_removed(con) -> int:
+    """Cancel upcoming feed rows whose source item has gone. It revives if it returns."""
+    today = dt.date.today().isoformat()
+    n = 0
+    for feed in _cfg().get("feeds") or []:
+        rows = con.execute("SELECT id,ref FROM deadlines WHERE source=? AND status='live' "
+                           "AND ref IS NOT NULL AND substr(due,1,10)>=?", (feed["source"], today)).fetchall()
+        for r in rows:
+            if con.execute("SELECT 1 FROM facts WHERE source=? AND kind=? AND external_id=?",
+                           (feed["source"], feed.get("kind", "assignment"), r["ref"])).fetchone():
+                continue
+            con.execute("UPDATE deadlines SET status='cancelled', notes=?, updated_at=? WHERE id=?",
+                        (REMOVED_NOTE, db.now(), r["id"]))
+            n += 1
+    return n
+
 
 def _start(ev: dict) -> str:
     return (ev.get("start") or {}).get("dateTime") or (ev.get("start") or {}).get("date") or ""
@@ -250,6 +271,7 @@ def sync(con, *, dry_run: bool = False, report=print) -> dict:
     class_id = cal_id if class_name == cal_name else gwrite.calendar_id(class_name)
 
     imported = import_feeds(con)
+    retire_removed(con)
     today = dt.date.today()
     tz = config.tz()
     lo = dt.datetime.combine(today, dt.time(), tz)
