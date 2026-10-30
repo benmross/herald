@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import pathlib
 import sqlite3
 import sys
@@ -13,7 +14,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'lib'), str(ROOT)]
 from cycles import _snapshot
-from herald import changes, mailreadings, config, db
+from herald import changes, mailreadings, config, db, migrations
 
 
 class MemoryRevisions(unittest.TestCase):
@@ -127,17 +128,41 @@ class MemoryRevisions(unittest.TestCase):
         self.assertNotIn('Your event', text)
         self.assertIn('1 other record(s)', text)
 
-    def test_compact_removes_rebuilds_but_keeps_real_changes(self):
+    def test_rebuilds_are_coalesced_per_reader_without_deleting_history(self):
         self.fact()
         self.fact(external_id='other', title='Other')
         start = changes.sequence(self.con)
         db.clear(self.con, 'calendar', 'event')
         self.fact()
         self.fact(external_id='other', title='Renamed')
-        self.assertEqual(changes.compact(self.con, start), 2)
+        self.assertEqual(changes.compact(self.con, start), 0)
         left = self.con.execute('SELECT count(*) FROM ledger_changes WHERE seq>?', (start,)).fetchone()[0]
-        self.assertEqual(left, 2)
+        self.assertEqual(left, 4)
         self.assertEqual(len(changes.net(self.con, start)), 1)
+
+    def test_compaction_preserves_correction_for_reader_that_saw_intermediate_state(self):
+        self.fact(title='A')
+        self.con.execute('DELETE FROM ledger_changes')
+        self.fact(title='B')
+        reader = changes.sequence(self.con)
+        self.fact(title='A')
+        changes.compact(self.con)
+        pending = changes.net(self.con, reader)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]['before']['title'], 'B')
+        self.assertEqual(pending[0]['after']['title'], 'A')
+
+    def test_compaction_coverage_migration_warns_old_readers_once(self):
+        self.fact(title='Before migration')
+        fingerprint = self.baseline()
+        self.fact(title='After old cursor')
+        migration = migrations._load(ROOT/'migrations/0009_compaction_coverage.py')
+        migration.apply(self.con)
+        through = changes.pruned_through(self.con)
+        self.fact(title='Later change')
+        migration.apply(self.con)
+        self.assertEqual(changes.pruned_through(self.con), through)
+        self.assertIn('history for this conversation is incomplete', _snapshot.delta(self.con, fingerprint)[0])
 
     def test_prune_forgets_old_revisions_and_warns_an_idle_conversation(self):
         self.fact()
@@ -149,7 +174,7 @@ class MemoryRevisions(unittest.TestCase):
                          "ON CONFLICT(key) DO UPDATE SET value='1'")
         self.fact(title='Moved')
         text, _ = _snapshot.delta(self.con, fingerprint)
-        self.assertIn('idle longer than change history', text)
+        self.assertIn('Change history for this conversation is incomplete', text)
 
     def test_a_due_date_change_is_not_cut_by_newsletters(self):
         fingerprint = self.baseline()
@@ -210,15 +235,55 @@ class MemoryRevisions(unittest.TestCase):
 
     def test_a_reading_replaces_the_message_text_and_outlives_it(self):
         db.put_fact(self.con, 'gmail', 'message', external_id='m1', ts='2026-10-29T12:00:00-04:00',
-                    title='Thank you', body='Long text', data={'from': 'x'})
+                    title='Thank you', body='Long text', data={'from': 'x', 'body_format': 'text'})
+        fact = self.con.execute("SELECT * FROM facts WHERE external_id='m1'").fetchone()
         kept = mailreadings.save(self.con, [
-            {'message_id': 'gmail:m1', 'says': 'They declined the application.', 'matters': 'fyi'},
+            {'message_id': mailreadings.reading_id(fact), 'says': 'They declined the application.', 'matters': 'fyi'},
             {'message_id': 'gmail:invented', 'says': 'Nothing', 'matters': 'no'}], 'cycle:scout')
         self.assertEqual(kept, 1)
         fact = self.con.execute("SELECT * FROM facts WHERE external_id='m1'").fetchone()
         found = mailreadings.lookup(self.con, [fact])
         self.assertEqual(found['gmail:m1']['says'], 'They declined the application.')
         self.assertEqual(found['gmail:m1']['read_by'], 'cycle:scout')
+
+    def test_reading_invalidates_after_body_correction_and_rejects_inflight_old_version(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='m', body='Old', data={'body_format':'text'})
+        fact = self.con.execute("SELECT * FROM facts WHERE source='gmail'").fetchone()
+        entry = {'message_id': mailreadings.reading_id(fact), 'says': 'Old decision', 'matters':'fyi'}
+        self.assertEqual(mailreadings.save(self.con, [entry], 'test'), 1)
+        self.con.execute("UPDATE facts SET body='Correction' WHERE source='gmail'")
+        fact = self.con.execute("SELECT * FROM facts WHERE source='gmail'").fetchone()
+        self.assertEqual(mailreadings.lookup(self.con, [fact]), {})
+        self.assertEqual(mailreadings.save(self.con, [entry], 'test'), 0)
+
+    def test_legacy_and_incomplete_readings_are_not_reused(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='m', body='Text', data={'body_format':'text'})
+        fact = self.con.execute("SELECT * FROM facts WHERE source='gmail'").fetchone()
+        self.assertEqual(mailreadings.save(self.con, [{'message_id':'gmail:m','says':'Old'}], 'test'), 0)
+        db.put_fact(self.con, 'mail_reading', 'message', external_id='gmail:m', body='Legacy summary')
+        self.assertEqual(mailreadings.lookup(self.con, [fact]), {})
+        self.assertIsNone(mailreadings.reading_id(fact, complete=False))
+        for data in ({}, {'body_format':'text','body_truncated':True}, {'body_format':'none'}):
+            value = dict(fact, data=json.dumps(data))
+            self.assertIsNone(mailreadings.reading_id(value))
+
+    def test_budget_held_back_mail_does_not_get_a_reading_token(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='m', ts=db.now(), body='Full text',
+                    data={'body_format':'text','from_me':False})
+        with mock.patch.object(_snapshot, 'UNREAD_TOTAL_CHARS', 0):
+            text, _ = _snapshot.build(self.con, 'dawn')
+        self.assertIn('text held back', text)
+        self.assertNotIn('reading id: gmail:m#', text)
+
+    def test_clipped_mail_is_ineligible_but_complete_text_gets_a_version_token(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='m', ts=db.now(), body='Full text',
+                    data={'body_format':'text','from_me':False})
+        with mock.patch.object(_snapshot, 'UNREAD_DIRECT_CHARS', 4):
+            clipped, _ = _snapshot.build(self.con, 'dawn')
+        self.assertIn('4 of 9 characters', clipped)
+        self.assertNotIn('reading id: gmail:m#', clipped)
+        full, _ = _snapshot.build(self.con, 'dawn')
+        self.assertIn('reading id: gmail:m#', full)
 
     def test_documents_baseline_edit_delete_and_unchanged_scan(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(config, 'LEDGER', pathlib.Path(directory)):

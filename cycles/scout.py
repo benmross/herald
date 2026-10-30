@@ -171,8 +171,10 @@ into review scored zero, and so did a direct question from a family member.
 Each message carries a `filter score` and it is a reading order, nothing more.
 
 For every message with a `reading id`, return a `mail_readings` entry saying in
-one sentence what it actually says. Later cycles rely on that sentence and do
-not read the message again, so a decline is called a decline and an uncertain
+one sentence what its complete text actually says. Copy the versioned ID exactly.
+Messages without one have incomplete/unavailable text; omit their readings and
+never invent an ID. Interpretations do not cover attachments and exact consequential
+claims still need source verification. A decline is called a decline and an uncertain
 point is named as uncertain. Most of it is nothing and should cost you a line
 each. But read all
 of it, and do not read it only for opportunities: if something in there is a
@@ -634,7 +636,10 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
         out.append(f"- filter score {d.get('score')} ({', '.join(d.get('reasons', []))})")
         fact = reader.message(r["external_id"])
         if fact is not None:
-            out.append(f"- reading id: {mailreadings.key(fact)}")
+            text = mailtext.compact(fact['body'] or '')
+            token = mailreadings.reading_id(fact, complete=bool(text) and len(text) <= MAX_BODY_CHARS)
+            if token:
+                out.append(f"- reading id: {token}")
             out.extend(reader.render(fact))
         elif r["body"]:
             out.append(f"- text: {mailtext.compact(r['body'])}")

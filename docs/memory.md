@@ -36,10 +36,11 @@ the agent to check current records before relying on old context.
 
 ## Retention
 
-The collector runner removes revisions that net to nothing after every run, so
-a collector that clears and rewrites a window costs no history. `db.replace_facts`
-remains better for a large set, because it also keeps row ids. The daily `memory`
-collector repeats that over the whole table, to catch cycles and sessions, and
+`db.replace_facts` prevents clear/rebuild churn and keeps stable row ids.
+Read-time coalescing suppresses net-zero changes relative to each reader's cursor.
+Physical net-zero compaction is disabled: a reader that saw B during A→B→A
+still needs the correction to A. The old compact function remains a harmless
+compatibility entry for earlier migrations. The daily `memory` collector
 forgets revisions older than `memory.change_retention_days` (30). A conversation
 idle for longer is told its interval is incomplete. Space freed this way is
 reused by SQLite; only `VACUUM` shrinks the file.
@@ -54,10 +55,18 @@ document changes to one line, and routine writes to a count per target.
 
 ## Mail readings
 
-A cycle given a message's text returns one sentence saying what it says, stored
+A cycle given complete message text returns one sentence saying what it says, stored
 as `source='mail_reading'`, keyed `<source>:<external id>`. Dawn shows that
 sentence for a message already read, and the text for one that was not, so one
-reading serves every later cycle. Scout still reads each new message whole,
+reading can serve later cycles. Versioned reading IDs bind it to the text actually
+presented; changed content invalidates it, including changes during a model run.
+Clipped, missing and budget-held-back text receives no reading ID. Stored snippets
+and truncated bodies are ineligible. Old readings lacking digest/completeness
+metadata are preserved but not reused, so existing installs need no destructive
+conversion or schema change. Search also excludes invalid/legacy readings and
+removes stale indexed versions on refresh. Readings cover text, not attachments, and are selective
+interpretations rather than authority for exact consequential claims.
+Scout still reads each new message whole,
 because it judges them for a different purpose. A reading is a model's summary
 of untrusted text: reference, and `herald fact` keeps the original.
 

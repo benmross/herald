@@ -5,10 +5,9 @@ retain evidence for removals; read-time coalescing makes rebuilds and reverted
 edits silent. Source ingestion timestamps alone never constitute a revision.
 No model calls, external writes, or source content in the document index.
 
-A rebuild that restores what it removed is not a revision, so the collector
-runner calls compact() after every run and the memory collector prunes what
-has aged out. Without both, a collector that rewrites ten thousand identical
-rows an hour stores twenty thousand full copies an hour, forever.
+Reconcile snapshots at the writer to prevent rebuild churn. Suppress net-zero
+changes only relative to a reader's cursor; intermediate readers may have seen
+a temporary state. Retention bounds history and warns readers after expiry.
 """
 
 from __future__ import annotations
@@ -134,24 +133,14 @@ def net(con, since: int, through: int | None = None) -> list[dict]:
 
 
 def compact(con, since: int = 0, through: int | None = None) -> int:
-    """Delete revisions whose net effect over the interval is nothing.
+    """Compatibility for old migrations: retain revisions until expiry.
 
-    Only groups that net to no change go, so a real change made by another
-    writer inside the interval always survives. Returns rows removed.
+    A net-zero interval may contain a reader's cursor. Deleting A -> B -> A
+    loses the correction for a reader that saw B. Only net(), relative to
+    each reader, may suppress these transitions. Use replace_facts at writers
+    to prevent rebuild churn, and prune() to bound retained history.
     """
-    groups: dict[tuple, dict] = {}
-    for r in con.execute("SELECT seq,entity,record_key,before_json,after_json FROM ledger_changes "
-                         "WHERE seq>? AND seq<=? AND entity<>'document' ORDER BY seq",
-                         (since, through if through is not None else sequence(con))):
-        group = groups.setdefault((r["entity"], r["record_key"]),
-                                  {"seqs": [], "before": r["before_json"]})
-        group["seqs"].append(r["seq"])
-        group["after"] = r["after_json"]
-    drop = [(seq,) for g in groups.values()
-            if g["before"] == g["after"] or _canonical(g["before"]) == _canonical(g["after"])
-            for seq in g["seqs"]]
-    con.executemany("DELETE FROM ledger_changes WHERE seq=?", drop)
-    return len(drop)
+    return 0
 
 
 def prune(con, days: int) -> int:

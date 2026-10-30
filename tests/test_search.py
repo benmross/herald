@@ -13,7 +13,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
 
-from herald import changes, config, db, handoff, search, transcripts  # noqa: E402
+from herald import changes, config, db, handoff, mailreadings, search, transcripts  # noqa: E402
 
 BRIDGE = ('This message arrived from the user over Telegram.\n\n## Since your last message\n- noise\n'
           '---\n\nSent Friday.\n\nWhat did we decide about the boiler?')
@@ -62,6 +62,37 @@ class Search(unittest.TestCase):
 
     def index(self):
         return search.refresh(self.con)
+
+    def test_unchanged_refresh_preserves_transcript_stamp(self):
+        with mock.patch.object(transcripts, 'turns', wraps=transcripts.turns) as read:
+            self.index()
+            self.index()
+        self.assertEqual(read.call_count, 1)
+
+    def test_recreated_fact_and_timestamp_change_refresh_expansion(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='invoice', ts='2026-10-01',
+                    title='Invoice', body='Same text')
+        self.index()
+        self.con.execute("DELETE FROM facts WHERE external_id='invoice'")
+        db.put_fact(self.con, 'gmail', 'message', external_id='spacer', title='Spacer')
+        db.put_fact(self.con, 'gmail', 'message', external_id='invoice', ts='2026-10-02',
+                    title='Invoice', body='Same text')
+        self.index()
+        result = search.find('invoice')['results'][0]
+        self.assertEqual(result['ts'], '2026-10-02')
+        self.assertEqual(result['ref'], 'herald fact gmail invoice')
+
+    def test_invalidated_mail_interpretations_leave_search_results(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='m', body='Original body',
+                    data={'body_format':'text'})
+        fact = self.con.execute("SELECT * FROM facts WHERE source='gmail'").fetchone()
+        mailreadings.save(self.con, [{'message_id':mailreadings.reading_id(fact),
+                                     'says':'Accepted offer', 'matters':'fyi'}], 'test')
+        self.index()
+        self.assertTrue(search.find('accepted')['results'])
+        self.con.execute("UPDATE facts SET body='Correction' WHERE source='gmail'")
+        self.index()
+        self.assertFalse(search.find('accepted')['results'])
 
     def test_notes_journals_and_conversations_are_found_with_a_way_back(self):
         self.index()

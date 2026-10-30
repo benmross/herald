@@ -574,15 +574,17 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
                    f"{_j(m, 'from')}  —  {m['title']}")
         reading = readings.get(mailreadings.key(m))
         if reading:
-            out.append(f"      read whole earlier: {_clip(reading['says'], 320)}")
+            out.append(f"      prior text interpretation (attachments not covered): {_clip(reading['says'], 320)}")
             continue
         if CALENDAR_REPLY.match(m["title"] or ""):
             out.append("      a guest's reply to an invitation; it says nothing about "
                        "whether the event is on")
             continue
-        out.append(f"      reading id: {mailreadings.key(m)}")
         text = mailtext.compact(m["body"] or "") or (_j(m, "snippet") or "").strip()
         cap = min(UNREAD_BULK_CHARS if _j(m, "bulk") else UNREAD_DIRECT_CHARS, budget)
+        token = mailreadings.reading_id(m, complete=bool(text) and len(text) <= cap)
+        if token:
+            out.append(f"      reading id: {token}")
         if not text:
             out.append("      no text; the message may be images only")
         elif cap <= 0:
@@ -769,8 +771,9 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
         revisions = changes.net(con, prev["change_seq"], now["change_seq"])
 
     if "change_seq" in prev and prev["change_seq"] < changes.pruned_through(con):
-        lines.append("- This conversation has been idle longer than change history "
-                     "is retained; earlier edits are not listed.")
+        lines.append("- Change history for this conversation is incomplete after "
+                     "expiry or earlier cleanup; query current records before "
+                     "relying on old context.")
 
     records, mail, quiet_mail, documents, added, senders, other = [], [], 0, [], Counter(), Counter(), Counter()
     for r in revisions:

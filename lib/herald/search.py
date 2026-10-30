@@ -17,9 +17,10 @@ import hashlib
 import json
 import pathlib
 import re
+import shlex
 import sqlite3
 
-from . import config, mailtext, transcripts
+from . import config, mailreadings, mailtext, transcripts
 
 ROOTS = ("identity", "state", "journal", "documents/archive", "documents/development")
 MAX_FILE = 2_000_000
@@ -134,7 +135,8 @@ def _chunks(text: str):
 def _index_files(con, clean) -> int:
     from .context import sections
     seen, changed = set(), 0
-    known = {r["path"]: r["stamp"] for r in con.execute("SELECT * FROM files")}
+    known = {r["path"]: r["stamp"] for r in con.execute("SELECT * FROM files")
+             if any(r['path'].startswith(root + '/') for root in ROOTS)}
     for name in ROOTS:
         root = config.LEDGER / name
         if not root.is_dir():
@@ -181,6 +183,15 @@ def _index_facts(con, ledger, clean) -> int:
     for (source, kind), label in FACTS.items():
         for r in ledger.execute("SELECT id,external_id,ts,title,body,data FROM facts "
                                 "WHERE source=? AND kind=?", (source, kind)):
+            if label == 'reading':
+                original_source, _, original_id = (r['external_id'] or '').partition(':')
+                original = ledger.execute("SELECT * FROM facts WHERE source=? AND kind='message' "
+                                          "AND external_id=?", (original_source, original_id)).fetchone()
+                metadata = json.loads(r['data'] or '{}')
+                if (original is None or not mailreadings.reading_id(original)
+                        or not metadata.get('text_complete')
+                        or metadata.get('content_digest') != mailreadings.digest(original)):
+                    continue
             if label == "event":
                 try:
                     if json.loads(r["data"] or "{}").get("role") != "mine":
@@ -190,11 +201,13 @@ def _index_facts(con, ledger, clean) -> int:
             key = f"fact:{source}:{kind}:{r['external_id'] or r['id']}"
             seen.add(key)
             raw = (r["title"] or "", r["body"] or "")
-            digest = _digest(*raw)
+            ref = (f"herald fact {shlex.quote(source)} {shlex.quote(r['external_id'])}"
+                   if r['external_id'] else f"herald fact {r['id']}")
+            digest = _digest(*raw, r['ts'], ref)
             if known.get(key) == digest:
                 continue
             body = mailtext.compact(raw[1]) if label == "mail" else raw[1]
-            _put(con, key, label, r["ts"], f"herald fact {r['id']}", clean(raw[0]), clean(body))
+            _put(con, key, label, r["ts"], ref, clean(raw[0]), clean(body))
             con.execute("UPDATE docs SET digest=? WHERE key=?", (digest, key))
             changed += 1
     _drop(con, set(known) - seen)

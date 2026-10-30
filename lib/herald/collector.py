@@ -29,7 +29,7 @@ import time
 import traceback
 from typing import Callable
 
-from . import changes, db, notify
+from . import db, notify
 
 # One failure is a blip, two in a row is a problem.
 NOTIFY_AFTER_FAILURES = 2
@@ -60,9 +60,7 @@ def run(name: str, fn: Callable[[object], dict | None]) -> int:
     was_failing = (row["consecutive_failures"] if row else 0) or 0
 
     try:
-        first_change = changes.sequence(con)
         result = fn(con) or {}
-        changes.compact(con, first_change)
         counts = dict(result)
         # A collector may hand back its new position under this key.
         new_cursor = counts.pop("_cursor", None)

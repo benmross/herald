@@ -1,9 +1,8 @@
 #!/usr/bin/env python
-"""Keep the revision history small: drop no-op revisions and expired ones.
+"""Expire revision history under memory.change_retention_days.
 
-The runner compacts each collector's own run. This catches writers outside a
-collector run (cycles, sessions) and enforces `memory.change_retention_days`.
-Current records are never touched, and no model is involved.
+Readers inside a net-zero interval still need its transitions. Current records
+are never touched, and no model is involved.
 """
 
 from __future__ import annotations
@@ -22,8 +21,7 @@ CADENCE_MINUTES = 1440
 
 def collect(con) -> dict:
     days = int(config.get("memory.change_retention_days", 30))
-    return {"no-op revisions removed": changes.compact(con),
-            "expired revisions removed": changes.prune(con, days)}
+    return {"expired revisions removed": changes.prune(con, days)}
 
 
 if __name__ == "__main__":
