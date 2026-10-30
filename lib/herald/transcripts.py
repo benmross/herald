@@ -15,7 +15,7 @@ import re
 from . import config
 
 _BRIDGE = re.compile(r"\n---\n+Sent [^\n]*\n+")
-_TAGGED = re.compile(r"<(system-reminder|environment_context|user_instructions|"
+_TAGGED = re.compile(r"<(system-reminder|task-notification|environment_context|user_instructions|"
                      r"permissions instructions)[^>]*>.*?</\1>", re.S)
 MAX_TURN_CHARS = 4_000
 
