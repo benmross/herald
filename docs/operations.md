@@ -73,8 +73,7 @@ roughly: dawn ~$0.35, two scout passes ~$0.15 each when quiet, plus Telegram
 turns, which comes to under a dollar a day.
 
 If it climbs, the cause is almost always something being re-derived rather than
-remembered. Check whether a cycle is escalating unnecessarily, and
-whether its snapshot is carrying standing state instead of diffs.
+remembered. Check whether its snapshot is carrying standing state instead of diffs.
 
 Both model CLIs load project instructions, skills and hooks before the prompt.
 Batch related work into one session to avoid repeating that context.

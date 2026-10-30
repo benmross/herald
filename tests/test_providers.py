@@ -54,7 +54,7 @@ class Providers(unittest.TestCase):
         for provider in config.ENGINE_NAMES:
             self.assertIsNone(config.engine_settings(provider)['model'])
             self.assertIsNone(config.engine_settings(provider)['effort'])
-            self.assertIsNone(config.engine_settings(provider)['escalate_model'])
+            self.assertNotIn('escalate_model', config.engine_settings(provider))
 
     def test_setup_choices_cover_either_provider_without_requiring_the_other(self):
         for label, provider in [('Claude only', 'claude'), ('Codex only', 'codex')]:

@@ -357,7 +357,7 @@ def cmd_think(args) -> int:
         # scratch directory is deleted whatever the run came to.
         scratch = private_mod.new_scratch() if args.private else None
         try:
-            r = think_mod.think(prompt, label=args.label, escalate=args.escalate,
+            r = think_mod.think(prompt, label=args.label,
                                 model=args.model, cwd=args.cwd,
                                 engine=args.engine, effort=args.effort,
                                 private=scratch)
@@ -2800,7 +2800,6 @@ def main() -> int:
                    help="claude or codex; default is engines.default_engine")
     t.add_argument("--effort", choices=list(think_mod.EFFORTS),
                    help="how hard to think; default is the engine's own")
-    t.add_argument("--escalate", action="store_true", help="use the escalate model")
     t.add_argument("--cwd")
     t.add_argument("--private", action="store_true",
                    help="read anything, save and change nothing: a read-only "

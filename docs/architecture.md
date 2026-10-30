@@ -488,28 +488,25 @@ seconds to answer" had no answer in the ledger:
 | one round trip | median 2.9s, mean 6.4s |
 | whole turn | median 66s, mean 180s |
 
-A turn cannot be faster than its round trips multiplied by the time each one
-takes. Tokens are not the constraint: the prompt cache makes them nearly
-free, and a real conversation turn here bills tens of new input tokens against
-millions of cached ones. What makes a session feel slow is discovering the world
-one sequential read at a time.
+Sequential discovery added latency in this sample. Cache reuse reduces repeated
+prefill work, but context still occupies the window and these measurements do
+not establish how either subscription counts cached tokens. Reduce unnecessary
+context and round trips; measure both rather than treating cached context as free.
 
 The three pieces below exist for that reason.
 
-**`cycles/_snapshot.py:orientation()`** builds a ~1k-token card: the date, what
-is live, which ledger file answers which kind of question, and `facts.db`'s
-schema with worked queries. It is pure SQL, costs no tokens to build, and its
-whole job is to delete the five or six sequential reads a cold session used to
-make before it could answer anything. It is not a summary of everything known
-and must not grow into one; the ledger is still there to be read.
+**`cycles/_snapshot.py:orientation()`** builds session-start facts: local date
+and time, source-coverage warnings, location, remaining personal calendar events,
+upcoming dates, disputed-date warnings and obligation counts. Ended and canceled
+events are omitted. Overdue obligations are counted separately from upcoming
+deadlines. Retrieval guidance lives in the constitution and skills; database
+inventories and SQL examples are retrieved on demand. See `docs/session-context.md`.
 
 It reaches sessions two ways, because the surfaces differ. herald-telegram
-injects it with `--append-system-prompt`, so a new session starts already
-oriented. Sessions spawned by Claude Code itself (claude.ai/code, a terminal)
-have no flag to inject anything, so the same text is written to
-`ledger/state/orientation.md` and the constitution points them at it: one read
-instead of five. `herald orient` rewrites that file; the bridge also refreshes it
-whenever it starts a session.
+injects it through Claude's `--append-system-prompt` or Codex's
+`developer_instructions`. Direct terminal or app sessions that bypass this
+launcher read `ledger/state/orientation.md` only if no card was injected.
+`herald orient` rewrites that file; the bridge also refreshes it at session start.
 
 **The card is generated once per session and then reused byte-for-byte.** The
 system prompt sits at the front of the cached prefix, so rebuilding it every turn

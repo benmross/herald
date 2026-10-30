@@ -40,13 +40,6 @@ HAVE = "have" if WHO["plural_verb"] else "has"
 DO = "do" if WHO["plural_verb"] else "does"
 S = "" if WHO["plural_verb"] else "s"
 
-# Escalate on the selected provider only when there is substantial new
-# material. Re-reading standing conclusions never justifies escalation.
-# The count includes new postings and only mail the keyword score rates,
-# so a pile of receipts does not increase the reasoning level.
-ESCALATE_AT = 6
-ESCALATE_MAIL_SCORE = 2
-
 # A scout pass reads what is new. On the day the internship feed is first
 # connected that is 263 postings, which is a fine amount of information and a
 # terrible amount to hand one session. Cap it, rank what goes first, and let the
@@ -780,18 +773,6 @@ def main() -> int:
         seen -= postings - reviewed
         fresh = ids - seen
         snapshot, shown_ids = build_snapshot(con, fresh)
-        # Volume is no longer a proxy for substance: every message is a
-        # candidate now, so this counts postings plus the mail the keyword
-        # score still rates rather than everything that arrived.
-        low = con.execute(f"""
-            SELECT COUNT(*) FROM facts
-            WHERE source='opportunities' AND kind='candidate'
-              AND json_extract(data,'$.score') < ?
-              AND external_id IN ({','.join('?' * len(shown_ids)) or "''"})
-        """, (ESCALATE_MAIL_SCORE, *sorted(shown_ids))).fetchone()[0]
-        substantive = len(shown_ids) - low
-
-    escalate = substantive >= ESCALATE_AT
 
     snap_dir = config.RAW / "snapshots"
     snap_dir.mkdir(parents=True, exist_ok=True)
@@ -800,7 +781,7 @@ def main() -> int:
     os.environ["HERALD_ACTOR"] = LABEL        # attributes `herald amber` rows
     result = think.think(
         f"{INSTRUCTIONS}\n\n---\n\n{snapshot}",
-        label=LABEL, cwd=config.ROOT, json_schema=SCHEMA, escalate=escalate,
+        label=LABEL, cwd=config.ROOT, json_schema=SCHEMA,
         permission_mode="auto",
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                        "WebSearch", "WebFetch",

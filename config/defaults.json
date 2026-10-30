@@ -15,12 +15,10 @@
     "_comment": "Choose claude, codex, or both during setup. enabled lists the providers you use (null keeps both available for existing installs). default_engine is your choice for cycles, terminal sessions and new Telegram topics; null requires a choice. Model and effort null use the selected CLI defaults. No provider is preferred and failures never switch providers. engines.primary remains a compatibility alias for engines.claude.",
     "default_engine": null,
     "codex": {
-      "_comment": "Model and effort null use the Codex CLI configuration. With no escalate_model, escalation uses escalate_effort. Sandbox and approval policy are native CLI settings; Herald guard hooks apply to both providers.",
+      "_comment": "Model and effort null use the Codex CLI configuration. Sandbox and approval policy are native CLI settings; Herald guard hooks apply to both providers.",
       "cmd": "codex",
       "model": null,
-      "escalate_model": null,
       "effort": null,
-      "escalate_effort": "high",
       "sandbox": "danger-full-access",
       "approval_policy": "never"
     },
@@ -31,11 +29,9 @@
     "claude": {
       "cmd": "claude",
       "model": null,
-      "escalate_model": null,
       "effort": null,
       "permission_mode": null,
-      "_permission_comment": "null derives Claude's permission mode from safety.engine_mode for the surface that is running; set auto, plan or bypassPermissions here only to override that for every surface.",
-      "escalate_effort": "high"
+      "_permission_comment": "null derives Claude's permission mode from safety.engine_mode for the surface that is running; set auto, plan or bypassPermissions here only to override that for every surface."
     }
   },
   "usage": {

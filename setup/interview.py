@@ -170,7 +170,10 @@ Their words, not a personality summary.
 
 `ledger/identity/constitution.md`: the personal half of the agent's operating
 rules, read by every session alongside the shared constitution. This one is not
-a description, it is instructions. It must contain, in this order:
+a description, it is instructions. Keep it concise: essential constraints and
+preferences, without biography, failure stories or duplicated shared rules.
+Put details in the other identity files and cite their paths. It must contain,
+in this order:
 
 1. Who the agent belongs to, and what it is called.
 2. **The facts it must never have to look up**: allergies, medical conditions,
@@ -450,7 +453,7 @@ def apply(state: State, answers: dict) -> Outcome:
         )
         result = think.think(prompt_text, label="setup:interview-writeup",
                              cwd=config.ROOT, json_schema=WRITEUP_SCHEMA,
-                             escalate=True, permission_mode="auto",
+                             permission_mode="auto",
                              allowed_tools=["Read", "Write", "Edit", "Glob", "Grep"])
         if not result.ok:
             return Outcome(ok=False, message="The write-up did not finish.",

@@ -146,6 +146,21 @@ class StrictSchemaTests(unittest.TestCase):
 
 
 class EffortTests(unittest.TestCase):
+    def test_retired_escalation_settings_cannot_change_a_run(self):
+        settings = {"engines.codex.model": "chosen-model",
+                    "engines.codex.effort": "low",
+                    "engines.codex.escalate_model": "other-model",
+                    "engines.codex.escalate_effort": "high"}
+        with mock.patch.object(think.config, "get", side_effect=lambda k, d=None: settings.get(k, d)), \
+                mock.patch.object(think, "_record"), \
+                mock.patch.object(think, "_run_codex", return_value=(0,
+                        {"result": "ok", "usage": {}, "session_id": "kept"}, None, "", "", False)) as run:
+            result = think.think("hello", label="test", engine="codex",
+                                 permission_mode="auto", timeout=1)
+            self.assertTrue(result.ok)
+            self.assertEqual(run.call_args.kwargs["model"], "chosen-model")
+            self.assertEqual(run.call_args.kwargs["effort"], "low")
+
     def test_default_bypasses_config_and_explicit_levels_reach_the_engine(self):
         for level, expected in ((None, "high"), ("auto", None), ("max", "max"), ("ultra", "ultra")):
             with self.subTest(level=level), \
@@ -208,6 +223,7 @@ class CommandBuildTests(unittest.TestCase):
 
     def test_a_fresh_run_reads_the_prompt_from_stdin_and_the_constitution(self):
         calls = self._capture(model="gpt-6-astra", effort="xhigh", sys="card")
+        self.assertIn("project_doc_max_bytes=65536", calls["cmd"])
         cmd = calls["cmd"]
         self.assertEqual(cmd[:3], ["codex", "exec", "--json"])
         self.assertEqual(cmd[-1], "-")

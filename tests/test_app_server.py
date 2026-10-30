@@ -114,6 +114,7 @@ class AppServerTests(unittest.TestCase):
         cmd=self.commands[0]
         self.assertEqual(cmd[:5],['codex','--dangerously-bypass-hook-trust','app-server','--listen','stdio://'])
         self.assertIn('project_doc_fallback_filenames=["CLAUDE.md"]',cmd)
+        self.assertIn('project_doc_max_bytes=65536',cmd)
         self.assertIn('sandbox_workspace_write.writable_roots=["/tmp/memory"]',cmd)
         self.assertIn('approval_policy="never"',cmd)
         self.assertNotIn('app-test',think._active)

@@ -161,16 +161,14 @@ same whether the ledger holds two thousand facts or two hundred thousand.
 
 ```python
 result = think.think(prompt, label=f"cycle:{CYCLE}", cwd=config.ROOT,
-                     json_schema=SCHEMA, escalate=busy,
+                     json_schema=SCHEMA,
                      permission_mode="auto",
                      allowed_tools=["Read", "Write", "Bash(herald db *)", ...])
 ```
 
 - `label` shows up in the `runs` table. Use `cycle:<name>` so spend is
   attributable.
-- `escalate=True` uses the chosen provider's configured escalation. Decide it from how much is new, not by
-  default: scout's first bulk pass cost $2.79 and the same pass after the diff
-  rewrite cost $0.14.
+- Use the configured model and effort. Cycles do not change them based on volume.
 - Let the session write the ledger itself; those are green actions and it has
   the tools. Return through `json_schema` only what Python must deliver.
   **Nothing that leaves the machine is left to prose.**

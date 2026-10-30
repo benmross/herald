@@ -973,6 +973,9 @@ def _run_codex(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
            # block a cycle forever.
            "--skip-git-repo-check",
            "--dangerously-bypass-hook-trust",
+           # The native 32 KiB limit cut off the personal constitution. This
+           # only raises the read ceiling; keep actual instructions compact.
+           "-c", "project_doc_max_bytes=65536",
            "-c", "project_doc_fallback_filenames=" + json.dumps(["CLAUDE.md"])]
     if permission_mode == "plan":
         cmd += ["-c", 'sandbox_mode="read-only"']
@@ -1048,6 +1051,7 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
     same thread. Transport failures are reported, never replayed blindly.
     """
     overrides = {"project_doc_fallback_filenames": ["CLAUDE.md"],
+                 "project_doc_max_bytes": 65536,
                  "sandbox_mode": "read-only" if permission_mode == "plan" else
                                  config.get("engines.codex.sandbox", "danger-full-access"),
                  "approval_policy": "never" if permission_mode == "plan" else
@@ -1708,7 +1712,7 @@ def _record(**fields) -> None:
               file=sys.stderr, flush=True)
 
 
-def think(prompt: str, *, label: str, escalate: bool = False,
+def think(prompt: str, *, label: str,
           model: str | None = None, cwd: Path | str | None = None,
           timeout: int | None = None, idle_timeout: int | None = None,
           allowed_tools: list[str] | None = None,
@@ -1733,10 +1737,6 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     of `EFFORTS`; None means `engines.<engine>.effort`, which itself defaults
     to null -- the CLI's own default. Explicit "auto" bypasses that configured
     effort override and lets the CLI choose for the selected model.
-
-    `escalate` picks the selected provider's `escalate_model`. With no
-    escalation model, it keeps the model and applies that provider's
-    `escalate_effort`. Both providers use the same rule.
 
     `on_progress` receives a `Progress` for each thing the turn does: the
     model's own narration as it writes it, and each tool call as it makes
@@ -1769,7 +1769,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
             return Result(ok=False, engine=engine or "", model=model, error=reason)
         _private.scratch = Path(private)
         try:
-            return think(prompt, label=label, escalate=escalate, model=model, cwd=cwd,
+            return think(prompt, label=label, model=model, cwd=cwd,
                          timeout=timeout, idle_timeout=idle_timeout,
                          allowed_tools=allowed_tools,
                          append_system_prompt="\n\n".join(
@@ -1799,12 +1799,7 @@ def think(prompt: str, *, label: str, escalate: bool = False,
     effort = (None if isinstance(effort, str) and effort.strip().lower() == "auto" else
               normalize_effort(effort) or normalize_effort(config.get(f"{block}.effort")))
     if model is None:
-        if escalate:
-            model = config.get(f"{block}.escalate_model")
-            if model is None:
-                effort = normalize_effort(config.get(f"{block}.escalate_effort", "high"))
-        if model is None:
-            model = config.get(f"{block}.model")
+        model = config.get(f"{block}.model")
     # Who decides what a Claude session may do without asking. Since 4 Oct 2026
     # this is Herald's `safety.engine_mode`, per surface: "auto" keeps Claude's
     # own classifier on top of Herald's guard; "herald" makes the guard
