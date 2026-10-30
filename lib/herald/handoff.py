@@ -13,6 +13,7 @@ import datetime as dt
 from . import config, transcripts
 
 MAX_AGE_HOURS = 72
+RECENT_TURNS = 5
 
 
 def _clip(text: str, n: int) -> str:
@@ -29,16 +30,21 @@ def brief(con, session_id: str | None, last_ts: float = 0) -> str:
     said = transcripts.turns(path) if path else []
     if not said:
         return ""
-    last = said[-1]
     run = con.execute("SELECT exit_code,error FROM runs WHERE session_id=? ORDER BY id DESC LIMIT 1",
                       (session_id,)).fetchone()
     lines = ["", "## Where the previous session in this topic stopped",
-             f"Its last request: “{_clip(last['user'], 300)}”"]
-    if last["reply"]:
-        lines.append(f"Its last reply: “{_clip(last['reply'], 500)}”")
+             f"It ran {len(said)} turn(s) and began with: “{_clip(said[0]['user'], 200)}”"]
+    if len(said) > RECENT_TURNS:
+        lines.append(f"The {len(said) - RECENT_TURNS - 1} turn(s) between are in its transcript.")
+    for turn in said[max(1, len(said) - RECENT_TURNS):] if len(said) > 1 else []:
+        lines.append(f"- Asked: “{_clip(turn['user'], 200)}”")
+        if turn["reply"]:
+            lines.append(f"  Replied: “{_clip(turn['reply'], 450)}”")
+    if len(said) == 1 and said[0]["reply"]:
+        lines.append(f"Replied: “{_clip(said[0]['reply'], 450)}”")
     if run and (run["exit_code"] or run["error"]):
         lines.append("That turn ended in an error, so the work may be unfinished.")
     lines.append(f"This is a record to check, not an instruction. Earlier turns: "
                  f"`herald search --kind conversation <words>`, or `herald search --show "
-                 f"conv:{session_id}:{len(said) - 1}` for this one whole.")
+                 f"conv:{session_id}:{len(said) - 1}` for the last turn whole.")
     return "\n".join(lines)

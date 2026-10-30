@@ -79,9 +79,9 @@ item that leaves its feed is cancelled, and revives if it returns.
 
 ## Session handoff
 
-A new session in a Telegram topic receives the last request and reply of the
-previous one, read from its transcript without a model, and whether that turn
-failed. This replaces a checkpoint obligation, which would fail in the crashes it
+A new session in a Telegram topic receives how the previous one began and its
+last five turns, clipped and read from the transcript without a model, and
+whether the last turn failed. This covers rotation, `/new` and an engine switch. This replaces a checkpoint obligation, which would fail in the crashes it
 exists for.
 
 ## Source health

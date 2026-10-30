@@ -759,7 +759,8 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
         with db.session() as con:
             text = _snapshot.orientation(con)
             from herald import handoff
-            text += handoff.brief(con, ts.get("session_id"), ts.get("last_ts", 0))
+            text += handoff.brief(con, ts.get("session_id") or ts.get("previous_session"),
+                                  ts.get("last_ts", 0))
     except Exception as exc:  # noqa: BLE001 -- never worth failing a turn
         print(f"orientation unavailable ({type(exc).__name__}: {exc})")
         return None
@@ -1036,6 +1037,7 @@ def handle(update: dict, state: dict) -> None:
 
     if command_word(text) in ("/new", "/clear", "/reset"):
         ended, turns = ts.get("session_id"), ts.get("turns", 0)
+        ts["previous_session"] = ended or ts.get("previous_session")
         ts["session_id"] = None
         ts["turns"] = 0
         ts["last_ts"] = time.time()
@@ -1073,7 +1075,9 @@ def handle(update: dict, state: dict) -> None:
         if switched:
             # The other engine cannot read this one's transcript, so the
             # next message starts over from the ledger. Said out loud,
-            # because "same conversation" would be a lie here.
+            # because "same conversation" would be a lie here. The handoff
+            # reads the transcript as text, so it still crosses engines.
+            ts["previous_session"] = ts.get("session_id") or ts.get("previous_session")
             ts["session_id"] = None
             ts["turns"] = 0
             ts["last_ts"] = time.time()

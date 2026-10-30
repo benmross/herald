@@ -126,6 +126,16 @@ class Search(unittest.TestCase):
         self.con.execute("UPDATE runs SET exit_code=1")
         self.assertIn('ended in an error', handoff.brief(self.con, 'abc'))
 
+    def test_handoff_of_a_long_session_keeps_its_start_and_recent_turns(self):
+        turns = [{'ts': 't', 'user': f'request {n}', 'reply': f'reply {n}'} for n in range(20)]
+        with mock.patch.object(transcripts, 'turns', return_value=turns):
+            text = handoff.brief(self.con, 'abc')
+        self.assertIn('request 0', text)
+        self.assertIn('request 19', text)
+        self.assertIn('reply 15', text)
+        self.assertNotIn('request 10', text)
+        self.assertLess(len(text), 4000)
+
     def test_handoff_is_empty_without_a_session_or_after_three_days(self):
         self.assertEqual(handoff.brief(self.con, None), '')
         self.assertEqual(handoff.brief(self.con, 'abc', last_ts=1.0), '')
