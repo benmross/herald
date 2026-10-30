@@ -2,6 +2,20 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.6: 30 October 2026
+
+- Cancel a calendar event that has empty fields
+- Flag dates that recent mail may have changed
+- Retire a dated item when its feed stops carrying it
+- Make topic packets answer the question and shrink what every run loads
+- Search what Herald has written and been told, and pass work between sessions
+- Read each email once and let the calendar alone say what is scheduled
+- Stop change history growing faster than the data it describes
+- Keep compact context useful without repeated scans or clock-only updates
+- Replace repeated context discovery with bounded topic and status retrieval
+- Recover source gaps without blocking conversations or repeating quiet history
+- Track substantive memory revisions so updates cannot disappear between turns
+
 ## v0.4.5: 29 October 2026
 
 - Let sessions ask topic-bound questions without new action handlers
