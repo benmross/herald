@@ -51,6 +51,7 @@ class ContextReads(unittest.TestCase):
         self.assertEqual(context.resolve('Course 101')[0]['topic'], 'COURSE101')
         text = self.output(topic='COURSE101')
         self.assertIn('Current course notes', text)
+        self.assertIn('Instructor: A. Teacher', text)
         self.assertIn('COURSE101 Exam', text)
         self.assertIn('deadlines:', text)
         self.assertIn('s7 Assessment policy', text)
@@ -189,6 +190,27 @@ class ContextReads(unittest.TestCase):
         self.assertLess(path.stat().st_size, 4000)
         self.assertIsNone(context.refresh_opportunities(self.con))
         self.assertEqual(len(list((self.root/'documents/archive').glob('*.md'))), 1)
+
+    def test_unchanged_overview_does_not_change_when_only_time_passes(self):
+        context.refresh_opportunities(self.con)
+        path = self.root/'state/opportunities.md'
+        before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+        original = dt.datetime
+        class Later(original):
+            @classmethod
+            def now(cls, tz=None):
+                return original.now(tz) + dt.timedelta(days=1)
+        with mock.patch.object(context.dt, 'datetime', Later):
+            context.refresh_opportunities(self.con)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(path.stat().st_mtime_ns, mtime)
+
+    def test_small_budget_still_names_incomplete_sources(self):
+        for i in range(12):
+            db.mark_collector(self.con, f'source{i}', ok=True, partial=True, pending=1)
+        text, _, _ = context.render(context.packet(self.con, topic='COURSE101'), 256)
+        self.assertIn('Incomplete sources: source0', text)
+        self.assertLessEqual(len(text.encode()), 1024)
 
 
 if __name__ == '__main__':

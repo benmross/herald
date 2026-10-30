@@ -2409,6 +2409,10 @@ def cmd_context(args) -> int:
     if args.id is not None and args.view not in context_mod.VIEWS:
         print('--id requires a record view', file=sys.stderr)
         return 2
+    if ((args.view or args.schema) and (args.file or args.section or args.sections)
+            or args.section and args.sections):
+        print('choose a record view/schema or a note section, not both', file=sys.stderr)
+        return 2
     try:
         with db.session() as con:
             if topic == 'stats':

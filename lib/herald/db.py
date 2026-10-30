@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_ts     ON facts (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_lookup ON facts (source, kind, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_facts_kind_ts ON facts (kind, ts);
 
 -- Every agent invocation, so "what is eating my quota" is a query.
 CREATE TABLE IF NOT EXISTS runs (

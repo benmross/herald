@@ -28,7 +28,7 @@ VIEWS = {
     'applications': ('applications', ('company', 'title', 'status', 'submitted_at', 'opportunity_id', 'url'),
                      '1', 'id DESC', ('company', 'title')),
     'opportunities': ('opportunities', ('title', 'org', 'kind', 'status', 'deadline', 'score', 'url', 'source_fact'),
-                      "status IN ('new','surfaced','interested') AND (deadline IS NULL OR deadline>=?)",
+                      "status IN ('new','surfaced','interested') AND (deadline IS NULL OR deadline='' OR deadline>=?)",
                       "deadline IS NULL,deadline,score DESC,id DESC", ('title', 'org', 'notes', 'fit')),
     'schedule': ('facts', ('title', 'ts', 'data'),
                  "kind='event' AND json_extract(data,'$.role')='mine'", 'ts,id', ('title', 'body')),
@@ -125,6 +125,8 @@ def operational(con, view: str, *, topic='', days=30, offset=0, limit=10,
     today = dt.datetime.now(config.tz()).date()
     if record_id is not None:
         where, params = 'id=?', [record_id]
+        if view == 'schedule':
+            where += " AND kind='event'"
         columns = tuple(r[1] for r in con.execute(f'PRAGMA table_info({table})') if r[1] != 'id')
     elif all_statuses:
         where = "kind='event' AND json_extract(data,'$.role')='mine'" if view == 'schedule' else '1'
@@ -245,6 +247,13 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
             path = ledger_path(routes[0]['path'])
             items.append(_note(path))
             index = sections(path)
+            for entry in [s for s in index[1:] if re.search(
+                    r'\b(current|status|instructor|contact|constraints|overview)\b', s['heading'], re.I)][:2]:
+                preview = _note(path, entry['key'])
+                lines = preview['text'].splitlines()
+                if len(lines) > 15:
+                    preview['text'] = '\n'.join(lines[:15]) + '\n[section preview; use the source expansion for the rest]'
+                items.append(preview)
             headings = '; '.join(f'{s["key"]} {s["heading"]}' for s in index[1:9])
             items.append({'source': routes[0]['path'], 'text': 'Section index (partial): ' + (headings or 'no additional headings'),
                           'expand': f'herald context --file {shlex.quote(routes[0]["path"])} --sections --limit 100'})
@@ -273,6 +282,7 @@ def packet(con, *, topic='', view=None, file=None, section=None, list_sections=F
     notes = changes.health_lines(health)
     notes.append('Evidence is selective ledger data. Verify the full source for policy or submission decisions. Empty matches do not establish absence from an incomplete source.')
     return {'category': category, 'items': items, 'has_more': more, 'notes': notes,
+            'incomplete_sources': sorted(health),
             'generated': dt.datetime.now(config.tz()).isoformat(timespec='seconds')}
 
 
@@ -283,6 +293,9 @@ def render(result: dict, budget=1500) -> tuple[str, int, bool]:
     notes = '\n'.join(result['notes']) + '\n'
     if cap and len((header + notes).encode()) > cap // 2:
         notes = 'Selective evidence; verify originals. Incomplete source coverage may hide records.\n'
+        sources = result.get('incomplete_sources', [])
+        if sources:
+            notes += 'Incomplete sources: ' + ', '.join(sources[:6]) + '; see herald status.\n'
     prefix = header + notes
     blocks, shown, more = [], 0, result['has_more']
     reserve = 250
@@ -371,12 +384,17 @@ def refresh_opportunities(con) -> pathlib.Path | None:
             continue
         title = ' '.join(r['title'].split())[:180]
         org = ' '.join((r.get('org') or 'organization unspecified').split())[:80]
-        lines.append(f"- {title} ({org}), {r['deadline']}. "
+        lines.append(f"- {json.dumps(title, ensure_ascii=False)} ({json.dumps(org, ensure_ascii=False)}), {r['deadline']}. "
                      f"Details: `herald context --view opportunities --id {r['id']}`.")
     lines += ['', 'Full reasoning and notes remain in the opportunities table. Confirm the source before acting.',
               'Past scout decisions remain in daily journals. Earlier narrative overviews are preserved under `documents/archive/opportunities-*.md`.',
               'Do not append pass-by-pass history to this generated file.', '']
     output = '\n'.join(lines).encode()
+    if marker.encode() in previous:
+        def without_clock(value):
+            return b'\n'.join(line for line in value.splitlines() if not line.startswith(b'Generated '))
+        if without_clock(previous) == without_clock(output):
+            return archive
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as temp:
         temp.write(output)

@@ -21,9 +21,10 @@ lookup. Ambiguous topics require an explicit file. Unknown topics can still
 match structured records, but never acquire invented notes or membership.
 There is no natural-language router or semantic search in this phase.
 
-A topic packet contains the introductory note, a partial heading index, status
-counts, matching operational records and source freshness. Long notes are not
-loaded in full by default. An introductory excerpt cannot substitute for a
+A topic packet contains the introductory note, short previews of up to two
+current/status/contact sections, a partial heading index, status counts,
+matching operational records and source freshness. Long notes are not returned
+in full by default. An introductory excerpt cannot substitute for a
 policy section or its original source. Source references and commands identify
 how to obtain the remaining evidence.
 
@@ -101,5 +102,6 @@ commands, counts and a few recorded deadlines. Tables remain authoritative.
 Migration 0006 preserves any older narrative overview byte for byte under
 `documents/archive/opportunities-<digest>.md` before replacement. Refreshes are
 atomic and archives are retained. No application or opportunity status changes
-during this migration. Source-specific evaluation questions and measured
+during this migration. A clock change alone does not rewrite an unchanged
+overview. Source-specific evaluation questions and measured
 outcomes belong in the private ledger.
