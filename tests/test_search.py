@@ -126,6 +126,12 @@ class Search(unittest.TestCase):
         self.con.execute("UPDATE runs SET exit_code=1")
         self.assertIn('ended in an error', handoff.brief(self.con, 'abc'))
 
+    def test_wrappers_and_markers_are_not_user_words(self):
+        self.assertEqual(transcripts.clean_user('# AGENTS.md instructions for /x\n<INSTRUCTIONS>'), '')
+        self.assertEqual(transcripts.clean_user('Sent Tuesday, October 27, 2026, 2:10 PM EDT.\n\nStop work.'), 'Stop work.')
+        self.assertEqual(transcripts.clean_user('[Image: original 10x20, displayed at 5x10.]\nLook at this'), 'Look at this')
+        self.assertEqual(transcripts.clean_user('<task-notification>x</task-notification>'), '')
+
     def test_handoff_of_a_long_session_keeps_its_start_and_recent_turns(self):
         turns = [{'ts': 't', 'user': f'request {n}', 'reply': f'reply {n}'} for n in range(20)]
         with mock.patch.object(transcripts, 'turns', return_value=turns):

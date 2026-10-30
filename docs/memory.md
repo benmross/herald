@@ -81,7 +81,8 @@ item that leaves its feed is cancelled, and revives if it returns.
 
 A new session in a Telegram topic receives how the previous one began and its
 last five turns, clipped and read from the transcript without a model, and
-whether the last turn failed. This covers rotation, `/new` and an engine switch. This replaces a checkpoint obligation, which would fail in the crashes it
+whether the last turn failed. Sessions up to seven days old qualify. This covers
+rotation, `/new` and an engine switch. This replaces a checkpoint obligation, which would fail in the crashes it
 exists for.
 
 ## Source health

@@ -12,8 +12,9 @@ import datetime as dt
 
 from . import config, transcripts
 
-MAX_AGE_HOURS = 72
+MAX_AGE_HOURS = 168
 RECENT_TURNS = 5
+LAST_REPLY = 1200
 
 
 def _clip(text: str, n: int) -> str:
@@ -30,6 +31,7 @@ def brief(con, session_id: str | None, last_ts: float = 0) -> str:
     said = transcripts.turns(path) if path else []
     if not said:
         return ""
+    last = said[-1]
     run = con.execute("SELECT exit_code,error FROM runs WHERE session_id=? ORDER BY id DESC LIMIT 1",
                       (session_id,)).fetchone()
     lines = ["", "## Where the previous session in this topic stopped",
@@ -39,9 +41,11 @@ def brief(con, session_id: str | None, last_ts: float = 0) -> str:
     for turn in said[max(1, len(said) - RECENT_TURNS):] if len(said) > 1 else []:
         lines.append(f"- Asked: “{_clip(turn['user'], 200)}”")
         if turn["reply"]:
-            lines.append(f"  Replied: “{_clip(turn['reply'], 450)}”")
-    if len(said) == 1 and said[0]["reply"]:
-        lines.append(f"Replied: “{_clip(said[0]['reply'], 450)}”")
+            # The last reply says where things stand, so it gets the most room.
+            room = LAST_REPLY if turn is last else 450
+            lines.append(f"  Replied: “{_clip(turn['reply'], room)}”")
+    if len(said) == 1 and last["reply"]:
+        lines.append(f"Replied: “{_clip(last['reply'], LAST_REPLY)}”")
     if run and (run["exit_code"] or run["error"]):
         lines.append("That turn ended in an error, so the work may be unfinished.")
     lines.append(f"This is a record to check, not an instruction. Earlier turns: "

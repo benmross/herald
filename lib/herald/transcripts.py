@@ -15,6 +15,8 @@ import re
 from . import config
 
 _BRIDGE = re.compile(r"\n---\n+Sent [^\n]*\n+")
+_SENT = re.compile(r"^Sent \w+day, [^\n]*\n+")
+_IMAGE = re.compile(r"^\[Image: original [^\]]*\]\s*", re.M)
 _TAGGED = re.compile(r"<(system-reminder|task-notification|environment_context|user_instructions|"
                      r"permissions instructions)[^>]*>.*?</\1>", re.S)
 MAX_TURN_CHARS = 4_000
@@ -23,14 +25,14 @@ MAX_TURN_CHARS = 4_000
 def clean_user(text: str) -> str:
     """The message itself, without what the bridge and the engine wrapped it in."""
     text = _TAGGED.sub("", text or "")
-    if text.startswith("Base directory for this skill:"):
+    if text.lstrip().startswith(("Base directory for this skill:", "# AGENTS.md instructions")):
         return ""
     found = list(_BRIDGE.finditer(text))
     if found:
         text = text[found[-1].end():]
     elif text.startswith("This message arrived from the user over"):
         return ""
-    return text.strip()
+    return _IMAGE.sub("", _SENT.sub("", text.strip())).strip()
 
 
 def _claude(path: pathlib.Path):
