@@ -75,7 +75,8 @@ def _values(node):
 
 def redactor():
     """A function that strips this install's secrets and anything shaped like one."""
-    known = sorted(set(_values(config.secrets())), key=len, reverse=True)
+    # Short values here are names, such as a place or a domain, and not credentials.
+    known = sorted({v for v in _values(config.secrets()) if len(v) >= 16}, key=len, reverse=True)
 
     def clean(text: str) -> str:
         for value in known:

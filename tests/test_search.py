@@ -28,13 +28,13 @@ class Search(unittest.TestCase):
             p = mock.patch.object(config, attr, value)
             p.start()
             self.addCleanup(p.stop)
-        p = mock.patch.object(config, 'secrets', return_value={'x': {'token': 'hunter2-long-value'}})
+        p = mock.patch.object(config, 'secrets', return_value={'x': {'token': 'hunter2-long-value-abc'}})
         p.start()
         self.addCleanup(p.stop)
         (self.root / 'state/areas').mkdir(parents=True)
         (self.root / 'journal').mkdir()
         (self.root / 'state/areas/HOUSE.md').write_text(
-            '# House\nIntro.\n\n## Heating\nThe boiler was serviced. key hunter2-long-value\n\n## Roof\nTiles.\n')
+            '# House\nIntro.\n\n## Heating\nThe boiler was serviced. key hunter2-long-value-abc\n\n## Roof\nTiles.\n')
         (self.root / 'journal/2026-10-01.md').write_text('# 2026-10-01\n\n## Work\nReplaced the boiler valve.\n')
         self.con = sqlite3.connect(':memory:')
         self.con.row_factory = sqlite3.Row
