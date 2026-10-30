@@ -64,6 +64,7 @@ from cycles import _snapshot  # noqa: E402
 NAME = "telegram"
 POLL_TIMEOUT = 50          # seconds of long-polling per request
 TYPING_REFRESH = 4         # Telegram clears the typing indicator after ~5s
+GENERAL_THREAD_ID = 1      # a forum's General topic; sendChatAction needs it
 # The live transcript: how long before the first one appears, how often it may
 # be edited after that, and how much of it to keep. The delay exists so a
 # two-second answer never gets a progress message at all.
@@ -333,6 +334,7 @@ class Working:
         self._sent_text = ""
         self._last_edit = 0.0
         self._settled = False
+        self._typing_in_general = chat_id < 0 and thread_id is None
         self._sent_replies: list[str] = []   # interim replies already sent
         self.message_ids: list[int] = []     # everything this turn has posted
 
@@ -556,10 +558,25 @@ class Working:
             return
         self._publish(done=True, failed=failed)
 
+    def _send_typing(self) -> None:
+        """Show the typing indicator, including in a forum's General topic.
+
+        General messages arrive with no message_thread_id, and in a forum the
+        indicator needs the explicit id even though sends must omit it. A plain
+        group has no such topic and rejects the id, so one failure stops trying.
+        """
+        if self._typing_in_general:
+            resp = api("sendChatAction", chat_id=self.chat_id, action="typing",
+                       message_thread_id=GENERAL_THREAD_ID)
+            if resp and resp.get("ok"):
+                return
+            self._typing_in_general = False
+        extra = {"message_thread_id": self.thread_id} if self.thread_id else {}
+        api("sendChatAction", chat_id=self.chat_id, action="typing", **extra)
+
     def _run(self) -> None:
         while not self._stop.is_set():
-            extra = {"message_thread_id": self.thread_id} if self.thread_id else {}
-            api("sendChatAction", chat_id=self.chat_id, action="typing", **extra)
+            self._send_typing()
             with self._lock:
                 dirty = self._dirty
             due = (time.monotonic() - self._last_edit) >= PROGRESS_EDIT_SECONDS

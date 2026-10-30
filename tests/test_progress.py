@@ -292,6 +292,47 @@ class NarrationAsMessages(_Bridge):
         self.assertEqual(self.mod.Working(chat_id=1).narration, "messages")
 
 
+class TypingIndicator(unittest.TestCase):
+    """The General topic carries no thread id, but its indicator needs one."""
+
+    def _typing(self, chat_id, thread_id=None, responses=()):
+        src = (ROOT / "bin" / "herald-telegram").read_text()
+        mod = types.ModuleType("tg")
+        mod.__dict__["__file__"] = str(ROOT / "bin" / "herald-telegram")
+        exec(compile(src.split("def main()")[0], "herald-telegram", "exec"),
+             mod.__dict__)
+        calls, replies = [], list(responses)
+
+        def api(method, **params):
+            calls.append((method, params.get("message_thread_id")))
+            return replies.pop(0) if replies else {"ok": True}
+
+        mod.api = api
+        return mod.Working(chat_id=chat_id, thread_id=thread_id), calls
+
+    def test_general_topic_is_addressed_explicitly(self):
+        w, calls = self._typing(-100)
+        w._send_typing()
+        self.assertEqual(calls, [("sendChatAction", 1)])
+
+    def test_a_named_topic_keeps_its_own_id(self):
+        w, calls = self._typing(-100, thread_id=9)
+        w._send_typing()
+        self.assertEqual(calls, [("sendChatAction", 9)])
+
+    def test_a_direct_chat_sends_no_id(self):
+        w, calls = self._typing(42)
+        w._send_typing()
+        self.assertEqual(calls, [("sendChatAction", None)])
+
+    def test_a_group_without_general_falls_back_and_stops_trying(self):
+        w, calls = self._typing(-100, responses=[None])
+        w._send_typing()
+        w._send_typing()
+        self.assertEqual(calls, [("sendChatAction", 1), ("sendChatAction", None),
+                                 ("sendChatAction", None)])
+
+
 class CodexReasoningIsNotAMessage(unittest.TestCase):
     def test_reasoning_items_have_their_own_kind(self):
         seen = []
