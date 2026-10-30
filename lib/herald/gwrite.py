@@ -115,12 +115,12 @@ def primary_calendar_name() -> str | None:
 
 def field_hash(body: dict) -> str:
     parts = [
-        body.get("summary", ""),
+        body.get("summary") or "",
         (body.get("start") or {}).get("dateTime", "") or (body.get("start") or {}).get("date", ""),
         (body.get("end") or {}).get("dateTime", "") or (body.get("end") or {}).get("date", ""),
-        body.get("location", ""),
-        body.get("description", ""),
-        body.get("colorId", ""),
+        body.get("location") or "",
+        body.get("description") or "",
+        body.get("colorId") or "",
     ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:20]
 

@@ -13,7 +13,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'lib'))
 
-from herald import db, deadlines  # noqa: E402
+from herald import db, deadlines, gwrite  # noqa: E402
 
 spec = importlib.util.spec_from_file_location('calendar_feeds', ROOT / 'collectors/calendar_feeds.py')
 feeds = importlib.util.module_from_spec(spec)
@@ -70,6 +70,14 @@ class FeedRemovals(unittest.TestCase):
         found = deadlines.disputes(self.con, rows)
         self.assertIn(rid, found)
         self.assertNotIn(other, found)
+
+    def test_hash_survives_an_event_with_empty_fields(self):
+        """A live event read back with no colour or location must not crash the cancel."""
+        existing = {'summary': 'Essay', 'start': '2026-10-30', 'end': '2026-10-31',
+                    'location': None, 'description': None, 'colorId': None}
+        projected = gwrite._projected(existing, {'summary': 'CANCELLED: Essay'})
+        self.assertEqual(gwrite.field_hash(projected), gwrite.field_hash(
+            {'summary': 'CANCELLED: Essay', 'start': {'date': '2026-10-30'}, 'end': {'date': '2026-10-31'}}))
 
     def test_a_user_cancelled_deadline_is_not_revived(self):
         rid = deadlines.add(self.con, source='lms', ref='a', course='C', kind='due', title='Essay', due=self.day)
