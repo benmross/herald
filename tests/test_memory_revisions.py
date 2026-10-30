@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import pathlib
 import sqlite3
 import sys
@@ -12,7 +13,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / 'lib'), str(ROOT)]
 from cycles import _snapshot
-from herald import changes, config, db
+from herald import changes, mailreadings, config, db
 
 
 class MemoryRevisions(unittest.TestCase):
@@ -61,7 +62,7 @@ class MemoryRevisions(unittest.TestCase):
         self.con.execute("INSERT INTO facts(id,source,kind,title,ingested_at) "
                          "VALUES(10001,'example','reading','A reading','now')")
         text, _ = _snapshot.delta(self.con, fp)
-        self.assertIn('1 other fact record(s)', text)
+        self.assertIn('1 other record(s)', text)
         self.assertNotIn('10001 other', text)
 
     def test_rebuilt_identical_derived_facts_are_quiet(self):
@@ -99,10 +100,10 @@ class MemoryRevisions(unittest.TestCase):
 
     def test_large_batch_has_explicit_overflow_and_full_cursor(self):
         fp = self.baseline()
-        for i in range(12):
+        for i in range(18):
             self.fact(external_id=str(i), title=f'Meeting {i}')
         text, next_fp = _snapshot.delta(self.con, fp)
-        self.assertIn('6 more named record changes', text)
+        self.assertIn('6 more record changes', text)
         self.assertEqual(next_fp['change_seq'], changes.sequence(self.con))
         self.assertIsNone(_snapshot.delta(self.con, next_fp)[0])
 
@@ -124,7 +125,100 @@ class MemoryRevisions(unittest.TestCase):
         self.fact(data={'role': 'feed'})
         text, _ = _snapshot.delta(self.con, fp)
         self.assertNotIn('Your event', text)
-        self.assertIn('1 other fact', text)
+        self.assertIn('1 other record(s)', text)
+
+    def test_compact_removes_rebuilds_but_keeps_real_changes(self):
+        self.fact()
+        self.fact(external_id='other', title='Other')
+        start = changes.sequence(self.con)
+        db.clear(self.con, 'calendar', 'event')
+        self.fact()
+        self.fact(external_id='other', title='Renamed')
+        self.assertEqual(changes.compact(self.con, start), 2)
+        left = self.con.execute('SELECT count(*) FROM ledger_changes WHERE seq>?', (start,)).fetchone()[0]
+        self.assertEqual(left, 2)
+        self.assertEqual(len(changes.net(self.con, start)), 1)
+
+    def test_prune_forgets_old_revisions_and_warns_an_idle_conversation(self):
+        self.fact()
+        fingerprint = self.baseline()
+        self.con.execute("UPDATE ledger_changes SET changed_at='2020-01-01T00:00:00.000Z'")
+        self.assertEqual(changes.prune(self.con, 30), 1)
+        fingerprint['change_seq'] = 0
+        self.con.execute("INSERT INTO memory_metadata VALUES ('pruned_through','1') "
+                         "ON CONFLICT(key) DO UPDATE SET value='1'")
+        self.fact(title='Moved')
+        text, _ = _snapshot.delta(self.con, fingerprint)
+        self.assertIn('idle longer than change history', text)
+
+    def test_a_due_date_change_is_not_cut_by_newsletters(self):
+        fingerprint = self.baseline()
+        for n in range(10):
+            db.put_fact(self.con, 'gmail', 'message', external_id=f'news{n}', title=f'Weekly digest {n}',
+                        data={'from': 'News <n@example.org>', 'bulk': True})
+        db.put_fact(self.con, 'gmail', 'message', external_id='due', title='Assignment Due Date Changed: Essay',
+                    data={'from': 'Course <c@example.org>', 'bulk': True})
+        text, _ = _snapshot.delta(self.con, fingerprint)
+        self.assertIn('Due Date Changed', text)
+        self.assertNotIn('Weekly digest', text)
+        self.assertIn('10 bulk email', text)
+
+    def test_records_outrank_mail_however_many_arrived(self):
+        fingerprint = self.baseline()
+        for n in range(20):
+            db.put_fact(self.con, 'gmail', 'message', external_id=f'm{n}', title=f'Hello {n}',
+                        data={'from': 'A Person <a@example.org>'})
+        self.fact(title='Moved meeting')
+        text, _ = _snapshot.delta(self.con, fingerprint)
+        self.assertLess(text.index('Moved meeting'), text.index('Hello'))
+
+    def test_application_status_change_reaches_a_conversation(self):
+        self.con.execute("INSERT INTO applications(url,created_at,company,title,status) VALUES ('u','t','Example','Intern','submitted')")
+        fingerprint = self.baseline()
+        self.con.execute("UPDATE applications SET status='rejected'")
+        text, _ = _snapshot.delta(self.con, fingerprint)
+        self.assertIn('Application updated: Intern at Example; status rejected', text)
+
+    def test_routine_writes_collapse_to_one_line(self):
+        fingerprint = self.baseline()
+        for n in range(30):
+            self.con.execute("INSERT INTO actions(ts,actor,tier,kind,target,summary) VALUES ('t','test','amber','calendar.create','Campus',?)", (str(n),))
+        text, _ = _snapshot.delta(self.con, fingerprint)
+        self.assertIn('Herald wrote 30 times', text)
+
+    def test_cancelled_meeting_reaches_the_brief_as_cancelled(self):
+        today = dt.date.today()
+        ts = f'{today + dt.timedelta(days=1)}T17:30:00-04:00'
+        self.fact(external_id='weekly', ts=ts, title='Team meeting')
+        self.fact(external_id='past', ts='2020-01-01T10:00:00-04:00', title='Old')
+        since = '2000-01-01T00:00:00+00:00'
+        self.con.execute('DELETE FROM ledger_changes')
+        self.con.execute("DELETE FROM facts WHERE external_id IN ('weekly','past')")
+        lines = _snapshot._calendar_changes(self.con, since, today)
+        self.assertEqual(len(lines), 1)
+        self.assertIn('CANCELLED or removed: Team meeting', lines[0])
+
+    def test_moved_event_is_reported_with_both_times(self):
+        today = dt.date.today()
+        first = f'{today + dt.timedelta(days=1)}T10:00:00-04:00'
+        self.fact(ts=first)
+        seq = changes.sequence(self.con)
+        self.fact(ts=f'{today + dt.timedelta(days=2)}T10:00:00-04:00')
+        self.con.execute('DELETE FROM ledger_changes WHERE seq<=?', (seq,))
+        lines = _snapshot._calendar_changes(self.con, '2000-01-01T00:00:00+00:00', today)
+        self.assertIn('MOVED: Project meeting', lines[0])
+
+    def test_a_reading_replaces_the_message_text_and_outlives_it(self):
+        db.put_fact(self.con, 'gmail', 'message', external_id='m1', ts='2026-10-29T12:00:00-04:00',
+                    title='Thank you', body='Long text', data={'from': 'x'})
+        kept = mailreadings.save(self.con, [
+            {'message_id': 'gmail:m1', 'says': 'They declined the application.', 'matters': 'fyi'},
+            {'message_id': 'gmail:invented', 'says': 'Nothing', 'matters': 'no'}], 'cycle:scout')
+        self.assertEqual(kept, 1)
+        fact = self.con.execute("SELECT * FROM facts WHERE external_id='m1'").fetchone()
+        found = mailreadings.lookup(self.con, [fact])
+        self.assertEqual(found['gmail:m1']['says'], 'They declined the application.')
+        self.assertEqual(found['gmail:m1']['read_by'], 'cycle:scout')
 
     def test_documents_baseline_edit_delete_and_unchanged_scan(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(config, 'LEDGER', pathlib.Path(directory)):
@@ -137,12 +231,12 @@ class MemoryRevisions(unittest.TestCase):
             p.write_text('Corrected conclusion')
             changes.scan_documents(self.con)
             text, fp = _snapshot.delta(self.con, fp)
-            self.assertIn('Memory document updated: state/project.md', text)
+            self.assertIn('Memory documents changed: state/project.md', text)
             changes.scan_documents(self.con)
             self.assertIsNone(_snapshot.delta(self.con, fp)[0])
             p.unlink()
             changes.scan_documents(self.con)
-            self.assertIn('Memory document removed', _snapshot.delta(self.con, fp)[0])
+            self.assertIn('(removed)', _snapshot.delta(self.con, fp)[0])
 
     def test_private_mode_does_not_scan_documents(self):
         with mock.patch.object(changes.private, 'active', return_value=True):

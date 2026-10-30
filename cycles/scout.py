@@ -27,6 +27,7 @@ import sys
 HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "lib"))
 
+from herald import mailreadings  # noqa: E402
 from herald import amber, config, db, mailimages, mailtext, notify, think  # noqa: E402
 
 CYCLE = "scout"
@@ -145,6 +146,7 @@ SCHEMA = {
                 "required": ["title", "start"],
             },
         },
+        "mail_readings": mailreadings.SCHEMA,
         "summary": {
             "type": "string",
             "description": "A few lines on what this pass found, for the journal.",
@@ -152,7 +154,7 @@ SCHEMA = {
         "opened": {"type": "integer"},
         "rejected": {"type": "integer"},
     },
-    "required": ["summary", "opened", "rejected", "posting_decisions"],
+    "required": ["summary", "opened", "rejected", "posting_decisions", "mail_readings"],
 }
 
 INSTRUCTIONS = f"""\
@@ -175,7 +177,11 @@ mattered: on 9 September 2026 a receipt saying an App Store submission had gone
 into review scored zero, and so did a direct question from a family member.
 Each message carries a `filter score` and it is a reading order, nothing more.
 
-Most of it is nothing and should cost you a line each. But read all
+For every message with a `reading id`, return a `mail_readings` entry saying in
+one sentence what it actually says. Later cycles rely on that sentence and do
+not read the message again, so a decline is called a decline and an uncertain
+point is named as uncertain. Most of it is nothing and should cost you a line
+each. But read all
 of it, and do not read it only for opportunities: if something in there is a
 person waiting on a reply, a bill, a deadline buried in a listserv digest, or
 a status change on something {THEY} already applied to, say so in `summary` so
@@ -635,6 +641,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
         out.append(f"- filter score {d.get('score')} ({', '.join(d.get('reasons', []))})")
         fact = reader.message(r["external_id"])
         if fact is not None:
+            out.append(f"- reading id: {mailreadings.key(fact)}")
             out.extend(reader.render(fact))
         elif r["body"]:
             out.append(f"- text: {mailtext.compact(r['body'])}")
@@ -798,6 +805,7 @@ def main() -> int:
         allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                        "WebSearch", "WebFetch",
                        "Bash(herald db *)", "Bash(herald status *)", "Bash(herald context *)",
+                       "Bash(herald fact *)", "Bash(herald search *)",
                        "Bash(herald obligation *)", "Bash(herald deadline *)",
                        f"Bash({config.ROOT / 'skills' / 'google-workspace' / 'scripts' / 'grun'} *)",
                        *amber.CYCLE_TOOLS],
@@ -843,6 +851,7 @@ def main() -> int:
         # build_snapshot reports its own ids rather than the caller guessing
         # them from a sorted list that was never the display order.
         _remember(con, seen | reviewed_ids(con, shown_ids, payload.get("posting_decisions") or []))
+        mailreadings.save(con, payload.get("mail_readings"), LABEL)
         from herald import context as context_mod
         context_mod.refresh_opportunities(con)
         live = con.execute(

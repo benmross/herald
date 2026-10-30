@@ -253,9 +253,11 @@ def collect(con, *, reconcile: bool = False) -> dict:
                 last_error = errors[mid] = str(e)[:200]
             time.sleep(PAUSE)
 
-    # A stored message Gmail no longer has (deleted for good) would otherwise be
-    # re-requested by the backfill on every run, forever.
-    gone = [mid for mid in failed if mid in set(backfill) and "404" in errors.get(mid, "")]
+    # A message Gmail no longer has (deleted for good) would otherwise be
+    # re-requested by the backfill on every run, forever. The same goes for one
+    # listed in history and deleted before this fetch: nothing will ever arrive,
+    # so it must not hold the cursor back until the history id expires.
+    gone = [mid for mid in failed if "404" in errors.get(mid, "")]
     for mid in gone:
         con.execute("""
             UPDATE facts SET data = json_set(data, '$.body_format', 'unavailable')
@@ -365,7 +367,7 @@ def collect(con, *, reconcile: bool = False) -> dict:
             "bulk": bulk_count, "awaiting reply": awaiting,
             "fetch failures": len(failed),
             "_sync": {"complete": not failed, "pending": len(failed),
-                      "reason": "message fetches remain unresolved" if failed else None,
+                      "reason": f"message fetches remain unresolved: {last_error}" if failed else None,
                       "coverage": {"mode": mode, "query": query,
                                    "listed": listed, "missing": missing,
                                    "attempted": len(ids), "fetched": len(fetched)}},

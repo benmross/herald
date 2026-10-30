@@ -30,12 +30,14 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
-from herald import changes, config, db, extensions  # noqa: E402
+from herald import changes, config, db, extensions, mailreadings, mailtext  # noqa: E402
 
 # Near-term detail, then everything else in brief. Nothing is hidden merely for
 # being distant: an exam eight weeks out still belongs in the picture, it just
@@ -43,7 +45,16 @@ from herald import changes, config, db, extensions  # noqa: E402
 DUE_HORIZON_DAYS = 21
 SCHEDULE_DAYS = 2
 AWAITING_LIMIT = 20
-NEW_MAIL_LIMIT = 25
+NEW_MAIL_LIMIT = 40
+# Text shown for mail no session has read yet. Direct mail arrives whole unless
+# it is enormous; bulk mail gets enough to find its point. A budget bounds a
+# morning with a large backlog, and what it holds back is named, never guessed at.
+UNREAD_DIRECT_CHARS = 6_000
+UNREAD_BULK_CHARS = 1_500
+UNREAD_TOTAL_CHARS = 40_000
+# Google's replies to an invitation. They report one guest's answer and say
+# nothing about whether the event is still on.
+CALENDAR_REPLY = re.compile(r"^(Accepted|Declined|Tentative|Tentatively accepted|Maybe)\s*:", re.I)
 
 WHO = config.person()
 
@@ -154,6 +165,56 @@ def _extension_sections(ctx: Context) -> list[tuple[int, str]]:
         if text:
             out.append((getattr(module, "ORDER", 50), text.rstrip()))
     return out
+
+
+def _event_time(value) -> str:
+    try:
+        when = dt.datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return str(value)
+    if len(value) <= 10:
+        return f"{when:%a %-d %b}"
+    return f"{when.astimezone(config.tz()):%a %-d %b}, {config.clock(when.astimezone(config.tz()))}"
+
+
+def _calendar_changes(con, since, today: dt.date) -> list[str]:
+    """Own events removed, moved or renamed since the last cycle.
+
+    A cancellation leaves no row behind, so a brief built only from what is on
+    the calendar cannot say one happened, and mail about the event was left
+    speaking for it. On 30 October 2026 that put a meeting cancelled the evening
+    before back in the digest, on the strength of a guest's acceptance.
+    """
+    if not since:
+        return []
+    moment = dt.datetime.fromisoformat(since)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=config.tz())
+    stamp = moment.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    first = con.execute("SELECT MIN(seq) FROM ledger_changes WHERE changed_at>?", (stamp,)).fetchone()[0]
+    if first is None:
+        return []
+    lines = []
+    for r in changes.net(con, first - 1):
+        before, after = r["before"], r["after"]
+        if r["entity"] != "facts" or before is None:
+            continue
+        old_data = before.get("data") if isinstance(before.get("data"), dict) else {}
+        if before.get("kind") != "event" or old_data.get("role") != "mine":
+            continue
+        if str(before.get("ts"))[:10] < today.isoformat():
+            continue
+        title, when = _clip(before.get("title"), 70), _event_time(before.get("ts"))
+        new_data = (after or {}).get("data") if isinstance((after or {}).get("data"), dict) else {}
+        if after is None or new_data.get("status") == "cancelled":
+            lines.append(f"- CANCELLED or removed: {title}, was {when}.")
+        elif after.get("ts") != before.get("ts"):
+            lines.append(f"- MOVED: {title}, from {when} to {_event_time(after.get('ts'))}.")
+        elif after.get("title") != before.get("title"):
+            lines.append(f"- RENAMED: {title} is now {_clip(after.get('title'), 70)}, {when}.")
+        elif new_data.get("location") != old_data.get("location"):
+            lines.append(f"- NEW ROOM: {title}, {when}: now {_clip(new_data.get('location'), 60)}.")
+    return lines[:15]
 
 
 def build(con, cycle: str) -> tuple[str, set[str]]:
@@ -424,6 +485,8 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
             out.append("nobody")
         for t in texts:
             days = _j(t, "days_since")
+            if days is None and t["ts"]:
+                days = round((now - dt.datetime.fromisoformat(t["ts"])).total_seconds() / 86_400, 1)
             body = (t["body"] or "").replace("\n", " ")[:110]
             out.append(f"- {t['title']}"
                        + (f" ({days}d ago)" if days is not None else "")
@@ -463,6 +526,13 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
             out.append(f"- {due_words}  {t['title']}  [{_j(t, 'list')}]")
 
     # --- what changed ------------------------------------------------------
+    moved = _calendar_changes(con, since, today)
+    if moved:
+        head("Calendar changes since the last cycle")
+        out.append("These come from the calendar, which outranks any mail about "
+                   "the same event.")
+        out.extend(moved)
+
     head("New mail since the last cycle")
     if since:
         fresh = _rows(con, """
@@ -480,14 +550,34 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
         """, (NEW_MAIL_LIMIT,))
     if not fresh:
         out.append("nothing new")
+    readings = mailreadings.lookup(con, fresh)
+    budget = UNREAD_TOTAL_CHARS
     for m in fresh:
         mark = "bulk" if _j(m, "bulk") else "direct"
         out.append(f"- [{mark}] {(m['ts'] or '')[:16].replace('T', ' ')}  "
                    f"{_j(m, 'from')}  —  {m['title']}")
-        # The snippet, not the body: bodies are whole since 14 Sep 2026, and a
-        # newsletter's opening 180 characters are its header, not its point.
-        if snippet := (_j(m, "snippet") or m["body"] or "").strip():
-            out.append(f"      {_clip(snippet, 180)}")
+        reading = readings.get(mailreadings.key(m))
+        if reading:
+            out.append(f"      read whole earlier: {_clip(reading['says'], 320)}")
+            continue
+        if CALENDAR_REPLY.match(m["title"] or ""):
+            out.append("      a guest's reply to an invitation; it says nothing about "
+                       "whether the event is on")
+            continue
+        out.append(f"      reading id: {mailreadings.key(m)}")
+        text = mailtext.compact(m["body"] or "") or (_j(m, "snippet") or "").strip()
+        cap = min(UNREAD_BULK_CHARS if _j(m, "bulk") else UNREAD_DIRECT_CHARS, budget)
+        if not text:
+            out.append("      no text; the message may be images only")
+        elif cap <= 0:
+            out.append(f"      text held back by this brief's budget: `herald fact {m['id']}`")
+        else:
+            budget -= min(cap, len(text))
+            out.append("      <<<")
+            out.append(text[:cap])
+            out.append("      >>>")
+            if len(text) > cap:
+                out.append(f"      {cap} of {len(text)} characters; the rest: `herald fact {m['id']}`")
 
     gh = _rows(con, """
         SELECT * FROM facts WHERE source='github' AND kind='event'
@@ -747,6 +837,11 @@ def orientation(con) -> str:
 # not move should cost nothing to tell you so.
 
 DELTA_ITEM_LIMIT = 6
+DELTA_RECORD_LIMIT = 12
+# Bulk mail is usually noise, but a course system's "due date changed" is bulk
+# too. The subject line decides whether it earns a line of its own.
+MAIL_SIGNAL = re.compile(r"due date|deadline|cancel|reschedul|postpone|moved|changed|exam|quiz|"
+                         r"urgent|action required|declin|reject|offer|interview", re.I)
 
 
 def _clip(text, n: int) -> str:
@@ -798,21 +893,34 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
     else:
         revisions = changes.net(con, prev["change_seq"], now["change_seq"])
 
-    named, other = [], 0
+    if "change_seq" in prev and prev["change_seq"] < changes.pruned_through(con):
+        lines.append("- This conversation has been idle longer than change history "
+                     "is retained; earlier edits are not listed.")
+
+    records, mail, quiet_mail, documents, added, senders, other = [], [], 0, [], Counter(), Counter(), Counter()
     for r in revisions:
         before, after = r["before"], r["after"]
         value = after or before
         op = "removed" if after is None else "added" if before is None else "updated"
         entity = r["entity"]
         if entity == "document":
-            named.append(f"- Memory document {op}: {value['path']}.")
+            documents.append(value["path"] + (" (removed)" if after is None else ""))
         elif entity in ("commitments", "deadlines"):
             label = "Commitment" if entity == "commitments" else "Deadline"
             title = _clip(value.get("text") or value.get("title"), 75)
             due = value.get("due") or "no date"
             status = value.get("status") or "unknown"
             ending = " (closed or dropped)" if entity == "commitments" and status != "open" else ""
-            named.append(f"- {label} {op}: {title}; due {due}; status {status}{ending}.")
+            records.append(f"- {label} {op}: {title}; due {due}; status {status}{ending}.")
+        elif entity in ("opportunities", "applications"):
+            label = entity[:-1].capitalize() if entity == "applications" else "Opportunity"
+            if before and after and before.get("status") == after.get("status"):
+                other[entity] += 1
+            elif before is None and entity == "opportunities":
+                added[entity] += 1
+            else:
+                name = " at ".join(x for x in (value.get("title"), value.get("org") or value.get("company")) if x)
+                records.append(f"- {label} {op}: {_clip(name, 75)}; status {value.get('status')}.")
         elif entity == "facts":
             data = value.get("data") or {}
             if not isinstance(data, dict):
@@ -822,29 +930,60 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
                 title = _clip(value.get("title"), 65)
                 when = value.get("ts") or "no time"
                 location = _clip(data.get("location"), 45)
-                named.append(f"- Your event {op}: {title}; {when}"
-                             + (f"; {location}" if location else "") + ".")
+                records.append(f"- Your event {op}: {title}; {when}"
+                               + (f"; {location}" if location else "") + ".")
             elif source in ("gmail", "purelymail") and kind == "message":
+                if data.get("bulk") and not MAIL_SIGNAL.search(value.get("title") or ""):
+                    quiet_mail += 1
+                    continue
                 sender = _clip((data.get("from") or "?").split("<")[0].strip().strip('"'), 32)
-                named.append(f"- Email {op}: {sender}: {_clip(value.get('title'), 68)}.")
+                mail.append(f"- Email {op}: {sender}: {_clip(value.get('title'), 68)}.")
+            elif kind == "message" and data.get("direction") == "incoming" and op == "added":
+                senders[_clip(value.get("title"), 24)] += 1
             else:
-                other += 1
-    lines.extend(named[:DELTA_ITEM_LIMIT])
-    if len(named) > DELTA_ITEM_LIMIT:
-        lines.append(f"- {len(named) - DELTA_ITEM_LIMIT} more named record changes; "
-                     "use the revision range below for all of them.")
+                other[source] += 1
+
+    # Records first, and never cut by mail: a moved deadline matters more than
+    # any newsletter, and an unranked list once hid exactly that behind one.
+    lines.extend(records[:DELTA_RECORD_LIMIT])
+    if len(records) > DELTA_RECORD_LIMIT:
+        lines.append(f"- {len(records) - DELTA_RECORD_LIMIT} more record changes; "
+                     "use the revision range below.")
+    lines.extend(mail[:DELTA_ITEM_LIMIT])
+    if len(mail) > DELTA_ITEM_LIMIT:
+        lines.append(f"- {len(mail) - DELTA_ITEM_LIMIT} more emails; "
+                     "use the revision range below.")
+    if quiet_mail:
+        lines.append(f"- {quiet_mail} bulk email(s) with no sign of a change or deadline.")
+    if senders:
+        lines.append("- New messages from: " + ", ".join(
+            f"{who} ({n})" for who, n in senders.most_common(5))
+            + (f", and {len(senders) - 5} others" if len(senders) > 5 else "") + ".")
+    if documents:
+        lines.append("- Memory documents changed: " + ", ".join(documents[:4])
+                     + (f", and {len(documents) - 4} more" if len(documents) > 4 else "") + ".")
+    for entity, n in added.items():
+        lines.append(f"- {n} new {entity} recorded.")
     if other:
-        lines.append(f"- {other} other fact record(s) changed.")
+        lines.append(f"- {sum(other.values())} other record(s) changed: " + ", ".join(
+            f"{name} {n}" for name, n in other.most_common(4)) + ".")
     if revisions:
         lines.append(f"- Full change evidence: query ledger_changes with "
                      f"seq > {prev['change_seq']} AND seq <= {now['change_seq']}.")
 
-    acts = _rows(con, "SELECT kind,target,summary FROM actions WHERE id>? ORDER BY id LIMIT ?",
-                 (prev.get("action_id", 0), DELTA_ITEM_LIMIT + 1))
-    for a in acts[:DELTA_ITEM_LIMIT]:
-        lines.append(f"- Herald write: {a['kind']} on {_clip(a['target'], 28)}: "
-                     f"{_clip(a['summary'], 80)}")
-    if len(acts) > DELTA_ITEM_LIMIT:
+    # Routine writes by one collector are one fact, however many rows they took.
+    acts = _rows(con, "SELECT kind,target,summary FROM actions WHERE id>? ORDER BY id LIMIT 500",
+                 (prev.get("action_id", 0),))
+    groups: dict[tuple, list] = {}
+    for a in acts:
+        groups.setdefault((a["kind"], a["target"]), []).append(a)
+    for (kind, target), rows in list(groups.items())[:DELTA_ITEM_LIMIT]:
+        if len(rows) > 2:
+            lines.append(f"- Herald wrote {len(rows)} times: {kind} on {_clip(target, 28)}.")
+        else:
+            lines.extend(f"- Herald write: {kind} on {_clip(target, 28)}: "
+                         f"{_clip(a['summary'], 80)}" for a in rows)
+    if len(groups) > DELTA_ITEM_LIMIT:
         lines.append(f"- More writes are available in actions after id {prev.get('action_id', 0)}.")
 
     if now["health"] != prev.get("health", {}):
