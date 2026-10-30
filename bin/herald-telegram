@@ -735,23 +735,10 @@ def delta_for(ts: dict) -> str:
 
 
 def orientation_for(ts: dict, fresh: bool) -> str | None:
-    """The card injected into a session's system prompt at its first turn.
+    """Build fresh session facts, or return a legacy session's system card.
 
-    Two rules, and the second one is the subtle one.
-
-    **Only built for a new session.** A resumed session already has the card in
-    its own transcript, and the model has already acted on it.
-
-    **Reused byte-for-byte for the rest of that session's life.** The system
-    prompt sits at the front of the cached prefix, so regenerating this every
-    turn would change the prefix every turn and invalidate the prompt cache on
-    every message -- which would cost far more than the five round trips this
-    is here to save. A stale card that keeps the cache warm beats a fresh one
-    that burns it, which is why the card says in its own text that it is a
-    starting point rather than the truth.
-
-    Best-effort: if building it fails, the turn goes ahead without it and the
-    session discovers things the slow way, exactly as it did before.
+    Resumed sessions retain their original input unchanged. Missing source
+    context must not prevent a turn from running.
     """
     if not fresh:
         return ts.get("orientation")
@@ -778,6 +765,18 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
     except OSError as exc:
         print(f"orientation not written to disk ({exc})")
     return text
+
+
+def session_input(lead: str, body: str, ts: dict, fresh: bool) -> tuple[str, str | None]:
+    """Put fresh facts after static instructions; preserve legacy system cards."""
+    card = orientation_for(ts, fresh)
+    if not fresh:
+        return lead + body, card
+    # The engine transcript now owns the card as part of its first user input.
+    # Only legacy sessions need a stored system card passed on every resume.
+    ts["orientation"] = None
+    context = f"\n\n{card}\n" if card else ""
+    return lead + context + body, None
 
 
 def transcript_missing(error: str | None) -> bool:
@@ -1171,14 +1170,15 @@ def handle(update: dict, state: dict) -> None:
         lead = (PRIVATE_PREAMBLE + "\nThe user sent a file with this message. It is "
                 "held in memory for this session and is not archived.\n"
                 if pv else DOCUMENT_PREAMBLE)
-        prompt = (f"{lead}{moved}\n---\n\n{sent_at}{files}\n\n"
+        body = (f"{moved}\n---\n\n{sent_at}{files}\n\n"
                   + (f"What the user said with it: {text}" if text
                      else "The user sent it without a caption."))
         label = "telegram:document"
         print(f"→ {len(attachments)} file(s) [{key}] (private)" if pv else
               f"→ {len(attachments)} file(s) {attachment.name} [{key}]")
     else:
-        prompt = f"{PRIVATE_PREAMBLE if pv else PREAMBLE}{moved}\n---\n\n{sent_at}{text}"
+        lead = PRIVATE_PREAMBLE if pv else PREAMBLE
+        body = f"{moved}\n---\n\n{sent_at}{text}"
         label = "telegram"
         # The unit's log is on disk, so a private message is not quoted in it.
         print(f"→ a message [{key}] (private)" if pv else
@@ -1201,6 +1201,7 @@ def handle(update: dict, state: dict) -> None:
     with activity.Turn("telegram", key):
         posted: list[int] = [*(m.get("message_id") for m in parts), *notices]
         with Working(chat_id, thread_id) as working:
+            prompt, system_card = session_input(lead, body, ts, bool(reason))
             result = think.think(
                 prompt, label=label, model=model, cwd=config.ROOT, resume=resume,
                 engine=engine, effort=effort, codex_transport="app-server",
@@ -1209,7 +1210,7 @@ def handle(update: dict, state: dict) -> None:
                 permission_mode=None,
                 allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                "WebSearch", "WebFetch", "Bash"],
-                append_system_prompt=orientation_for(ts, bool(reason)),
+                append_system_prompt=system_card,
                 on_progress=working.on_progress, cancel_key=key,
                 private=pv["scratch"] if pv else None,
             )
@@ -1229,14 +1230,14 @@ def handle(update: dict, state: dict) -> None:
             print(f"[{key}] resume failed, retrying fresh")
             posted += working.message_ids
             with Working(chat_id, thread_id) as working:
+                prompt, system_card = session_input(lead, body, ts, True)
                 result = think.think(
                     prompt, label=label, model=model, cwd=config.ROOT, resume=None,
                     engine=engine, effort=effort, codex_transport="app-server",
                     permission_mode=None,
                     allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
                                    "WebSearch", "WebFetch", "Bash"],
-                    # This retry *is* a fresh session, so it earns a fresh card.
-                    append_system_prompt=orientation_for(ts, True),
+                    append_system_prompt=system_card,
                     on_progress=working.on_progress, cancel_key=key,
                     private=pv["scratch"] if pv else None)
             if result.ok:

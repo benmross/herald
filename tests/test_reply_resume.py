@@ -14,6 +14,7 @@ import sqlite3
 import sys
 import types
 import unittest
+import time
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -52,6 +53,7 @@ class ReplyResume(unittest.TestCase):
         self.next_id = 1000
         self.sent: list[str] = []
         self.calls: list[dict] = []
+        self.prompts: list[str] = []
         self.sessions = iter(["sess-A", "sess-B", "sess-C"])
 
         def api(method, **kw):
@@ -63,6 +65,7 @@ class ReplyResume(unittest.TestCase):
 
         def think_(prompt, **kw):
             self.calls.append(kw)
+            self.prompts.append(prompt)
             sid = kw["resume"] or next(self.sessions)
             return types.SimpleNamespace(
                 ok=True, cancelled=False, text=f"answer from {sid}",
@@ -77,7 +80,7 @@ class ReplyResume(unittest.TestCase):
                               side_effect=lambda k, *a: 42 if k == "telegram.user_id" else 1),
             mock.patch.object(self.tg, "delta_for", return_value=""),
             mock.patch.object(self.tg, "orientation_for",
-                              side_effect=lambda ts, fresh: ts.setdefault("orientation", "card")),
+                              side_effect=lambda ts, fresh: "card" if fresh else ts.get("orientation")),
             mock.patch.object(self.tg.activity, "Turn",
                               lambda *a, **k: contextlib.nullcontext()),
         ]
@@ -102,6 +105,47 @@ class ReplyResume(unittest.TestCase):
     @property
     def pointer(self):
         return self.state["threads"][KEY]["session_id"]
+
+    def test_new_cards_follow_static_preamble_and_precede_request(self):
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                self.state["threads"].clear()
+                with mock.patch.object(self.tg.config, "default_engine", return_value=provider):
+                    self.say("new request")
+                self.assertIsNone(self.calls[-1]["append_system_prompt"])
+                prompt = self.prompts[-1]
+                self.assertTrue(prompt.startswith(self.tg.PREAMBLE))
+                self.assertLess(prompt.index("card"), prompt.index("new request"))
+                self.assertIsNone(self.state["threads"][KEY]["orientation"])
+                self.say("follow-up request")
+                self.assertNotIn("card", self.prompts[-1])
+                self.assertIsNone(self.calls[-1]["append_system_prompt"])
+
+    def test_existing_system_cards_are_preserved_on_resume(self):
+        self.state["threads"][KEY] = {"session_id": "legacy", "engine": "claude",
+                                       "turns": 1, "last_ts": time.time(),
+                                       "orientation": "old system card"}
+        self.say("follow-up")
+        self.assertEqual(self.calls[-1]["append_system_prompt"], "old system card")
+        self.assertNotIn("old system card", self.prompts[-1])
+
+    def test_missing_transcript_retry_moves_the_new_card_into_user_input(self):
+        self.state["threads"][KEY] = {"session_id": "legacy", "engine": "claude",
+                                       "turns": 1, "last_ts": time.time(),
+                                       "orientation": "old system card"}
+        failed = types.SimpleNamespace(ok=False, cancelled=False, text="", session_id="legacy",
+                                       cost_usd=0.0, error="No conversation found")
+        success = types.SimpleNamespace(ok=True, cancelled=False, text="recovered", session_id="fresh",
+                                        cost_usd=0.0, error=None)
+        with mock.patch.object(self.tg.think, "think", side_effect=[failed, success]) as run:
+            self.say("recover this request")
+        before, after = run.call_args_list
+        self.assertEqual(before.kwargs["append_system_prompt"], "old system card")
+        self.assertIsNone(after.kwargs["append_system_prompt"])
+        self.assertIn("card", after.args[0])
+        self.assertNotIn("old system card", after.args[0])
+        self.assertTrue(after.args[0].endswith("recover this request"))
+        self.assertEqual(self.pointer, "fresh")
 
     def test_a_reply_to_the_earlier_conversation_resumes_it(self):
         first = self.say("one")

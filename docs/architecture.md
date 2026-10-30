@@ -370,8 +370,8 @@ differences that could not be hidden are all documented on `think._run_codex`:
 
 - Codex reads `AGENTS.md`, so every Codex run is launched
   with `project_doc_fallback_filenames=["CLAUDE.md"]` and picks up the same
-  generated constitution. The orientation card, which Claude gets as
-  `--append-system-prompt`, goes to Codex as `developer_instructions`.
+  generated constitution. Fresh Telegram sessions put orientation in the first
+  user input on both engines. Legacy sessions retain their original system card.
 - `herald ext sync` writes the same skill links into
   `.agents/skills/` as into `.claude/skills/`, and the same hooks into
   `.codex/hooks.json` as into `.claude/settings.json`, so `tools/guard.py`
@@ -503,17 +503,16 @@ deadlines. Retrieval guidance lives in the constitution and skills; database
 inventories and SQL examples are retrieved on demand. See `docs/session-context.md`.
 
 It reaches sessions two ways, because the surfaces differ. herald-telegram
-injects it through Claude's `--append-system-prompt` or Codex's
-`developer_instructions`. Direct terminal or app sessions that bypass this
+places it after static instructions and the Telegram preamble in the first
+user input, on either engine. Direct terminal or app sessions that bypass this
 launcher read `ledger/state/orientation.md` only if no card was injected.
 `herald orient` rewrites that file; the bridge also refreshes it at session start.
 
-**The card is generated once per session and then reused byte-for-byte.** The
-system prompt sits at the front of the cached prefix, so rebuilding it every turn
-would invalidate the prompt cache on every message and cost far more than the
-round trips it saves. A resumed session gets no new card at all, because it already
-has the old one in its transcript. A stale card that keeps the cache warm beats a
-fresh one that burns it, and the card says so in its own text.
+**The card is generated once per session and retained in the first input.**
+Resumed sessions do not receive another copy. Changes arrive in later messages,
+preserving the earlier prefix. Legacy sessions retain their original system card
+on resume. Actual cache reuse depends on the first-party CLI's boundaries and
+routing; prompt order alone does not establish a measured saving.
 
 **`cycles/_snapshot.py:delta()`** closes the gap the frozen card leaves. A
 conversation can run for hours: collectors fire at :02 and :32, cycles write to

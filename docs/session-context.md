@@ -10,7 +10,7 @@ constraints, session facts and task-specific retrieval when auditing size.
 |---|---|---|
 | Harness | Native system prompt, tools and runtime reminders | Native system/developer instructions, tools and runtime reminders |
 | Operating rules | Generated `CLAUDE.md` | `AGENTS.md`, or generated `CLAUDE.md` through the configured fallback |
-| Session card | `--append-system-prompt` | `developer_instructions` / `developerInstructions` |
+| Session card | First user input, after static rules and Telegram preamble | Same |
 | Memory outside Herald | Claude's auto-memory index, when enabled | Does not inherit Claude's auto-memory index |
 | User turn | Telegram wrapper, local sent time, changes and request | Same |
 
@@ -20,16 +20,31 @@ mode and `ledger/identity/constitution.md`. `herald constitution` regenerates
 mechanics. Do not remove Herald's authorization or privacy rules just because a
 harness currently contains a similar generic instruction.
 
-`bin/herald-telegram:orientation_for` builds the card on a new session and reuses
-it unchanged on resume. The card includes current facts, not schema inventories,
+`bin/herald-telegram:orientation_for` builds the card on a new session;
+`session_input` places it after the static Telegram preamble and before the
+request, in the first user input. The card includes current facts, not schema inventories,
 SQL examples, personal histories or general instructions. Per-turn changes carry
 new evidence separately. Direct sessions without an injected card may read
 `ledger/state/orientation.md` once. An old card is not current evidence.
 
-Claude places the appended card inside its system prompt, ahead of the tool
-schema and CLAUDE.md messages in a request capture. This is serialization order,
-not an indication that the card ran before Herald. Claude loads its own
-`MEMORY.md` index automatically; Herald does not copy it into the prompt.
+On resume, the first input remains in the engine transcript; the card is not
+regenerated or appended again. Legacy sessions keep passing their original card
+through Claude's append-system-prompt or Codex's developer instructions, preserving
+their original prefix. A missing-transcript retry starts with a fresh user-input
+card. No stored-data migration is needed: the existing nullable orientation field
+continues to mean a system card; new sessions leave it null.
+
+Both providers cache matching prefixes. Moving session-specific facts after
+static rules increases the reusable prefix across fresh sessions. It does not
+guarantee a cache hit: the first-party CLI controls cache boundaries and routing.
+Measure cached-input counts before claiming an improvement. Anthropic's cache
+hierarchy is tools, system, messages, regardless of capture display order.
+See [OpenAI caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+and [Anthropic caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching).
+
+When enabled, Claude loads its own `MEMORY.md` index automatically; Herald does
+not copy it into the prompt. A user's install may disable it after reconciling
+unique knowledge into the ledger.
 
 ## Size and ownership
 
