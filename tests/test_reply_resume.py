@@ -73,6 +73,9 @@ class ReplyResume(unittest.TestCase):
 
         patches = [
             mock.patch.object(self.tg.config, "default_engine", return_value="claude"),
+            # Auto is off unless a test turns it on; the machine's config must
+            # not decide which path these take.
+            mock.patch.object(self.tg.routing, "enabled", return_value=False),
             mock.patch.object(self.tg.db, "session", session),
             mock.patch.object(self.tg, "api", api),
             mock.patch.object(self.tg.think, "think", think_),
