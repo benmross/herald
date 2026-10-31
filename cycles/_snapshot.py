@@ -220,7 +220,7 @@ def _calendar_changes(con, since, today: dt.date) -> list[str]:
         new_data = (after or {}).get("data") if isinstance((after or {}).get("data"), dict) else {}
         if after is None or new_data.get("status") == "cancelled":
             lines.append(f"- CANCELLED or removed: {title}, was {when}.")
-        elif after.get("ts") != before.get("ts"):
+        elif _event_time(after.get("ts")) != when:
             lines.append(f"- MOVED: {title}, from {when} to {_event_time(after.get('ts'))}.")
         elif after.get("title") != before.get("title"):
             lines.append(f"- RENAMED: {title} is now {_clip(after.get('title'), 70)}, {when}.")

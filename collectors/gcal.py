@@ -86,7 +86,11 @@ def _iso(value: dict) -> tuple[str | None, bool]:
     if not value:
         return None, False
     if "dateTime" in value:
-        return value["dateTime"], False
+        # Readers take the clock and date straight out of this string, and an
+        # imported feed gives UTC, so a noon game read as 4:00 PM until stored
+        # in the user's timezone.
+        moment = dt.datetime.fromisoformat(value["dateTime"])
+        return moment.astimezone(config.tz()).isoformat(), False
     return value.get("date"), True
 
 
