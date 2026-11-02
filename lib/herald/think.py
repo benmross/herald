@@ -388,7 +388,14 @@ def cancel(key: str) -> bool:
     return True
 
 
-def steer(key: str, text: str) -> bool:
+def steering_target(key: str):
+    """Opaque identity for input preparation; steer() rechecks it atomically."""
+    with _active_lock:
+        entry = _active.get(key)
+        return entry if entry and entry.get("accepting_steers") else None
+
+
+def steer(key: str, text: str, *, target=None) -> bool:
     """Inject an additional user message into the live run under `key`, if
     it's still accepting them. Returns whether it landed -- False means
     nothing is running under `key`, or what was running has already committed
@@ -406,10 +413,13 @@ def steer(key: str, text: str) -> bool:
     accepts steers while its turn is active and confirms them over JSON-RPC.
     The caller gets False and starts a fresh turn, which is the same path a
     Claude run takes once it has committed to finalizing.
+
+    `target`, when supplied by steering_target(), binds expensive attachment
+    preparation to that exact run. A later run under the same key rejects it.
     """
     with _active_lock:
         entry = _active.get(key)
-        if entry is None or not entry.get("accepting_steers"):
+        if entry is None or not entry.get("accepting_steers") or (target is not None and entry is not target):
             return False
         entry["steer_queue"].put(text)
         return True

@@ -374,3 +374,20 @@ There are two repositories. The program pushes to the public `herald` repo; the 
 
 `facts.db` is fully rebuildable from its sources; the documents are not, and
 rely on the box's own backups.
+
+## Updating active Telegram work
+
+Text, photos and documents sent in an active topic are steered into its current
+run when the selected transport accepts live input. File captions stay with
+their archived paths. Albums wait briefly for all parts, then enter together as
+one update. Acknowledgement means the update was queued for the engine; it does
+not claim that the model has already read the image or interrupted its current
+tool call.
+
+Downloads happen before steering. If the active run finishes during a download,
+the file request takes the normal next-turn path without downloading again;
+it cannot jump into a replacement run. Private attachments stay in the private
+scratch directory. If that private session has ended, Herald asks for a resend
+rather than archiving them into an ordinary conversation. Replies that target
+another session retain their normal routing, and commands retain their normal
+handling. Voice and audio support is unchanged.

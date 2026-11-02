@@ -698,6 +698,45 @@ def download(file_id: str, suggested: str,
     return dest
 
 
+def prepare_attachments(update: dict, folder: pathlib.Path | None = None) -> list[pathlib.Path] | None:
+    """Archive once, including when a steer loses its race with turn completion.
+
+    A private scratch path is never reused in an ordinary session or another
+    private scratch. The normal handler remains the fallback if steering closes.
+    """
+    destination = str(folder) if folder is not None else None
+    prepared = update.get("_prepared_attachments")
+    if prepared and prepared["destination"] == destination:
+        return [pathlib.Path(p) for p in prepared["paths"]]
+    msg = update.get("message") or update.get("edited_message") or {}
+    paths = []
+    for part in update.get("_album") or [msg]:
+        if doc := part.get("document"):
+            got = download(doc["file_id"], doc.get("file_name") or f"{doc['file_id']}.bin", folder)
+        elif photos := part.get("photo"):
+            largest = max(photos, key=lambda p: p.get("file_size") or 0)
+            got = download(largest["file_id"], f"{largest['file_id']}.jpg", folder)
+        else:
+            continue
+        if got is None:
+            return None
+        paths.append(got)
+    if paths:
+        update["_prepared_attachments"] = {"destination": destination, "paths": [str(p) for p in paths]}
+    return paths
+
+
+def attachment_request(paths: list[pathlib.Path], text: str, msg: dict) -> str:
+    if len(paths) == 1:
+        files = f"File: `{paths[0]}`"
+    else:
+        files = (f"{len(paths)} files, sent together as one message -- "
+                 "read all of them and treat them as one request:\n"
+                 + "\n".join(f"- `{p}`" for p in paths))
+    return (f"{sent_at_line(msg)}{files}\n\n" +
+            (f"What the user said with it: {text}" if text else "The user sent it without a caption."))
+
+
 _remember_lock = threading.Lock()
 
 
@@ -1030,6 +1069,11 @@ def handle(update: dict, state: dict) -> None:
     pv = _private.get(key)
     ts = topic_state(state, key)
     inbox = pathlib.Path(pv["scratch"]) / "inbox" if pv else None
+    prepared = update.get("_prepared_attachments")
+    if prepared and prepared["destination"] is not None and prepared["destination"] != str(inbox):
+        send(chat_id, "That private session ended before the file could be "
+                      "delivered. Please resend it in a private session.", thread_id)
+        return
 
     # A shared location (one fix, or a live share's stream of edits) carries no
     # text, and used to be dropped here without a word. It becomes the newest
@@ -1074,21 +1118,11 @@ def handle(update: dict, state: dict) -> None:
         send(chat_id, VOICE_REPLY, thread_id)
         return
 
-    for m in parts:
-        got = None
-        if doc := m.get("document"):
-            got = download(doc["file_id"],
-                           doc.get("file_name") or f"{doc['file_id']}.bin", inbox)
-        elif photos := m.get("photo"):
-            largest = max(photos, key=lambda p: p.get("file_size") or 0)
-            got = download(largest["file_id"], f"{largest['file_id']}.jpg", inbox)
-        else:
-            continue
-        if got is None:
-            send(chat_id, "That file wouldn't download - too big, or Telegram "
-                          "refused it. Try again or send it another way.", thread_id)
-            return
-        attachments.append(got)
+    attachments = prepare_attachments(update, inbox)
+    if attachments is None:
+        send(chat_id, "That file wouldn't download - too big, or Telegram "
+                      "refused it. Try again or send it another way.", thread_id)
+        return
     attachment = attachments[0] if attachments else None
 
     if not text and not attachment:
@@ -1244,18 +1278,10 @@ def handle(update: dict, state: dict) -> None:
     moved = delta_for(ts)
 
     if attachment:
-        if len(attachments) == 1:
-            files = f"File: `{attachment}`"
-        else:
-            files = (f"{len(attachments)} files, sent together as one message -- "
-                     "read all of them and treat them as one request:\n"
-                     + "\n".join(f"- `{a}`" for a in attachments))
         lead = (PRIVATE_PREAMBLE + "\nThe user sent a file with this message. It is "
                 "held in memory for this session and is not archived.\n"
                 if pv else DOCUMENT_PREAMBLE)
-        body = (f"{moved}\n---\n\n{sent_at}{files}\n\n"
-                  + (f"What the user said with it: {text}" if text
-                     else "The user sent it without a caption."))
+        body = f"{moved}\n---\n\n" + attachment_request(attachments, text, msg)
         label = "telegram:document"
         print(f"→ {len(attachments)} file(s) [{key}] (private)" if pv else
               f"→ {len(attachments)} file(s) {attachment.name} [{key}]")
@@ -1985,23 +2011,49 @@ def _try_steer(update: dict, key: str, state: dict | None = None) -> bool:
     sender = (msg.get("from") or {}).get("id")
     if sender != config.secret("telegram.user_id"):
         return False  # let the normal path's own authorisation ignore it
-    if msg.get("document") or msg.get("photo") or msg.get("voice") or msg.get("audio"):
-        return False  # attachments always take the normal path, never steer
-    text = (msg.get("text") or msg.get("caption") or "").strip()
-    if not text or command_word(text):
+    parts = update.get("_album") or [msg]
+    if any(m.get("voice") or m.get("audio") or m.get("video_note") for m in parts):
+        return False
+    media = any(m.get("document") or m.get("photo") for m in parts)
+    text = next(((m.get("text") or m.get("caption") or "").strip() for m in parts
+                 if (m.get("text") or m.get("caption") or "").strip()), "")
+    if (not text and not media) or command_word(text):
         return False  # commands always take the normal path, never steer
     if state is not None and key not in _private \
             and _reply_target(msg, key, thread_state(state, key)):
         return False  # meant for another conversation, not the one running
 
-    if not think.steer(key, f"{sent_at_line(msg)}{text}"):
+    if media:
+        target = think.steering_target(key)
+        if target is None:
+            return False
+        pv = _private.get(key)
+        inbox = pathlib.Path(pv["scratch"]) / "inbox" if pv else None
+        paths = prepare_attachments(update, inbox)
+        if paths is None:
+            send(chat_id, "That file wouldn't download - too big, or Telegram "
+                          "refused it. Try again or send it another way.", msg.get("message_thread_id"))
+            return True  # Report the failure once; never inject an incomplete album.
+        if pv is not None and _private.get(key) is not pv:
+            send(chat_id, "That private session ended before the file could be "
+                          "delivered. Please resend it in a private session.", msg.get("message_thread_id"))
+            return True
+        lead = (PRIVATE_PREAMBLE + "\nThe attached files are held in memory for "
+                "this private session and are not archived.\n" if pv else DOCUMENT_PREAMBLE)
+        message = (lead + "\nThis is a steering update to the active request. "
+                   "Read the attached files and incorporate the update before finishing.\n\n---\n\n" +
+                   attachment_request(paths, text, msg))
+    else:
+        message = f"{sent_at_line(msg)}{text}"
+    if not think.steer(key, message, **({"target": target} if media else {})):
         return False
 
     thread_id = msg.get("message_thread_id")
     snippet = think.current_progress(key)
     after = f" after: {snippet}" if snippet else " after the current step"
     send(chat_id, f"*Got it — folding this in{after}.*", thread_id)
-    print(f"[{key}] steered mid-turn ({snippet or 'no progress yet'})")
+    print(f"[{key}] steered mid-turn (private)" if key in _private else
+          f"[{key}] steered mid-turn ({snippet or 'no progress yet'})")
     return True
 
 
@@ -2046,8 +2098,9 @@ def _flush_album(gid: str, state: dict) -> None:
     merged["_album"] = [u["message"] for u in updates]
     key = _topic_key(merged) or f"album:{gid}"
     try:
-        with _lock_for(key):
-            handle(merged, state)
+        if not _try_steer(merged, key, state):
+            with _lock_for(key):
+                handle(merged, state)
     except Exception as e:                                    # noqa: BLE001
         print(f"album handler error: {e}", file=sys.stderr)
     finally:
