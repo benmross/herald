@@ -40,6 +40,7 @@ to file it properly and pull the dates out of it.
 from __future__ import annotations
 
 import difflib
+import html
 import json
 import pathlib
 import re
@@ -330,7 +331,9 @@ class Working:
     about five seconds, so refreshing it *is* the proof this process is alive,
     and it vanishes on its own if the process dies.
 
-    **A single edited message** is the transcript. Until 10 September 2026 this
+    **An edited message** is the transcript. Mid-turn replies carry subsequent
+    progress beneath their prose, so an update does not send a second message.
+    Until 10 September 2026 this
     posted a fresh "still on it, now: Read: foo.py" every two minutes, which
     buried the conversation in status lines and threw away the interesting half
     -- the sentences the model writes between tool calls, explaining what it is
@@ -357,11 +360,14 @@ class Working:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._lock = threading.Lock()
+        self._publish_lock = threading.RLock()  # serialize message sends/edits
         self._lines: list[str] = []       # rendered transcript, newest last
         self._latest = ""                 # the most recent tool call
         self._steps = 0                   # tool calls seen so far this turn
         self._dirty = False
         self._msg_id: int | None = None
+        self._anchor = ""                 # rendered reply above its progress
+        self._anchor_units = 0
         self._sent_text = ""
         self._last_edit = 0.0
         self._settled = False
@@ -441,18 +447,41 @@ class Working:
         else:
             self._flush_pending()
 
-    def _post(self, text: str) -> None:
-        """Send `text` as a message of its own and start a fresh transcript block
-        below it, so the chat reads in the order things happened."""
-        with self._lock:
-            shown = self._msg_id is not None or bool(self._lines)
-        if shown:
-            self._publish(done=True)
-        sent = send(self.chat_id, text, self.thread_id)
-        with self._lock:
-            self.message_ids += sent
-            self._lines, self._steps, self._latest = [], 0, ""
-            self._msg_id, self._sent_text, self._dirty = None, "", False
+    def _post(self, text: str) -> bool:
+        """Send narration once, then append progress by editing that message."""
+        with self._publish_lock:
+            with self._lock:
+                shown = self._msg_id is not None or bool(self._lines)
+            if shown:
+                self._publish(done=True)
+            sent, anchor, complete = [], "", True
+            # Keep the actual last delivered chunk even on a partial failure.
+            chunks = []
+            for chunk in tgtext.chunks(text, MAX_REPLY):
+                chunks += (tgtext.chunks(chunk, MAX_REPLY // 2)
+                           if self._display_units(tgtext.to_html(chunk)) > MAX_REPLY
+                           else [chunk])
+            for chunk in chunks:
+                ids = send(self.chat_id, chunk, self.thread_id)
+                complete = complete and bool(ids)
+                if ids:
+                    sent += ids
+                    anchor = chunk
+            with self._lock:
+                self.message_ids += sent
+                self._lines, self._steps, self._latest = [], 0, ""
+                self._msg_id = sent[-1] if sent else None
+                self._anchor = tgtext.to_html(anchor)
+                self._anchor_units = self._display_units(self._anchor)
+                self._sent_text, self._dirty = self._anchor, False
+                self._last_edit = time.monotonic()
+            return complete
+
+    @staticmethod
+    def _display_units(rendered: str) -> int:
+        """Telegram caps displayed text in UTF-16 units, excluding HTML tags."""
+        plain = html.unescape(re.sub(r"<[^>]*>", "", rendered))
+        return len(plain.encode("utf-16-le")) // 2
 
     def _interim(self, text: str) -> bool:
         """A reply given mid-turn, before the turn went back to waiting on
@@ -462,21 +491,15 @@ class Working:
         5 October 2026 the first reply of such a turn existed nowhere but in
         this transcript: monospaced, markdown unrendered, and trimmed off the
         front once the block filled. It is a reply and is sent as one. The
-        transcript so far is closed above it and a new one starts below, so
-        the chat reads in the order things happened.
+        transcript so far is closed; later progress edits this reply.
         """
         with self._lock:
             self._drop_tail(text)
-            shown = self._msg_id is not None or bool(self._lines)
-        if shown:
-            self._publish(done=True)
-        sent = send(self.chat_id, text, self.thread_id)
-        with self._lock:
-            self.message_ids += sent
-            self._sent_replies.append(text)
-            self._lines, self._steps, self._latest = [], 0, ""
-            self._msg_id, self._sent_text, self._dirty = None, "", False
-        return True
+        delivered = self._post(text)
+        if delivered:
+            with self._lock:
+                self._sent_replies.append(text)
+        return delivered
 
     def already_sent(self, reply: str) -> bool:
         """True if `reply` went out as an interim reply this turn: a turn whose
@@ -508,6 +531,7 @@ class Working:
     def _render(self, *, done: bool = False, failed: bool = False) -> str:
         with self._lock:
             lines, steps = list(self._lines), self._steps
+            anchor, anchor_units = self._anchor, self._anchor_units
         seconds = int(self.elapsed)
         clock = f"{seconds}s" if seconds < 60 else f"{seconds // 60}m {seconds % 60}s"
         step_note = f" · {steps} step{'' if steps == 1 else 's'}" if steps else ""
@@ -515,22 +539,30 @@ class Working:
             head = f"{'stopped' if failed else 'done'} · {clock}{step_note}"
         else:
             head = f"working · {clock}{step_note}"
+        prefix = anchor + "\n\n" if anchor else ""
         if done and not lines:
-            return f"<i>{tgtext.escape(head)}</i>"
+            return prefix + f"<i>{tgtext.escape(head)}</i>"
         body = "\n".join(lines) if lines else "thinking..."
         # Trimmed only by the message's real limit, and only from the front, so
         # the newest text is always there and anything cut says so. There used
         # to be a line cap as well, which quietly dropped the oldest narration
         # on a long turn -- the opposite of the point.
-        if len(body) > PROGRESS_LIMIT:
-            cut = body[-PROGRESS_LIMIT:]
-            body = "[earlier steps trimmed to fit]\n" + cut.split("\n", 1)[-1]
+        budget = min(PROGRESS_LIMIT, 4096 - anchor_units - len(head) - 4)
+        if len(body.encode("utf-16-le")) // 2 > budget:
+            marker = "[earlier steps trimmed to fit]\n"
+            remaining = max(0, budget - len(marker))
+            cut = body.encode("utf-16-le")[-remaining * 2:] if remaining else b""
+            body = marker + cut.decode("utf-16-le", errors="ignore")
         # The transcript goes in <pre>: it is full of file paths and shell
         # commands, which should stay monospaced and copyable, and which must
         # never be read as formatting. tgtext escapes the contents.
-        return f"<i>{tgtext.escape(head)}</i>\n{tgtext.code_block(body)}"
+        return prefix + f"<i>{tgtext.escape(head)}</i>\n{tgtext.code_block(body)}"
 
     def _publish(self, *, done: bool = False, failed: bool = False) -> None:
+        with self._publish_lock:
+            self._publish_current(done=done, failed=failed)
+
+    def _publish_current(self, *, done: bool = False, failed: bool = False) -> None:
         text = self._render(done=done, failed=failed)   # already HTML
         if text == self._sent_text:
             return

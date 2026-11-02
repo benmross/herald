@@ -86,8 +86,12 @@ class _Bridge(unittest.TestCase):
         exec(compile(src.split("def main()")[0], "herald-telegram", "exec"),
              self.mod.__dict__)
         self.sent = []
-        self.mod.api = lambda method, **kw: (
-            self.sent.append((method, kw)) or {"ok": True, "result": {"message_id": 7}})
+        def api(method, **kw):
+            self.sent.append((method, kw))
+            mid = (sum(m == "sendMessage" for m, _ in self.sent)
+                   if method == "sendMessage" else kw.get("message_id", 7))
+            return {"ok": True, "result": {"message_id": mid}}
+        self.mod.api = api
         self.w = self.mod.Working(chat_id=1, narration=self.NARRATION)
 
 
@@ -201,9 +205,13 @@ class TheBridgeSendsAnInterimReply(TheTranscript):
                   if "Agent: check postings" in kw.get("text", "")][-1]
         self.assertNotIn("first half", closed)
         self.assertEqual(w._lines, [])
-        self.assertIsNone(w._msg_id)
+        self.assertIsNotNone(w._msg_id)
         w.on_progress(think.Progress("tool", "Bash: later"))
         self.assertNotIn("check postings", w._render())
+        w._publish()
+        self.assertEqual(len([m for m, _ in self.sent if m == "sendMessage"]), 2)
+        self.assertIn("first half", self.sent[-1][1]["text"])
+        self.assertIn("Bash: later", self.sent[-1][1]["text"])
 
     def test_the_same_reply_is_not_sent_twice(self):
         self.w.on_progress(think.Progress("interim", "The answer, held."))
@@ -230,23 +238,73 @@ class NarrationAsMessages(_Bridge):
         self.assertEqual(self.texts(), [])                       # held: it might be the answer
         w.on_progress(think.Progress("tool", "Read: a.py"))
         self.assertTrue(any("Checking the collector first." in t for t in self.texts()))
-        self.assertNotIn("Checking the collector", w._render())   # not repeated in the block
+        w._publish()
+        self.assertEqual(len(self.texts()), 1)
+        self.assertEqual(w._render().count("Checking the collector"), 1)
+        self.assertEqual(self.sent[-1][0], "editMessageText")
+        self.assertEqual(self.sent[-1][1]["message_id"], w.message_ids[-1])
         self.assertIn("Read: a.py", w._render())
 
-    def test_messages_and_tool_blocks_alternate_in_order(self):
+    def test_each_message_carries_its_following_tool_updates(self):
         w = self.w
         w.on_progress(think.Progress("text", "One."))
         w.on_progress(think.Progress("tool", "Bash: a"))
         w.on_progress(think.Progress("text", "Two."))
         w.on_progress(think.Progress("tool", "Bash: b"))
         w._publish()
-        order = [("msg" if m == "sendMessage" and "Bash" not in kw["text"] else "block")
-                 for m, kw in self.sent if m in ("sendMessage", "editMessageText")]
         sends = [kw["text"] for m, kw in self.sent if m == "sendMessage"]
+        self.assertEqual(len(sends), 2)
         self.assertTrue("One." in sends[0])
-        self.assertTrue(any("Bash: a" in t for t in sends))
-        self.assertLess(next(i for i, t in enumerate(sends) if "One." in t),
-                        next(i for i, t in enumerate(sends) if "Two." in t))
+        self.assertTrue("Two." in sends[1])
+        edits = {kw["message_id"]: kw["text"] for m, kw in self.sent
+                 if m == "editMessageText"}
+        self.assertIn("Bash: a", edits[1])
+        self.assertNotIn("Bash: b", edits[1])
+        self.assertIn("Two.", edits[2])
+        self.assertIn("Bash: b", edits[2])
+        self.assertNotIn("Bash: a", edits[2])
+
+    def test_long_progress_keeps_formatted_narration_and_fits_utf16_limit(self):
+        import html
+        import re
+        w = self.w
+        prose = "**Checking** " + "x" * 3650
+        w.on_progress(think.Progress("text", prose))
+        w.on_progress(think.Progress("tool", "<command> " + "😀" * 2000))
+        w._publish()
+        rendered = self.sent[-1][1]["text"]
+        self.assertIn("<b>Checking</b>", rendered)
+        self.assertIn("x" * 3650, rendered)
+        self.assertIn("earlier steps trimmed", rendered)
+        plain = html.unescape(re.sub(r"<[^>]*>", "", rendered))
+        self.assertLessEqual(len(plain.encode("utf-16-le")) // 2, 4096)
+        self.assertEqual(len(self.texts()), 1)
+
+    def test_multichunk_narration_edits_only_its_last_message(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "😀" * 3900))
+        w.on_progress(think.Progress("tool", "Read: last.py"))
+        initial = len(self.texts())
+        self.assertGreater(initial, 1)
+        w._publish()
+        self.assertEqual(len(self.texts()), initial)
+        self.assertEqual(self.sent[-1][1]["message_id"], w.message_ids[-1])
+        self.assertIn("last.py", self.sent[-1][1]["text"])
+
+    def test_rendered_markdown_expansion_is_included_in_length_budget(self):
+        w = self.w
+        # Horizontal rules grow from three source characters to six displayed.
+        w.on_progress(think.Progress("text", "---\n\n" * 750))
+        w.on_progress(think.Progress("tool", "Read: " + "x" * 5000))
+        w._publish()
+        for method, params in self.sent:
+            if method in ("sendMessage", "editMessageText"):
+                self.assertLessEqual(w._display_units(params["text"]), 4096)
+
+    def test_failed_interim_send_is_not_marked_as_delivered(self):
+        self.mod.api = lambda *args, **kw: {"ok": False}
+        self.assertFalse(self.w.on_progress(think.Progress("interim", "Keep this reply.")))
+        self.assertFalse(self.w.already_sent("Keep this reply."))
 
     def test_the_final_answer_is_not_sent_by_the_transcript(self):
         w = self.w

@@ -80,6 +80,13 @@ remembered. Check whether its snapshot is carrying standing state instead of dif
 Both model CLIs load project instructions, skills and hooks before the prompt.
 Batch related work into one session to avoid repeating that context.
 
+With `telegram.narration=messages`, each mid-turn reply is sent once. Following
+tool and reasoning updates are appended beneath its prose by editing that same
+message, avoiding a separate progress notification. The next mid-turn reply
+starts another message; the final answer is delivered separately. Long replies
+can span multiple messages, with progress attached to the last chunk. Progress
+is trimmed to fit Telegram's limit while preserving the reply above it.
+
 ## When something breaks
 
 **Collector failing.** The user is told after two consecutive failures and again
