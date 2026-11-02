@@ -162,3 +162,7 @@ Use one model session per cycle, not per source. Put deterministic work in
 Python; collect source deltas where possible. Batch independent reads and queries
 to avoid sequential discovery. Measure with `herald latency`; do not assume cached
 context is free or that shorter prompts guarantee faster answers.
+
+Track long-running work by its PID or task ID, and use completion notifications
+or bounded status checks. Do not wait using `pgrep -f` loops: they can match the
+waiting shell's own command line and never finish.
