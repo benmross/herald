@@ -76,6 +76,18 @@ class Registry(unittest.TestCase):
             self.assertIn("/tasks", tgcommands.commands())
 
 
+class Menu(unittest.TestCase):
+    def test_full_menu_offers_every_command_and_short_stays_short(self):
+        tg = bridge()
+        extension = {"/tasks": tgcommands.Command("tasks", str)}
+        full = tg.command_menu("full", extension)
+        names = {"/" + item["command"] for item in full}
+        self.assertEqual(names, {*tg.COMMANDS, *tg.ENGINE_COMMANDS_PASSED, "/tasks"})
+        self.assertEqual(len(names), len(full))
+        self.assertEqual([i["command"] for i in tg.command_menu("short", extension)],
+                         ["new", "stop", "private"])
+
+
 class Dispatch(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

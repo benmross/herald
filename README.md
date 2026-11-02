@@ -80,7 +80,8 @@ when you finish.
 `/effort` reopens that picker; its CLI default button clears the override.
 `/claude [model]` and `/codex [model]` choose a provider for a topic.
 `/opus` and `/sonnet` are Claude model shortcuts. `/stop` cancels
-a running turn, and `/obligations` lists what you owe.
+a running turn, and `/obligations` lists what you owe. Telegram autocompletes
+`/new`, `/stop` and `/private`; set `telegram.command_menu` to `full` for all of them.
 You can send follow-up messages while either engine is working in Telegram.
 Codex uses its first-party app-server interface with your existing login.
 
