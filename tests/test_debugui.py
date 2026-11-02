@@ -179,6 +179,17 @@ class HTTPBoundary(unittest.TestCase):
         self.assertEqual(len(body.splitlines()),160)
         self.assertIn('attachment',headers['Content-Disposition'])
 
+    def test_activity_anchor_finds_the_right_page_without_losing_raw_records(self):
+        status,_,body=self.get('/api/session/test-session/events?view=activity&anchor=141')
+        data=json.loads(body)
+        self.assertEqual(status,200)
+        self.assertEqual(data['offset'],100)
+        self.assertTrue(any(e['seq']==141 for e in data['events']))
+        self.assertEqual(data['events'][0]['records'][0]['payload']['output'],'value100')
+        status,_,body=self.get('/api/session/test-session/analysis')
+        self.assertEqual(status,200)
+        self.assertEqual(json.loads(body)['raw_count'],160)
+
     def test_arbitrary_paths_and_unknown_sessions_refused(self):
         self.assertEqual(self.get('/api/session/unknown/events')[0],404)
         self.assertEqual(self.get('/api/session/..%2F..%2Fsecret/events')[0],404)

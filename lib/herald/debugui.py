@@ -258,6 +258,13 @@ def source_data(path):
     return read_source(str(path), st.st_size, st.st_mtime_ns)
 
 
+@functools.lru_cache(maxsize=2)
+def source_view(path, size, modified):
+    from .debugview import build
+    events, _ = read_source(path, size, modified)
+    return build(events)
+
+
 def overview(sessions):
     all_runs = [r for s in sessions.values() for r in s["runs"]]
     days, engines, tools = {}, {}, {}
@@ -281,6 +288,7 @@ def overview(sessions):
             "cache_read": sum(r["cache_read"] or 0 for r in all_runs),
             "model_ms": sum(r["model_ms"] or 0 for r in all_runs),
             "tool_ms": sum(r["tool_ms"] or 0 for r in all_runs),
+            "startup_ms": sum(r["startup_ms"] or 0 for r in all_runs),
             "cost_usd": sum(r["cost_usd"] or 0 for r in all_runs),
             "priced_runs": sum(r["cost_usd"] is not None for r in all_runs),
             "days": sorted(days.values(), key=lambda d:d["date"]), "engines": list(engines.values()), "tools": tools}
@@ -353,12 +361,27 @@ def make_server(port=None):
                     # Export every recorded line, without normalized duplication.
                     body = "".join(json.dumps(clean(obj), ensure_ascii=False) + "\n" for obj in records(path)).encode()
                     return self.reply(200, body, "application/x-ndjson", "session.jsonl")
-                if action != "events":
+                if action not in ("events", "analysis"):
                     return self.reply(404, {"error": "Not found"})
                 events, points = source_data(path)
+                view = None
+                if action == "analysis" or q.get("view", [""])[0] == "activity":
+                    stat = path.stat()
+                    view = source_view(str(path), stat.st_size, stat.st_mtime_ns)
+                    if action == "analysis":
+                        return self.reply(200, {k:v for k,v in view.items() if k != "activities"})
+                    events, points = view["activities"], view["context"]
+                    turn = q.get("turn", [""])[0]
+                    events = [e for e in events if (not turn or e["turn"] == turn) and
+                              (q.get("technical", [""])[0] == "1" or not e["technical"])]
                 kind, needle = q.get("kind", [""])[0], q.get("q", [""])[0].lower()
-                filtered = [e for e in events if (not kind or e["kind"] == kind) and (not needle or needle in e["text"].lower() or needle in str(e["raw"]).lower())]
+                filtered = [e for e in events if (not kind or e["kind"] == kind) and (not needle or needle in e["text"].lower() or needle in str(e.get("raw",e.get("records"))).lower())]
                 offset, limit = max(0,int(q.get("offset", ["0"])[0])), min(250,max(1,int(q.get("limit", ["100"])[0])))
+                if q.get("anchor"):
+                    anchor = int(q["anchor"][0])
+                    position = next((i for i,e in enumerate(filtered) if e["seq"] == anchor), None)
+                    if position is not None:
+                        offset = position // limit * limit
                 return self.reply(200, {"events": filtered[offset:offset+limit], "total": len(filtered), "all": len(events), "offset": offset,
                                        "context": points, "bytes": path.stat().st_size})
             except (ValueError, TypeError):

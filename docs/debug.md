@@ -72,3 +72,38 @@ available as a fallback when no step measurements exist.
 Cost is the provider's client estimate for priced runs, not subscription billing.
 Codex generally provides tokens without a dollar figure. Tool spans can overlap,
 so phase totals are not an accounting of mutually exclusive wall time.
+
+## Reading the activity and timing views
+
+The default Activity view groups each call with its result and underlying
+command records. Instructions are collapsed; exact repeats are marked. Provider
+bookkeeping and mirrored message notifications remain in Raw records and JSONL
+exports. Raw event numbers are retained for tracing a displayed activity back
+to the source. Searches in Activity view also inspect the grouped original
+records. Raw view searches every original record, including hidden metadata.
+
+`session_meta` is a saved session header, which may include base instructions.
+`task_started` marks an engine turn, not a shell task. `turn_context` saves
+settings for a turn. The provider may serialize a message both as a conversation
+item and as an item-completed notification. Herald captures save launch inputs
+separately as well. These repeated representations do not establish extra
+copies in the model's actual input; instructions can also be supplied
+again on subsequent turns. Exact repeats are grouped only on matching content.
+
+The session timing view uses timestamped request/result pairs. Parallel waits
+are unioned, not summed. The remainder is labeled time between tool responses,
+which includes model reasoning and writing, transport, overhead and background
+work. It is not pure inference time. Calls with no recorded result appear as
+unconfirmed waits. Missing timestamps do not become zero-duration measurements.
+Idle gaps between turns are excluded. Provider turn boundaries are used when
+available; inferred boundaries and incomplete turns are labeled partial.
+Historical run-phase totals are still available but can overlap and are not
+used as an exclusive wall-clock breakdown.
+
+Context dots are input-size measurements, not tool events. Their tooltips show
+recorded time, tokens, change from the previous measurement, context window when
+known, and nearby activity. Temporal proximity does not prove causation. Dot
+activation opens the linked activity with the correct pagination and turn.
+The graph draws each turn separately and compresses inter-turn gaps with dashed
+connectors. Turn headings and the turn selector focus the graph, timing lanes
+and Activity timeline. Raw view continues to expose the whole selected source.
