@@ -131,6 +131,7 @@ SYSTEMD_UNITS = [
     ("herald-secrets.service", "the page a secret is pasted into", False),  # if a URL is set
     ("herald-browser.service", "the signed-in browser and its phone view", False),  # if a URL is set
     ("herald-browser-review.service", "isolated application review groups", False),
+    ("herald-debug.service", "private session observatory", False),
 ]
 
 
@@ -348,6 +349,7 @@ def wanted_units(telegram_configured: bool) -> list[str]:
                 if default or (default is None and telegram_configured)
                 or (u == "herald-brain.service" and config.remote_control_enabled())
                 or (u == "herald-secrets.service" and secretintake.enabled())
+                or (u == "herald-debug.service" and config.get("debug.url"))
                 or (u in ("herald-browser.service", "herald-browser-review.service") and _browser_wanted())]
     if platform_name() in ("launchd", "container"):
         return [label for label in launchd_jobs()

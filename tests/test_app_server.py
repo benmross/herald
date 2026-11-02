@@ -82,6 +82,9 @@ class AppServerTests(unittest.TestCase):
                 self.assertEqual(live.called,expected=='_run_codex_app_server')
 
     def setUp(self):
+        capture = patch("herald.debugtrace.Trace")
+        capture.start()
+        self.addCleanup(capture.stop)
         tmp=tempfile.TemporaryDirectory(prefix='app-server-test-')
         self.addCleanup(tmp.cleanup)
         self.root=pathlib.Path(tmp.name)

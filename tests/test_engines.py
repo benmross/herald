@@ -146,6 +146,11 @@ class StrictSchemaTests(unittest.TestCase):
 
 
 class EffortTests(unittest.TestCase):
+    def setUp(self):
+        capture = mock.patch("herald.debugtrace.Trace")
+        capture.start()
+        self.addCleanup(capture.stop)
+
     def test_retired_escalation_settings_cannot_change_a_run(self):
         settings = {"engines.codex.model": "chosen-model",
                     "engines.codex.effort": "low",

@@ -857,6 +857,12 @@ def cmd_release(args) -> int:
     return 0
 
 
+def cmd_debug(args) -> int:
+    from herald.debugui import serve  # noqa: E402
+    serve(port=args.port)
+    return 0
+
+
 def cmd_services(args) -> int:
     """Install, enable or inspect the background jobs on this platform."""
     sys.path.insert(0, str(config.ROOT))
@@ -2982,6 +2988,10 @@ def main() -> int:
     rl.add_argument("--minor", action="store_true")
     rl.add_argument("--major", action="store_true")
     rl.set_defaults(fn=cmd_release)
+
+    dg = sub.add_parser("debug", help="serve the read-only session observatory on loopback")
+    dg.add_argument("--port", type=int)
+    dg.set_defaults(fn=cmd_debug)
 
     sv = sub.add_parser("services", help="the background jobs")
     sv.add_argument("action", nargs="?", default="install",

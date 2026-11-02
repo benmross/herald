@@ -10,6 +10,7 @@ herald attach          # terminal conversation on your chosen provider
 herald db --schema     # what is in the ledger and how to query it
 herald fact <id> ...   # facts whole, every column, in one call
 herald session         # a conversation's context size and where its time went
+herald debug           # read-only session dashboard; see docs/debug.md
 ```
 
 ## Services

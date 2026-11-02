@@ -228,6 +228,12 @@
       "$HERALD_HOME/run/safety"
     ]
   },
+  "debug": {
+    "_comment": "Read-only session observatory, loopback only. Set url to a private Tailscale Serve URL to enable the optional service. Future engine launches capture provider-visible events with microsecond UTC receive times; private sessions are always excluded. Captures live under HERALD_HOME/debug-traces and may be large.",
+    "url": null,
+    "port": 8795,
+    "capture": true
+  },
   "surfaces": {
     "remote_control": {
       "enabled": false,

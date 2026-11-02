@@ -82,6 +82,9 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     """Start an engine. In a private session it starts inside the read-only
     sandbox, in its own process group so a cancel reaches the engine and not
     only the sandbox in front of it."""
+    trace = getattr(_private, "debug_trace", None)
+    if trace:
+        trace.emit("command", {"argv": cmd, "cwd": kwargs.get("cwd")})
     env = config.agent_env()
     # Opaque invocation correlation for additional context lookups. Never a
     # user prompt or topic name; private retrievals never persist measurements.
@@ -1090,6 +1093,7 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
     thread_id, turn_id, completed = resume, None, False
     next_id, interrupted_at = 0, None
     usage, previous_usage, context_tokens, context_window = {}, None, None, None
+    debug_trace = getattr(_private, "debug_trace", None)
     code = 1
 
     def active(accepting: bool) -> None:
@@ -1100,6 +1104,9 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
                     entry["accepting_steers"] = accepting and not cancelled.is_set()
 
     def send(value: dict) -> None:
+        trace = getattr(_private, "debug_trace", None)
+        if trace:
+            trace.emit("stdin", value)
         proc.stdin.write(json.dumps(value) + "\n")
         proc.stdin.flush()
 
@@ -1144,12 +1151,17 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
         def read_stdout() -> None:
             try:
                 for line in proc.stdout:
+                    trace = debug_trace
+                    if trace:
+                        trace.emit("stdout", line)
                     events.put(line)
             finally:
                 events.put(None)
 
         def read_stderr() -> None:
             for line in proc.stderr:
+                if debug_trace:
+                    debug_trace.emit("stderr", line)
                 err.append(line)
 
         for read in (read_stdout, read_stderr):
@@ -1386,8 +1398,11 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
     timeout_reason = f"timed out after {timeout}s"
     cancelled = threading.Event()
     steer_queue: queue.Queue = queue.Queue()
+    debug_trace = getattr(_private, "debug_trace", None)
 
     def _write_user_message(text: str) -> None:
+        if debug_trace:
+            debug_trace.emit("stdin", {"text": text})
         write(proc, text)
         if submitted is not None:
             submitted.append(text)
@@ -1407,6 +1422,8 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
 
         def _drain_stderr() -> None:
             for line in proc.stderr:
+                if debug_trace:
+                    debug_trace.emit("stderr", line)
                 err_lines.append(line)
 
         stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
@@ -1459,6 +1476,8 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                 break  # EOF: the engine closed stdout, so it's done writing
             idle_deadline = time.monotonic() + idle_timeout
             out_lines.append(line)
+            if debug_trace:
+                debug_trace.emit("stdout", line)
             handler(line, state, on_progress, cancel_key)
 
             if state["payload"] is not None and state.get("bg_tasks"):
@@ -1850,7 +1869,7 @@ def think(prompt: str, *, label: str,
     if home not in add_dirs and not lean:
         add_dirs.append(home)
 
-    def _launch(text: str, resume_id: str | None, timing: dict):
+    def _run_launch(text: str, resume_id: str | None, timing: dict):
         if engine == "codex":
             runner = _run_codex_app_server if codex_transport == "app-server" else _run_codex
             return runner(
@@ -1866,6 +1885,23 @@ def think(prompt: str, *, label: str,
             append_system_prompt=append_system_prompt, json_schema=json_schema,
             resume=resume_id, permission_mode=permission_mode, add_dirs=add_dirs,
             on_progress=on_progress, cancel_key=cancel_key, timing=timing, lean=lean)
+
+    def _launch(text: str, resume_id: str | None, timing: dict):
+        from .debugtrace import Trace  # noqa: PLC0415
+        trace = None if _private_scratch() is not None else Trace(
+            engine=engine, model=model, effort=effort, label=label, cwd=str(cwd),
+            resume=resume_id, prompt=text, append_system_prompt=append_system_prompt)
+        _private.debug_trace = trace
+        try:
+            result = _run_launch(text, resume_id, timing)
+            if trace:
+                trace.emit("outcome", {"exit_code": result[0], "payload": result[1],
+                                      "context_tokens": result[2], "cancelled": result[5]})
+            return result
+        finally:
+            if trace:
+                trace.close()
+            _private.debug_trace = None
 
     started = time.monotonic()
     timing: dict = {}

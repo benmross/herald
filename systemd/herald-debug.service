@@ -1,0 +1,19 @@
+[Unit]
+Description=Herald — private session observatory
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=HERALD_HOME={{HOME}}
+Environment=PYTHONUNBUFFERED=1
+ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-debug
+Restart=on-failure
+RestartSec=5
+MemoryMax=1G
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target
