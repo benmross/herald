@@ -72,9 +72,58 @@ class SemanticTimeline(unittest.TestCase):
         data=view([
             {'timestamp':'2026-01-01T12:00:00Z','type':'user','message':{'content':'First question'}},
             {'timestamp':'2026-01-01T12:00:10Z','type':'assistant','message':{'content':'First answer'}},
+            {'timestamp':'2026-01-01T12:00:10Z','type':'system','subtype':'stop_hook_summary','preventedContinuation':False},
             {'timestamp':'2026-01-01T13:00:00Z','type':'user','message':{'content':'Second question'}},
             {'timestamp':'2026-01-01T13:00:05Z','type':'assistant','message':{'content':'Second answer'}}])
         self.assertEqual(data['timing']['observed_ms'],15000)
+
+    def test_claude_tool_results_and_steering_stay_in_the_active_turn(self):
+        def claude(second,role,content,**extra):
+            return {'timestamp':f'2026-01-01T12:00:{second:02d}Z','type':role,'message':{'content':content},**extra}
+        data=view([
+            claude(0,'user',[{'type':'text','text':'First request'}]),
+            claude(1,'assistant',[{'type':'tool_use','id':'a','name':'Bash','input':{'command':'pwd'}}]),
+            claude(3,'user',[{'type':'tool_result','tool_use_id':'a','content':'A plain text tool result'}]),
+            claude(4,'assistant',[{'type':'text','text':'Still working.'}]),
+            claude(5,'user',[{'type':'text','text':'Use this other approach'}]),
+            claude(6,'user',[{'type':'text','text':'Injected engine context'}],isMeta=True),
+            claude(7,'assistant',[{'type':'tool_use','id':'b','name':'Read','input':{'file_path':'file.txt'}}]),
+            claude(9,'user',[{'type':'tool_result','tool_use_id':'b','content':[{'type':'text','text':'Nested result'}]}]),
+            claude(10,'assistant',[{'type':'text','text':'Done'}]),
+            {'timestamp':'2026-01-01T12:00:10Z','type':'system','subtype':'stop_hook_summary','preventedContinuation':False},
+            claude(20,'user',[{'type':'text','text':'A separate request'}]),
+            claude(22,'assistant',[{'type':'text','text':'Second answer'}]),
+            {'timestamp':'2026-01-01T12:00:22Z','type':'system','subtype':'stop_hook_summary','preventedContinuation':False}])
+        turns=data['timing']['turns']
+        self.assertEqual(len(turns),2)
+        self.assertTrue(all(t['complete'] for t in turns))
+        self.assertEqual(data['timing']['observed_ms'],12000)
+        self.assertEqual(turns[0]['tool_ms'],4000)
+        users=[a for a in data['activities'] if a['kind']=='user']
+        self.assertEqual(len(users),3)
+        self.assertEqual(users[0]['turn'],users[1]['turn'])
+        self.assertEqual(users[1]['name'],'Your steering update')
+        self.assertNotEqual(users[1]['turn'],users[2]['turn'])
+        self.assertEqual([t['messages'] for t in turns],[2,1])
+
+    def test_codex_steering_is_one_turn_until_completion(self):
+        data=view([event(0,{'type':'task_started','turn_id':'one'}),
+                   event(1,{'type':'message','role':'user','content':[{'type':'input_text','text':'First request'}]}),
+                   event(2,{'type':'message','role':'user','content':[{'type':'input_text','text':'Steering update'}]}),
+                   event(5,{'type':'task_complete'})])
+        self.assertEqual(len(data['timing']['turns']),1)
+        self.assertEqual(data['timing']['turns'][0]['messages'],2)
+        self.assertEqual([a['name'] for a in data['activities'] if a['kind']=='user'],['Your message','Your steering update'])
+
+    def test_blocked_stop_hook_does_not_end_a_turn(self):
+        data=view([
+            {'timestamp':'2026-01-01T12:00:00Z','type':'user','message':{'content':'Request'}},
+            {'timestamp':'2026-01-01T12:00:01Z','type':'system','subtype':'stop_hook_summary','preventedContinuation':True},
+            {'timestamp':'2026-01-01T12:00:02Z','type':'user','message':{'content':'Steering'}},
+            {'timestamp':'2026-01-01T12:00:03Z','type':'result','result':'Done'}])
+        self.assertEqual(len(data['timing']['turns']),1)
+        self.assertTrue(data['timing']['turns'][0]['complete'])
+        self.assertEqual(data['timing']['turns'][0]['messages'],2)
 
     def test_missing_timestamps_never_become_zero_duration_measurements(self):
         data=view([{'type':'assistant','message':{'content':[{'type':'tool_use','id':'a','name':'Bash','input':{'command':'pwd'}}]}},

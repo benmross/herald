@@ -119,7 +119,7 @@ def build(events):
         nonlocal current
         current = {'id': identity or 'turn-'+str(event['seq']), 'number': len(turns)+1,
                    'start_ms': milliseconds(event['ts']), 'end_ms': milliseconds(event['ts']),
-                   'ts': event['ts'], 'complete': False, 'explicit': explicit}
+                   'ts': event['ts'], 'complete': False, 'explicit': explicit, 'messages': 0}
         turns.append(current)
         return current
 
@@ -169,6 +169,14 @@ def build(events):
                 current['complete'] = True
                 current['end_ms'] = when or current['end_ms']
             add(event, 'boundary', 'Turn finished', '', 'The engine reported the end of this turn. Time waiting for your next message is excluded from the time breakdown.')
+        elif ((typ == 'system' and obj.get('subtype') == 'stop_hook_summary'
+               and obj.get('preventedContinuation') is False) or
+              (typ == 'result' and (obj.get('origin') or {}).get('kind') != 'task-notification')):
+            if current:
+                current['complete'] = True
+                current['end_ms'] = when if when is not None else current['end_ms']
+                add(event, 'boundary', 'Turn finished', '',
+                    'Claude recorded the response stopping. Tool-result messages belong to this response, not separate turns.')
         elif typ == 'session_meta':
             base = p.get('base_instructions') or {}
             text = base.get('text','') if isinstance(base,dict) else pretty(base)
@@ -178,8 +186,17 @@ def build(events):
             message = obj.get('message') or p
             role = message.get('role') or typ
             content = message.get('content') or []
-            text = body(content)
             blocks = content if isinstance(content,list) else []
+            # Claude's user-role tool_result blocks can contain arbitrary text
+            # or nested text blocks. They are results, never authored messages.
+            authored = [b for b in blocks if isinstance(b, dict) and
+                        b.get('type') in ('text','input_text','output_text','thinking')]
+            text = body(content if isinstance(content,str) else authored)
+            attachment = any(isinstance(b,dict) and b.get('type') in ('image','input_image','document')
+                             for b in blocks)
+            internal = (obj.get('isMeta') or obj.get('isCompactSummary') or
+                        (obj.get('origin') or {}).get('kind') == 'task-notification' or
+                        text.lstrip().startswith(('<task-notification>','<system-reminder>')))
             for block in blocks:
                 if not isinstance(block, dict):
                     continue
@@ -187,15 +204,22 @@ def build(events):
                     call(event,block.get('id'),block.get('name'),block.get('input'))
                 elif block.get('type') == 'tool_result':
                     result(event,block.get('tool_use_id'),block.get('content',block))
-            if role in ('developer','system') or (role == 'user' and text.lstrip().startswith(('# AGENTS.md instructions','<user_instructions>','Base directory for this skill:'))):
+            if role in ('developer','system') or (role == 'user' and
+                    (internal or text.lstrip().startswith(('# AGENTS.md instructions','<user_instructions>','Base directory for this skill:')))):
                 instruction(event, 'Instructions supplied to the engine', text,
                             'System, developer or project instructions. Providers sometimes store project instructions under the user role; that does not mean you typed this message. Expand to inspect the content.')
-            elif role == 'user' and text.strip():
+            elif role == 'user' and (text.strip() or attachment):
                 cleaned = clean_user(text)
-                if cleaned:
-                    if current is None or current['complete'] or not current['explicit']:
+                if cleaned or attachment:
+                    if current is None or current['complete']:
                         start_turn(event)
-                    add(event,'user','Your message',cleaned,'The text you sent. The original record also contains any bridge wrapper, orientation and attached context.')
+                    steering = current['messages'] > 0
+                    current['messages'] += 1
+                    add(event,'user','Your steering update' if steering else 'Your message' if cleaned else 'Your attachment',
+                        cleaned or 'An attachment was supplied without text.',
+                        'An additional message while this turn was active; it stays in the same turn.' if steering else
+                        'The message or attachment you sent. The original record also contains any bridge wrapper, orientation and attached context.',
+                        steering=steering)
                 else:
                     instruction(event,'Injected context',text,'Context supplied by Herald or the engine, rather than a new message from you.')
             elif role == 'assistant' and text.strip():
@@ -235,10 +259,14 @@ def build(events):
             elif itype == 'usermessage' and method == 'item/completed':
                 text = clean_user(body(item.get('content')))
                 if text:
-                    if current is None:
+                    if current is None or current['complete']:
                         start_turn(event)
-                    add(event,'user','Your message',text,
-                        'The message accepted by the engine for this turn. The launch record separately captures its supplied context.')
+                    steering = current['messages'] > 0
+                    current['messages'] += 1
+                    add(event,'user','Your steering update' if steering else 'Your message',text,
+                        'An additional message accepted during the active turn.' if steering else
+                        'The message accepted by the engine for this turn. The launch record separately captures its supplied context.',
+                        steering=steering)
             else:
                 technical += 1
         elif typ == 'reasoning':

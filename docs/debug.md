@@ -107,3 +107,12 @@ activation opens the linked activity with the correct pagination and turn.
 The graph draws each turn separately and compresses inter-turn gaps with dashed
 connectors. Turn headings and the turn selector focus the graph, timing lanes
 and Activity timeline. Raw view continues to expose the whole selected source.
+
+Claude's user-role records can be tool results, injected metadata or messages
+from the person. Only authored text or attachments count as messages. Tool
+results are paired with their requests and cannot open a turn. Mid-turn
+messages remain in the active turn and are labeled steering updates. An
+unblocked Claude stop-hook summary or a final result marks the response end;
+a stop hook that prevents stopping does not close it. If completion markers
+are missing, the view leaves the active turn unconfirmed instead of inventing
+a new turn for every additional message.
