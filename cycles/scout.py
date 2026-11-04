@@ -28,7 +28,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "lib"))
 
 from herald import mailreadings  # noqa: E402
-from herald import amber, config, db, mailimages, mailtext, notify, think  # noqa: E402
+from herald import amber, capabilities, config, db, mailimages, mailtext, notify, think  # noqa: E402
 
 CYCLE = "scout"
 LABEL = f"cycle:{CYCLE}"
@@ -297,7 +297,8 @@ date, time and place) that the ledger does not already carry, return it in
 breadth is fine and duplicates are not: if the same event is plainly in the
 "already on the calendar" list, skip it. Never guess a time; an event with no
 time is not a calendar event. The date and place are often only in the
-flyer image, which is why you read those.
+flyer image, which is why you read those. With no such section, event mail
+is read elsewhere and `calendar_events` stays empty.
 
 **You are the first to read new mail, so you are the first who can act on
 it.** Opportunities are this cycle's job, but they are not the only thing mail
@@ -649,7 +650,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
     # --- campus mail, for the calendar ----------------------------------
     # The labels the user applies themselves (a Gmail filter does most of it). Message
     # rows carry label ids; the gmail collector keeps the id -> name map.
-    labels = list(config.get("scout.event_mail_labels", []) or [])
+    labels = _event_mail_labels()
     label_ids = []
     if labels:
         marks = ",".join("?" for _ in labels)
@@ -692,6 +693,21 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
 
     reader.finish()
     return "\n".join(out), shown_ids
+
+
+def _event_mail_labels() -> list[str]:
+    """The labels scout reads for calendar events, or none at all when an
+    extension does that job.
+
+    The umd extension's campus review took this over on 4 Nov 2026
+    (`mail_events`): it reads each message once, must account for it, and
+    judges what it finds before anything reaches the calendar. Scout doing it
+    as well wrote events the review deleted a day later, and as one side task
+    among many it had let a digest of info sessions pass unread.
+    """
+    if capabilities.available("mail_events"):
+        return []
+    return list(config.get("scout.event_mail_labels", []) or [])
 
 
 def _event_calendar() -> str:
@@ -826,7 +842,7 @@ def main() -> int:
     # Calendar events the session pulled out of campus mail. Python owns the
     # write, through gwrite, so each one is logged for the digest; the campus
     # calendar sync later adopts any of these that a scraped feed also carries.
-    events = payload.get("calendar_events") or []
+    events = (payload.get("calendar_events") or []) if _event_mail_labels() else []
     written = 0
     if events:
         written = _write_calendar_events(events)
