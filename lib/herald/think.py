@@ -592,9 +592,12 @@ def _handle_stream_line(line: str, state: dict, on_progress,
         # carries the whole list, so the latest one is the truth. `_run_process`
         # reads it to tell a finished turn from a paused one: a `result` that
         # arrives while this is non-empty is not the answer yet.
+        tasks = [t for t in candidate.get("tasks") or [] if isinstance(t, dict)]
         state["bg_tasks"] = [t.get("description") or t.get("task_id") or "task"
-                             for t in candidate.get("tasks") or []
-                             if isinstance(t, dict)]
+                             for t in tasks]
+        # A Monitor is reported like any background Bash (`local_bash`); only
+        # the Monitor call's own result names its task id. See `_watching`.
+        state["bg_task_ids"] = [t.get("task_id") or "" for t in tasks]
         return
 
     if kind_top == "system" and candidate.get("subtype") == "init":
@@ -615,6 +618,10 @@ def _handle_stream_line(line: str, state: dict, on_progress,
                 continue
             pend = state.setdefault("pending_tools", {}).pop(
                 block.get("tool_use_id"), None)
+            if pend and pend[0] == "Monitor":
+                m = _MONITOR_STARTED.search(_result_text(block))
+                if m:
+                    state.setdefault("monitor_tasks", set()).add(m.group(1))
             if pend:
                 _mark(state, "tool", pend[0], pend[1], pend[2])
         return
@@ -674,6 +681,34 @@ def _handle_stream_line(line: str, state: dict, on_progress,
                     entry = _active.get(active_key)
                     if entry is not None:
                         entry["progress"] = summary
+
+
+_MONITOR_STARTED = re.compile(r"Monitor started \(task ([A-Za-z0-9_-]+)")
+
+
+def _result_text(block: dict) -> str:
+    content = block.get("content")
+    if isinstance(content, str):
+        return content
+    return " ".join(c.get("text") or "" for c in content or [] if isinstance(c, dict))
+
+
+def _waiting_on_work(state: dict) -> bool:
+    """Whether a `result` now is a pause for background work, not the answer.
+
+    A Monitor does not count. It is a stream of notifications that can stay
+    armed for up to an hour, not work the answer is waiting on, and a turn
+    that has answered while only watchers remain is finished. On 4 Nov 2026 a
+    `tail -F` watcher outlived the job it watched: the reply was written at
+    1:01 PM, but the turn stayed open for sixteen minutes, and the user's next
+    message at 1:07 PM was folded into it as a steer instead of starting a new
+    turn. Work started with `run_in_background` still holds the result.
+    """
+    ids = state.get("bg_task_ids")
+    if ids is None:
+        return bool(state.get("bg_tasks"))
+    watchers = state.get("monitor_tasks") or set()
+    return any(i not in watchers for i in ids)
 
 
 def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path,
@@ -1490,7 +1525,7 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                 debug_trace.emit("stdout", line)
             handler(line, state, on_progress, cancel_key)
 
-            if state["payload"] is not None and state.get("bg_tasks"):
+            if state["payload"] is not None and _waiting_on_work(state):
                 # A result while background work is still out is a pause, not
                 # the end. The CLI keeps the process alive, and when a task
                 # finishes it resumes the same session and emits another
@@ -1536,7 +1571,21 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
 
         if not proc.stdin.closed:
             proc.stdin.close()
+        watchers_only = state["payload"] is not None and bool(state.get("bg_tasks"))
+        if watchers_only:
+            # Answered with only watchers left (`_waiting_on_work`). They die
+            # with the process; do not let one keep it alive past its answer.
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
         code = proc.wait(timeout=max(0.0, hard_deadline - time.monotonic()) + 5)
+        if watchers_only:
+            code = 0  # stopped by us after a complete answer
         stderr_thread.join(timeout=5)
     except subprocess.TimeoutExpired:
         if proc is not None:

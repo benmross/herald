@@ -111,6 +111,8 @@ sends a notification; the snapshot is free and silent.
   so write it as one. A task that never reports back
   holds the turn until the idle deadline, and then the held reply is
   delivered, so do not leave a server running in the background of a turn.
+  A Monitor does not hold a turn (4 Nov 2026): once the turn has answered and
+  only watchers remain, it ends and they are stopped with the process.
   If you change how turns end, test with a real `sleep 20` background job
   through `think.think()` rather than assuming it works.
 
