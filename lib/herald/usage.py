@@ -29,6 +29,10 @@ class UsageParseError(UsageError):
     pass
 
 
+class UsageLoggedOut(UsageError):
+    pass
+
+
 def _error(detail: str) -> UsageParseError:
     return UsageParseError("Cannot parse Claude /usage pane: " + detail +
                            ". The CLI layout may have changed; update the parser. "
@@ -96,6 +100,9 @@ def _reset(text: str, now: dt.datetime) -> int:
 
 def parse_claude(screen: str, now: dt.datetime | None = None) -> list[dict]:
     now = now or dt.datetime.now(config.tz())
+    if re.search(r"API\s+usage\s+billing", screen, re.I):
+        raise UsageLoggedOut("Claude was logged out of your subscription. "
+                             "The header shows API usage billing. Sign in to Claude again.")
     if "showing last-known usage" in screen.lower():
         raise UsageError("Claude /usage is showing last-known usage, not a fresh reading. Retry later.")
     if re.search(r"(?:usage endpoint|usage request).*rate limited|failed to (?:load|fetch).*usage",
@@ -204,6 +211,8 @@ def refresh(con, engine: str) -> dict:
             snapshot = {"engine": engine, "sampled_at": now, "windows": windows}
             _save(con, "snapshot", engine, snapshot)
             _save(con, "status", engine, {"ok": True, "checked_at": now})
+            if (_saved(con, "alert", f"{engine}:logged_out") or {}).get("active"):
+                _save(con, "alert", f"{engine}:logged_out", {"active": False})
             con.commit()
             return snapshot
         except Exception as exc:
@@ -212,6 +221,8 @@ def refresh(con, engine: str) -> dict:
             _save(con, "status", engine, {"ok": False, "checked_at": dt.datetime.now().timestamp(),
                                           "error": message})
             con.commit()
+            if isinstance(exc, UsageLoggedOut):
+                raise UsageLoggedOut(message) from None
             raise UsageError(message) from None
 
 
@@ -291,6 +302,7 @@ def collect(con) -> dict:
     counts = {"readings": 0, "reminders": 0}
     errors = []
     snapshots = {}
+    logged_out = []
     for engine in config.enabled_engines():
         previous = _saved(con, "status", engine)
         try:
@@ -298,6 +310,13 @@ def collect(con) -> dict:
             counts["readings"] += 1
             if watching:
                 counts["reminders"] += reminders(con, snapshots[engine])
+        except UsageLoggedOut as exc:
+            logged_out.append(f"{engine}: {exc}")
+            key = f"{engine}:logged_out"
+            if not (_saved(con, "alert", key) or {}).get("active"):
+                if notify.tell(f"{engine.capitalize()} was logged out", str(exc)) != "nowhere":
+                    _save(con, "alert", key, {"active": True})
+                    con.commit()
         except UsageError as exc:
             if not watching:
                 continue
@@ -308,6 +327,11 @@ def collect(con) -> dict:
     counts["windows_opened"] = anchors.maintain(con, snapshots, plan)
     if errors:
         raise UsageError("; ".join(errors))
+    if logged_out:
+        # Known missing authentication is partial coverage, not a collector
+        # crash. Keep probing so signing back in recovers automatically.
+        counts["_sync"] = {"complete": False, "pending": len(logged_out),
+                           "reason": "; ".join(logged_out)}
     return counts
 
 

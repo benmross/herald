@@ -14,7 +14,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
-from herald import config, db, think, usage
+from herald import collector, config, db, think, usage
 
 NOW = dt.datetime(2026, 10, 20, 17, 30, tzinfo=dt.timezone.utc)
 # Layout captured from the real interactive CLI; values and timezone changed.
@@ -74,6 +74,11 @@ class Parsers(unittest.TestCase):
     def test_cached_vendor_screen_is_explicit_error(self):
         with self.assertRaisesRegex(usage.UsageError, 'last-known'):
             usage.parse_claude(SCREEN + '\nShowing last-known usage from 5 minutes ago', NOW)
+
+    def test_api_billing_header_means_subscription_logged_out(self):
+        with self.assertRaisesRegex(usage.UsageLoggedOut, 'logged out'):
+            usage.parse_claude('Claude Code v2.1\nOpus · API usage billing\n❯\n', NOW)
+        self.assertEqual(len(usage.parse_claude('Opus · Claude Pro\n' + SCREEN, NOW)), 2)
 
     def test_weekday_and_year_rollover_resets(self):
         self.assertEqual(dt.datetime.fromtimestamp(usage._reset('Fri 11am (UTC)', NOW), dt.timezone.utc).day, 23)
@@ -151,6 +156,21 @@ class Parsers(unittest.TestCase):
             self.assertEqual(think.subscription_usage('claude'), SCREEN)
         keys = [cmd[-1] for cmd in calls if 'send-keys' in cmd]
         self.assertEqual(keys, ['/cost', 'Enter'])
+        self.assertEqual(calls[-1][-1], 'kill-server')
+
+    def test_logged_out_header_returns_without_typing_a_command(self):
+        calls = []
+        screen = 'Claude Code v2.1\nOpus · API usage billing\n❯\n'
+        def run(cmd, **kw):
+            calls.append(cmd)
+            return type('Done', (), {'returncode': 0, 'stdout': screen})()
+        with patch.object(think.subprocess, 'run', side_effect=run), \
+             patch.object(think.shutil, 'which', return_value='/usr/bin/tmux'), \
+             patch.object(think, 'resolve_engine'), \
+             patch.object(think.time, 'monotonic', side_effect=itertools.count()), \
+             patch.object(think.time, 'sleep'):
+            self.assertEqual(think.subscription_usage('claude'), screen)
+        self.assertFalse(any('send-keys' in cmd for cmd in calls))
         self.assertEqual(calls[-1][-1], 'kill-server')
 
 
@@ -261,6 +281,62 @@ class StoredUsage(unittest.TestCase):
         cli.assert_not_called()
         self.assertTrue(failed)
         self.assertIn('no usage reading', text)
+
+    def test_logout_alert_once_until_successful_sign_in(self):
+        usage._save(self.con, 'snapshot', 'claude', self.snapshot())
+        screen = 'Claude Code v2.1\nAPI usage billing\n❯\n'
+        with patch.object(config, 'enabled_engines', return_value=('claude',)), \
+             patch.object(usage.anchors, 'enabled', return_value=False), \
+             patch.object(usage.anchors, 'maintain', return_value=0), \
+             patch.object(think, 'subscription_usage', return_value=screen) as cli, \
+             patch.object(usage.notify, 'tell', return_value='telegram') as send:
+            for _ in range(3):
+                self.assertFalse(usage.collect(self.con)['_sync']['complete'])
+            send.assert_called_once()
+            self.assertIn('logged out', send.call_args.args[0])
+            self.assertEqual(usage._saved(self.con, 'snapshot', 'claude'), self.snapshot())
+            cli.return_value = SCREEN
+            self.assertNotIn('_sync', usage.collect(self.con))
+            cli.return_value = screen
+            usage.collect(self.con)
+            self.assertEqual(send.call_count, 2)
+
+    def test_logout_notification_retries_if_delivery_fails(self):
+        with patch.object(config, 'enabled_engines', return_value=('claude',)), \
+             patch.object(usage.anchors, 'enabled', return_value=False), \
+             patch.object(usage.anchors, 'maintain', return_value=0), \
+             patch.object(think, 'subscription_usage', return_value='API usage billing'), \
+             patch.object(usage.notify, 'tell', side_effect=['nowhere', 'telegram']) as send:
+            usage.collect(self.con)
+            usage.collect(self.con)
+            usage.collect(self.con)
+            self.assertEqual(send.call_count, 2)
+
+    def test_runner_does_not_send_repeated_failure_or_recovery_alerts_for_logout(self):
+        path = pathlib.Path(self.tmp.name) / 'facts.db'
+        target = sqlite3.connect(path)
+        self.con.backup(target)
+        target.close()
+        def connect():
+            con = sqlite3.connect(path)
+            con.row_factory = sqlite3.Row
+            return con
+        with patch.object(config, 'enabled_engines', return_value=('claude',)), \
+             patch.object(usage.anchors, 'enabled', return_value=False), \
+             patch.object(usage.anchors, 'maintain', return_value=0), \
+             patch.object(db, 'connect', side_effect=connect), \
+             patch.object(think, 'subscription_usage', return_value='API usage billing'), \
+             patch.object(usage.notify, 'tell', return_value='telegram') as send:
+            for _ in range(3):
+                self.assertEqual(collector.run('usage', usage.collect), 0)
+            send.assert_called_once()
+        con = connect()
+        try:
+            row = con.execute("SELECT * FROM collector_state WHERE collector='usage'").fetchone()
+            self.assertEqual(row['consecutive_failures'], 0)
+            self.assertIn('logged out', row['last_error'])
+        finally:
+            con.close()
 
 
 class TelegramUsage(unittest.TestCase):

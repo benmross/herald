@@ -226,6 +226,10 @@ def subscription_usage(engine: str, timeout: int = 45) -> dict | str:
             screen = tmux("capture-pane", "-p", "-t", "usage:0.0")
             if screen != previous:
                 previous, stable_since = screen, time.monotonic()
+            if (re.search(r"API\s+usage\s+billing", screen, re.I)
+                    and time.monotonic() - stable_since >= 0.6):
+                # Subscription login is gone. Do not open /cost in API mode.
+                return screen
             if not sent and _usage_prompt_ready(screen) and time.monotonic() - stable_since >= 0.6:
                 # /cost is the built-in /usage alias. Unlike the primary
                 # name, built-in aliases cannot be replaced by a skill:
