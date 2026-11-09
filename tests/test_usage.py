@@ -58,6 +58,23 @@ class Parsers(unittest.TestCase):
         windows = usage.parse_claude(SCREEN.replace("   What's contributing", extra + "   What's contributing"), NOW)
         self.assertEqual(windows[-1]['used_percent'], 80)
 
+    def test_model_week_heading_without_only_suffix(self):
+        extra = '\nCurrent week (Fable)\n0% used\nResets Oct 23, 11am (UTC)\n'
+        windows = usage.parse_claude(SCREEN.replace("   What's contributing", extra + "   What's contributing"), NOW)
+        self.assertEqual(len(windows), 3)
+        self.assertEqual(windows[-1], {
+            'key': 'current_week_fable', 'label': 'Current week (Fable)',
+            'used_percent': 0, 'window_minutes': 10080,
+            'resets_at': int(NOW.replace(day=23, hour=11, minute=0).timestamp())})
+
+    def test_model_week_still_requires_valid_quota_and_reset(self):
+        for block in ('0% used', 'Resets Oct 23, 11am (UTC)',
+                      '101% used\nResets Oct 23, 11am (UTC)',
+                      '0% used\nResets Nov 23, 11am (UTC)'):
+            extra = f'\nCurrent week (Fable)\n{block}\n'
+            with self.subTest(block=block), self.assertRaises(usage.UsageParseError):
+                usage.parse_claude(SCREEN.replace("   What's contributing", extra + "   What's contributing"), NOW)
+
     def test_layout_changes_fail_instead_of_reporting_zero(self):
         for screen in ('', SCREEN.replace('Current session', 'Session allowance'),
                        SCREEN.replace('12% used', '12 percent used'),

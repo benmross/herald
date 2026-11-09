@@ -117,7 +117,8 @@ def parse_claude(screen: str, now: dt.datetime | None = None) -> list[dict]:
             key, minutes = "session", 300
         elif label in ("Current week", "Current week (all models)"):
             key, minutes = "week", 10080
-        elif re.fullmatch(r"Current week \([A-Za-z0-9 .-]+ only\)", label):
+        elif re.fullmatch(r"Current week \([A-Za-z0-9][A-Za-z0-9 .-]*\)", label):
+            # Model-specific buckets may omit the older "only" suffix.
             key, minutes = re.sub(r"\W+", "_", label.lower()).strip("_"), 10080
         else:
             raise _error("unrecognised quota heading")
