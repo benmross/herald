@@ -58,7 +58,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, private as private_mod, routing, usage  # noqa: E402
+from herald import handoff, limitresume, private as private_mod, routing, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -1100,6 +1100,10 @@ def handle(update: dict, state: dict) -> None:
     # only, and the topic's stored record is left exactly as it was.
     pv = _private.get(key)
     ts = topic_state(state, key)
+    if not update.get("_limit_resume"):
+        # Their own message decides what happens next, so a continuation that
+        # was waiting for a limit to reset is dropped.
+        limitresume.cancel(ts)
     inbox = pathlib.Path(pv["scratch"]) / "inbox" if pv else None
     prepared = update.get("_prepared_attachments")
     if prepared and prepared["destination"] is not None and prepared["destination"] != str(inbox):
@@ -1419,6 +1423,7 @@ def handle(update: dict, state: dict) -> None:
                 posted += send(chat_id, result.text or "(no reply)", thread_id)
             ts["session_id"] = result.session_id or ts.get("session_id")
             ts["turns"] = 1 if reason else ts.get("turns", 0) + 1
+            ts.pop(limitresume.ATTEMPTS, None)
         elif result.cancelled:
             # /stop already told them it stopped -- see _handle_stop. A second
             # message here would just be noise. The interrupted session may
@@ -1429,7 +1434,18 @@ def handle(update: dict, state: dict) -> None:
                 _hand_off(ts, result.session_id or resume)
             ts["session_id"] = None
         else:
-            send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id)
+            later = None
+            if result.rate_limited and pv is None and limitresume.enabled():
+                with db.session() as con:
+                    at = limitresume.when(con, engine, time.time())
+                if limitresume.schedule(ts, at, engine, chat_id, thread_id):
+                    later = config.clock(datetime.fromtimestamp(at, tz=EASTERN))
+            if later:
+                send(chat_id, f"{engine.capitalize()} hit its usage limit part-way through. "
+                              f"I'll continue this at {later}, once it has reset. "
+                              "Send /stop to cancel that.", thread_id)
+            else:
+                send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id)
             if reason:
                 ts["session_id"] = None
             elif result.session_id:
@@ -1841,7 +1857,7 @@ def _is_stop_command(update: dict) -> bool:
     return text == "/stop"
 
 
-def _handle_stop(update: dict, key: str) -> None:
+def _handle_stop(update: dict, key: str, state: dict | None = None) -> None:
     """Interrupt whatever this topic's turn is doing, right now.
 
     Deliberately does not go through `handle()` or `_lock_for(key)` -- a turn
@@ -1862,9 +1878,13 @@ def _handle_stop(update: dict, key: str) -> None:
         print(f"ignoring /stop from user {sender}", file=sys.stderr)
         return
     thread_id = msg.get("message_thread_id")
+    waiting = state is not None and limitresume.cancel(thread_state(state, key))
     if think.cancel(key):
         send(chat_id, "*Stopped — abandoning whatever that was.*", thread_id)
         print(f"[{key}] stopped on request")
+    elif waiting:
+        send(chat_id, "*Cancelled. I won't continue that when the limit resets.*", thread_id)
+        print(f"[{key}] pending continuation cancelled")
     else:
         send(chat_id, "*Nothing running here.*", thread_id)
 
@@ -2317,6 +2337,40 @@ def _study_text(update: dict, state: dict) -> bool:
     return handled
 
 
+def _resume_after_limits(state: dict) -> None:
+    """Give each topic whose limit has reset the message that continues it.
+
+    Runs for the life of the bridge. The pending record is in the topic's
+    saved state, so a continuation survives a restart of the bridge, and it is
+    removed before the turn starts so it cannot fire twice. See
+    lib/herald/limitresume.py.
+    """
+    while True:
+        time.sleep(30)
+        try:
+            for key, record in limitresume.take_due(state.get("threads", {}), time.time()):
+                chat_id, thread_id = record["chat_id"], record.get("thread_id")
+                msg = {"chat": {"id": chat_id, "type": "private" if chat_id > 0 else "supergroup"},
+                       "from": {"id": config.secret("telegram.user_id")},
+                       "text": limitresume.PROMPT, "date": int(time.time())}
+                if thread_id:
+                    msg["message_thread_id"] = thread_id
+                fake = {"update_id": -1, "message": msg, "_limit_resume": True}
+                print(f"[{key}] limit reset, continuing")
+
+                def run(fake=fake, chat_id=chat_id, thread_id=thread_id):
+                    try:
+                        send(chat_id, "*The usage limit has reset, so I'm continuing.*", thread_id)
+                        with _lock_for(_topic_key(fake)):
+                            handle(fake, state)
+                    except Exception as e:                    # noqa: BLE001
+                        print(f"limit continuation error: {e}", file=sys.stderr)
+                    _checkpoint(state)
+                threading.Thread(target=run, daemon=True).start()
+        except Exception as e:                                # noqa: BLE001
+            print(f"limit continuation loop error: {e}", file=sys.stderr)
+
+
 def _dispatch(update: dict, state: dict) -> None:
     """Runs in its own thread per update so one slow topic (an engine call
     can take minutes) never delays a reply in a different one."""
@@ -2338,7 +2392,7 @@ def _dispatch(update: dict, state: dict) -> None:
             else:
                 _handle_callback(update)
         elif _is_stop_command(update):
-            _handle_stop(update, key)
+            _handle_stop(update, key, state)
         elif _question_text(update, state):
             pass
         elif _is_debug_command(update):
@@ -2399,6 +2453,8 @@ def main() -> int:
     threads = state.get("threads", {})
     print(f"herald-telegram up (offset {state['offset']}, "
           f"{len(threads)} conversation(s): {', '.join(threads) or 'none yet'})")
+
+    threading.Thread(target=_resume_after_limits, args=(state,), daemon=True).start()
 
     while True:
         resp = api("getUpdates", offset=state["offset"], timeout=POLL_TIMEOUT,
