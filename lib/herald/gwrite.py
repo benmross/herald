@@ -47,6 +47,7 @@ from email.message import EmailMessage
 
 import functools
 import inspect
+from urllib.parse import urlsplit
 
 from . import config, db, google, gtasks, mailfmt, private
 
@@ -174,6 +175,59 @@ def calendar_window(cal_id: str, lo: dt.datetime, hi: dt.datetime) -> list[dict]
     return [summarize(e) for e in items]
 
 
+def _source_url(value: str | None) -> str | None:
+    """Calendar source metadata requires an absolute HTTP(S) URL.
+
+    Sources often supply a bare domain/path. Repair that unambiguous case;
+    omit unusable optional metadata rather than failing the whole event sync.
+    Do not strip path punctuation or change query strings (including signatures).
+    """
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or re.search(r"[\s\x00-\x1f\x7f\\]", value):
+        return None
+    if value.startswith("//"):
+        value = "https:" + value
+    elif not re.match(r"[a-zA-Z][a-zA-Z0-9+.-]*:", value):
+        # A relative path or a prose label is not a hostname to guess at.
+        if "." not in value.split("/", 1)[0]:
+            return None
+        value = "https://" + value
+    try:
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        if (parsed.scheme not in ("http", "https") or not host
+                or parsed.username is not None or parsed.password is not None):
+            return None
+        # urlsplit validates IPv6 literals and ports on access, but not DNS names.
+        if ":" not in host:
+            labels = host.encode("idna").decode("ascii").rstrip(".").split(".")
+            if any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?",
+                                    label) for label in labels):
+                return None
+        if parsed.port is not None and parsed.port == 0:
+            return None
+    except (ValueError, UnicodeError):
+        return None
+    return value
+
+
+def _calendar_source(body: dict) -> dict:
+    """Also protect writes from callers that construct their own event bodies.
+
+    Keep explicit source=None patches (clear metadata), and never mutate the
+    caller's body or its nested source dictionary.
+    """
+    if "source" not in body or body["source"] is None:
+        return body
+    body = dict(body)
+    source = body.pop("source")
+    if isinstance(source, dict) and (url := _source_url(source.get("url"))):
+        body["source"] = {**source, "url": url}
+    return body
+
+
 def build_event(*, summary: str, start: str, end: str | None, all_day: bool,
                 location: str = "", description: str = "", color_id: str = "",
                 sync_key: str, source_url: str | None = None,
@@ -206,8 +260,8 @@ def build_event(*, summary: str, start: str, end: str | None, all_day: bool,
     }
     if color_id:
         body["colorId"] = color_id
-    if source_url:
-        body["source"] = {"title": (source_title or "Source")[:60], "url": source_url}
+    if url := _source_url(source_url):
+        body["source"] = {"title": (source_title or "Source")[:60], "url": url}
     if reminder_minutes:
         body["reminders"] = {"useDefault": False,
                              "overrides": [{"method": "popup", "minutes": reminder_minutes}]}
@@ -255,6 +309,7 @@ def _log(con, actor: str, tier: str, kind: str, target: str, summary: str,
 
 def calendar_insert(con, *, actor: str, cal_id: str, cal_name: str, body: dict,
                     tier: str = "amber") -> dict:
+    body = _calendar_source(body)
     ev = calendar_service().events().insert(calendarId=cal_id, body=body,
                                                sendUpdates="none").execute()
     start = body["start"].get("dateTime") or body["start"].get("date")
@@ -265,6 +320,7 @@ def calendar_insert(con, *, actor: str, cal_id: str, cal_name: str, body: dict,
 
 def calendar_update(con, *, actor: str, cal_id: str, cal_name: str,
                     event_id: str, body: dict, tier: str = "amber") -> dict:
+    body = _calendar_source(body)
     ev = calendar_service().events().update(calendarId=cal_id, eventId=event_id,
                                             body=body, sendUpdates="none").execute()
     _log(con, actor, tier, "calendar.update", cal_name,
@@ -277,6 +333,7 @@ def calendar_patch(con, *, actor: str, cal_id: str, cal_name: str,
                    tier: str = "amber", quiet: bool = False) -> dict:
     """A partial update. `quiet` skips the audit row for identity-only
     patches (stamping a syncKey onto an event) that change nothing the user sees."""
+    patch = _calendar_source(patch)
     ev = calendar_service().events().patch(calendarId=cal_id, eventId=event_id,
                                            body=patch, sendUpdates="none").execute()
     if not quiet:
