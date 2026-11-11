@@ -96,6 +96,16 @@ partial sources so missing records are not mistaken for a complete answer.
 `collector.run` does it: a failure streak is tracked, the user is told after two
 consecutive failures, and told again when it recovers. Just raise.
 
+### Other opportunity sources
+
+An extension can hand announcements to Scout by writing `opportunity_lead`
+facts. Keep the full text in `body`, the posting date in `ts`, and provenance
+in `data.from`, `data.url` and `data.private`. The opportunities collector
+ranks every lead alongside mail. A changed lead gets a new review identity;
+deleted leads are excluded. Channel selection and source permissions belong
+in the extension. Scout shows private provenance to the session so that it
+can track a lead for the person without publishing its contents.
+
 ## Ingesting a one-off document set
 
 Not everything is a live source worth a collector. Sometimes someone hands over a

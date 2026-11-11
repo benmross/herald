@@ -648,6 +648,10 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
         out.append(f"- from: {d.get('from')}")
         out.append(f"- when: {(r['ts'] or '')[:16].replace('T', ' ')}")
         out.append(f"- filter score {d.get('score')} ({', '.join(d.get('reasons', []))})")
+        if d.get("url"):
+            out.append(f"- source: {d['url']}")
+        if d.get("private"):
+            out.append("- private source: for your own tracking only; never publish or share its contents")
         fact = reader.message(r["external_id"])
         if fact is not None:
             text = mailtext.compact(fact['body'] or '')

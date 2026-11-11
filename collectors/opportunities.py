@@ -24,6 +24,7 @@ judgment and judgments belong to the cycle, not to a regex.
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
 import re
 import sys
@@ -108,6 +109,37 @@ def _score(subject: str, body: str, sender: str) -> tuple[int, list[str]]:
     return score, reasons
 
 
+def _leads(con) -> list[dict]:
+    """Candidates that did not arrive by mail.
+
+    Clubs post internships and programmes in a channel as readily as in a
+    newsletter, and those never reach an inbox. Any source may hand such a
+    message over by storing it as a fact of kind `opportunity_lead`: `title`,
+    the whole text in `body`, and `data.from` saying where it was posted. It
+    is ranked like mail and read by the scout whole, like mail. Nothing here
+    judges it; which channels are worth handing over is the source's setting.
+    """
+    out = []
+    for r in con.execute("""
+            SELECT id, source, ts, title, body, data FROM facts
+            WHERE kind = 'opportunity_lead' AND ts >= date('now', '-45 days')
+              AND coalesce(json_extract(data,'$.deleted'),0)=0
+            ORDER BY id"""):
+        data = json.loads(r["data"] or "{}")
+        sender = str(data.get("from") or r["source"])
+        score, reasons = _score(r["title"] or "", r["body"] or "", sender)
+        revision = hashlib.sha256(json.dumps([r["title"], r["body"], data],
+                                             sort_keys=True).encode()).hexdigest()[:16]
+        out.append(dict(
+            external_id=f"{r['source']}:{r['id']}:{revision}", ts=r["ts"],
+            title=r["title"] or "(untitled)", body=r["body"] or "",
+            data={"from": sender, "score": score, "reasons": reasons,
+                  "source_fact": r["id"], "list_id": None, "gmail_id": None,
+                  "url": data.get("url"), "private": bool(data.get("private"))},
+        ))
+    return out
+
+
 def collect(con) -> dict:
     rows = con.execute("""
         SELECT id, source, ts, title, body, data FROM facts
@@ -152,6 +184,7 @@ def collect(con) -> dict:
                 "gmail_id": data.get("thread_id"),
             },
         ))
+    candidates += _leads(con)
     db.replace_facts(con, NAME, "candidate", candidates)
 
     live = con.execute(
