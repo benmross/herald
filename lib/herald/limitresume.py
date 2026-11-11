@@ -22,6 +22,7 @@ taken) is retried after `RETRY_SECONDS` instead, and a topic gives up after
 from __future__ import annotations
 
 import json
+import uuid
 
 from . import config, usage
 
@@ -83,6 +84,45 @@ def cancel(ts: dict) -> bool:
     """Drop a pending continuation. True if there was one."""
     ts.pop(ATTEMPTS, None)
     return ts.pop(KEY, None) is not None
+
+
+def request(topic: str, ts: dict, at: float) -> str:
+    """Queue an existing stopped session without editing the bridge's live state.
+
+    This also covers limits hit before auto-resume was loaded. The bridge
+    imports the request into its normal, cancellable continuation state.
+    A newer turn or a changed session makes the request obsolete.
+    """
+    if not ts.get("session_id") or not ts.get("engine"):
+        raise ValueError("a continuation needs an existing session and engine")
+    folder = config.LOGS / "limit-resume-requests"
+    folder.mkdir(parents=True, exist_ok=True)
+    request_id = uuid.uuid4().hex
+    path = folder / (request_id + ".json")
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"topic": topic, "session_id": ts["session_id"],
+                                    "last_ts": ts.get("last_ts", 0),
+                                    "engine": ts["engine"], "at": at}))
+    temporary.replace(path)
+    return request_id
+
+
+def import_requests(threads: dict) -> bool:
+    """Import one-shot requests, preserving any newer user activity."""
+    imported = False
+    for path in sorted((config.LOGS / "limit-resume-requests").glob("*.json")):
+        record = json.loads(path.read_text())
+        key = record["topic"]
+        ts = threads.get(key, {})
+        if (ts.get("session_id") == record["session_id"]
+                and ts.get("engine") == record["engine"]
+                and ts.get("last_ts", 0) == record["last_ts"]
+                and KEY not in ts):
+            chat, thread = key.split(":", 1)
+            imported |= schedule(ts, record["at"], record["engine"], int(chat),
+                                 None if thread == "main" else int(thread))
+        path.unlink()
+    return imported
 
 
 def take_due(threads: dict, now: float) -> list[tuple[str, dict]]:

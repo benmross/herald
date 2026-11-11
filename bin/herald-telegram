@@ -1879,6 +1879,9 @@ def _handle_stop(update: dict, key: str, state: dict | None = None) -> None:
         return
     thread_id = msg.get("message_thread_id")
     waiting = state is not None and limitresume.cancel(thread_state(state, key))
+    if state is not None:
+        # A queued request for the state before /stop must also become stale.
+        thread_state(state, key)["last_ts"] = time.time()
     if think.cancel(key):
         send(chat_id, "*Stopped — abandoning whatever that was.*", thread_id)
         print(f"[{key}] stopped on request")
@@ -2348,6 +2351,8 @@ def _resume_after_limits(state: dict) -> None:
     while True:
         time.sleep(30)
         try:
+            if limitresume.import_requests(state.get("threads", {})):
+                _checkpoint(state)
             for key, record in limitresume.take_due(state.get("threads", {}), time.time()):
                 chat_id, thread_id = record["chat_id"], record.get("thread_id")
                 msg = {"chat": {"id": chat_id, "type": "private" if chat_id > 0 else "supergroup"},

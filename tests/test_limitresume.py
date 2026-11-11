@@ -1,11 +1,35 @@
 """A turn stopped by a usage limit is continued once, at the reset, and can be cancelled."""
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from herald import limitresume
 
 
 class LimitResumeTests(unittest.TestCase):
+    def test_request_reaches_existing_topic_once(self):
+        ts = {"session_id": "stopped", "engine": "claude", "last_ts": 10}
+        threads = {"7:3": ts}
+        with tempfile.TemporaryDirectory() as folder, patch.object(limitresume.config, "LOGS", Path(folder)):
+            limitresume.request("7:3", ts, 2000.0)
+            self.assertTrue(limitresume.import_requests(threads))
+            self.assertFalse(limitresume.import_requests(threads))
+        (key, record), = limitresume.take_due(threads, 2000.0)
+        self.assertEqual((key, record["chat_id"], record["thread_id"]), ("7:3", 7, 3))
+
+    def test_request_does_not_override_newer_work_or_existing_queue(self):
+        for changed in ({"session_id": "different"}, {"last_ts": 11},
+                        {"engine": "codex"}, {limitresume.KEY: {"at": 3000}}):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as folder, \
+                    patch.object(limitresume.config, "LOGS", Path(folder)):
+                ts = {"session_id": "stopped", "engine": "claude", "last_ts": 10}
+                limitresume.request("7:3", ts, 2000.0)
+                ts.update(changed)
+                before = dict(ts)
+                self.assertFalse(limitresume.import_requests({"7:3": ts}))
+                self.assertEqual(ts, before)
+
     def test_time_is_the_last_full_window_reset(self):
         windows = [{"used_percent": 100.0, "resets_at": 2000.0},
                    {"used_percent": 43.0, "resets_at": 9000.0},

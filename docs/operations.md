@@ -197,6 +197,18 @@ on Claude and 14,000 mostly cached on Codex, measured 30 October 2026.
 
 ## Subscription usage
 
+With `engines.resume_after_limit` enabled, a Telegram turn stopped by quota
+continues after the exhausted window resets. A new message or `/stop` cancels
+the continuation. The bridge keeps the session's provider and carries no old
+approval into the new turn.
+
+For a session stopped before this setting was loaded, local maintenance code
+can call `limitresume.request(topic, saved_topic_state, at)` to queue the same
+continuation. It writes a one-shot request under `logs/limit-resume-requests/`;
+the bridge imports it within 30 seconds. A changed session, provider or last
+turn makes it stale. Do not edit the saved bridge cursor to queue work: the
+running bridge would overwrite that edit at its next checkpoint.
+
 `herald usage` and Telegram's `/usage` show subscription percentages and reset
 times for your enabled providers, without a model turn. Add `claude` or `codex`
 to select one provider. `herald usage --refresh` requests fresh readings;
