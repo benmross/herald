@@ -330,7 +330,8 @@ def _seen(con) -> set[str]:
     if not row or not row["cursor"]:
         return set()
     try:
-        return set(json.loads(row["cursor"]))
+        saved = json.loads(row["cursor"])
+        return {key for key in saved if isinstance(key, str)} if isinstance(saved, list) else set()
     except (json.JSONDecodeError, TypeError):
         return set()
 
@@ -396,11 +397,14 @@ class _MailReader:
     def _prune(self, now: dt.datetime) -> None:
         # A cache of copies: the originals are in the mailbox.
         cutoff = now.timestamp() - IMAGE_DIR_KEEP_DAYS * 86400
-        if not self.root.is_dir():
-            return
-        for d in self.root.iterdir():
-            if d.is_dir() and d.stat().st_mtime < cutoff:
-                shutil.rmtree(d, ignore_errors=True)
+        try:
+            if not self.root.is_dir():
+                return
+            for d in self.root.iterdir():
+                if d.is_dir() and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+        except OSError as e:
+            print(f"  image cache cleanup failed: {e}", file=sys.stderr)
 
     def _service(self):
         if self.svc is None and self.unavailable is None:
@@ -457,13 +461,19 @@ class _MailReader:
         if files:
             out.append(f"- attachments: {', '.join(files[:12])}")
         if images:
-            if fact["source"] == "purelymail":
-                from herald import purelymail
-                saved, skipped = purelymail.images(mid, self.dir / mid, self.seen,
-                                                   self.settings, self.left)
-                self.left -= len(saved)
-            else:
-                saved, skipped = self.images(mid)
+            try:
+                if fact["source"] == "purelymail":
+                    from herald import purelymail
+                    saved, skipped = purelymail.images(mid, self.dir / mid, self.seen,
+                                                       self.settings, self.left)
+                    self.left -= len(saved)
+                else:
+                    saved, skipped = self.images(mid)
+            except Exception as e:  # noqa: BLE001
+                # Images are optional enrichment. A MIME/charset error or a
+                # failed cache write must not prevent reading the stored text.
+                print(f"  images unavailable for {mid}: {e}", file=sys.stderr)
+                saved, skipped = [], {"failed": 1}
             if saved:
                 out.append(f"- images ({len(saved)}), Read every one before you decide:")
                 for im in saved:
@@ -496,7 +506,10 @@ class _MailReader:
         return out
 
     def finish(self) -> None:
-        self.seen.save()
+        try:
+            self.seen.save()
+        except OSError as e:
+            print(f"  image cache could not be saved: {e}", file=sys.stderr)
 
 
 def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
@@ -739,29 +752,32 @@ def _write_calendar_events(events: list[dict]) -> int:
     with db.session() as con:
         shown = calsync.covered_elsewhere(con)
         for ev in events:
-            start = (ev.get("start") or "").strip()
-            title = (ev.get("title") or "").strip()
-            if not start or not title:
+            try:
+                title = (ev.get("title") or "").strip()
+                start, end, all_day = _event_times(ev)
+                if not title:
+                    raise ValueError("event title is empty")
+                slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]
+                key = f"email:{slug}-{start[:10]}"
+                body = gwrite.build_event(
+                    summary=title, start=start, end=end,
+                    all_day=all_day, location=ev.get("location") or "",
+                    description=(ev.get("description") or "").strip()
+                                + (f"\n\n{ev['url']}" if ev.get("url") else ""),
+                    color_id="6", sync_key=key, source_url=ev.get("url") or None,
+                    source_title="Email")
+            except (TypeError, ValueError, AttributeError, OverflowError) as e:
+                print(f"  invalid calendar event: {e}", file=sys.stderr)
                 continue
             # Already on a calendar the user displays (calendars.already_shown).
             if shown(title, start):
                 continue
-            all_day = bool(ev.get("all_day")) or len(start) == 10
             nt = gwrite.norm_title(title)
             if any(gwrite.norm_title(e["summary"]) == nt
                    and gwrite.same_start(e["start"], start) for e in live):
                 continue
-            slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:60]
-            key = f"email:{slug}-{start[:10]}"
             if any(e["syncKey"] == key for e in live):
                 continue
-            body = gwrite.build_event(
-                summary=title, start=start, end=ev.get("end") or None,
-                all_day=all_day, location=ev.get("location") or "",
-                description=(ev.get("description") or "").strip()
-                            + (f"\n\n{ev['url']}" if ev.get("url") else ""),
-                color_id="6", sync_key=key, source_url=ev.get("url") or None,
-                source_title="Email")
             try:
                 gwrite.calendar_insert(con, actor=LABEL, cal_id=cal_id,
                                        cal_name=cal_name, body=body)
@@ -772,6 +788,58 @@ def _write_calendar_events(events: list[dict]) -> int:
             except Exception as e:  # noqa: BLE001
                 print(f"  calendar write failed for {title!r}: {e}", file=sys.stderr)
     return written
+
+
+def _event_times(ev: dict) -> tuple[str, str | None, bool]:
+    """Reject malformed dates and missing offsets before building an event."""
+    start = (ev.get("start") or "").strip()
+    end = (ev.get("end") or "").strip() or None
+    all_day = bool(ev.get("all_day")) or len(start) == 10
+    if all_day:
+        first = dt.date.fromisoformat(start[:10])
+        last = dt.date.fromisoformat(end[:10]) if end else first
+        if last < first:
+            raise ValueError("event ends before it starts")
+    else:
+        first = dt.datetime.fromisoformat(start)
+        last = dt.datetime.fromisoformat(end) if end else None
+        if first.utcoffset() is None or (last is not None and last.utcoffset() is None):
+            raise ValueError("timed event needs a timezone offset")
+        if last is not None and last <= first:
+            raise ValueError("event ends before or at its start")
+    return start, end, all_day
+
+
+def _validated_payload(value, schema=SCHEMA, path="result"):
+    """Check the schema types Scout uses, even when an engine returns plain JSON.
+
+    Validate the entire reply before notifications or seen-state changes. Codex's
+    strict schema can represent optional fields as null; treat those as absent.
+    Return a copy so normalizing optionals does not change the saved reply.
+    """
+    types = {"object": dict, "array": list, "string": str, "integer": int, "boolean": bool}
+    if type(value) is not types[schema["type"]]:
+        raise ValueError(f"{path} must be {schema['type']}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ValueError(f"{path} has an unsupported value")
+    if isinstance(value, dict):
+        required = schema.get("required", [])
+        for key in required:
+            if key not in value:
+                raise ValueError(f"{path}.{key} is required")
+        out = dict(value)
+        for key, item in schema.get("properties", {}).items():
+            if key not in out:
+                continue
+            if out[key] is None and key not in required:
+                out.pop(key)
+            else:
+                out[key] = _validated_payload(out[key], item, f"{path}.{key}")
+        return out
+    if isinstance(value, list):
+        return [_validated_payload(item, schema["items"], f"{path}[{i}]")
+                for i, item in enumerate(value)]
+    return value
 
 
 def main() -> int:
@@ -821,7 +889,14 @@ def main() -> int:
         print(result.error, file=sys.stderr)
         return 1
 
-    payload = result.json() or {}
+    try:
+        payload = _validated_payload(result.json())
+    except ValueError as e:
+        error = f"Invalid Scout output: {e}; candidates remain queued"
+        notify.push("Herald: scout cycle failed", error,
+                    priority="high", tags="rotating_light")
+        print(error, file=sys.stderr)
+        return 1
     pushes = payload.get("push_now") or []
 
     if pushes:
@@ -863,8 +938,7 @@ def main() -> int:
     cost = f"${result.cost_usd:.4f}" if result.cost_usd is not None else "?"
     if events:
         print(f"  calendar: {written} of {len(events)} email-derived events written")
-    print(f"{CYCLE}: {len(fresh)} new ({len(shown_ids)} shown, "
-          f"{substantive} substantive), "
+    print(f"{CYCLE}: {len(fresh)} new ({len(shown_ids)} shown), "
           f"opened {payload.get('opened', 0)}, "
           f"rejected {payload.get('rejected', 0)}, "
           f"pushed {len(pushes)}, {live} live  "

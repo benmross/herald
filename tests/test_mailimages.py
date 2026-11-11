@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import pathlib
 import sys
 import tempfile
@@ -56,6 +57,22 @@ class Sizes(unittest.TestCase):
         self.assertFalse(mailimages.worth_reading(1200, 20))
         self.assertTrue(mailimages.worth_reading(700, 350))
         self.assertTrue(mailimages.worth_reading(1080, 1080))
+
+
+class SeenCache(unittest.TestCase):
+    def test_wrong_json_shapes_do_not_crash_image_reading(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "seen.json"
+            for value in (None, 7, {}, ["old", {}, ["nested"], 12]):
+                with self.subTest(value=value):
+                    path.write_text(json.dumps(value))
+                    seen = mailimages.Seen(path)
+                    self.assertTrue(seen.new("new"))
+                    self.assertFalse(seen.new("new"))
+                    if isinstance(value, list):
+                        self.assertFalse(seen.new("old"))
+                    seen.save()
+                    self.assertFalse(mailimages.Seen(path).new("new"))
 
 
 @unittest.skipIf(Image is None, "Pillow not installed")

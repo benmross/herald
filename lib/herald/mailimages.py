@@ -151,7 +151,9 @@ class Seen:
     def __init__(self, path: pathlib.Path):
         self.path = path
         try:
-            self.hashes: list[str] = json.loads(path.read_text())
+            saved = json.loads(path.read_text())
+            self.hashes: list[str] = ([h for h in saved if isinstance(h, str)]
+                                      if isinstance(saved, list) else [])
         except (OSError, ValueError):
             self.hashes = []
         self._set = set(self.hashes)
