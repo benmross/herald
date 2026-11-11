@@ -58,7 +58,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, limitresume, private as private_mod, routing, usage  # noqa: E402
+from herald import handoff, limitchoice, limitresume, private as private_mod, routing, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -1341,7 +1341,7 @@ def handle(update: dict, state: dict) -> None:
         send(chat_id, str(exc), thread_id)
         return
     ts["engine"] = engine
-    auto = pv is None and not target and routing.enabled(ts)
+    auto = pv is None and not target and not update.get("_limit_resume") and routing.enabled(ts)
     if auto:
         with db.session() as con:
             move = routing.before_turn(con, engine)
@@ -1398,22 +1398,6 @@ def handle(update: dict, state: dict) -> None:
                                         "so I re-read the ledger instead)*", thread_id)
                 reason = "resume failed"
 
-        # A verified limit under Auto, and only then: the same message runs once
-        # more on the other provider, told the first attempt may have got partway.
-        if auto and result.rate_limited and not result.cancelled:
-            with db.session() as con:
-                other = routing.alternative(con, engine)
-            if other:
-                posted += working.message_ids
-                posted += send(chat_id, f"{engine.capitalize()} hit its limit, so I'm "
-                                        f"continuing on {other.capitalize()}.", thread_id)
-                ts["session_id"] = result.session_id or resume
-                _move_to(ts, other, key, "limit during the turn")
-                engine, model, effort = other, config.get(f"engines.{other}.model"), None
-                reason = "moved provider"
-                with Working(chat_id, thread_id) as working:
-                    result = attempt(working, True, None)
-
         posted += working.message_ids
         if result.ok:
             ts.pop("handoff_from", None)
@@ -1434,21 +1418,9 @@ def handle(update: dict, state: dict) -> None:
                 _hand_off(ts, result.session_id or resume)
             ts["session_id"] = None
         else:
-            later = None
-            if result.rate_limited and pv is None and limitresume.enabled():
-                with db.session() as con:
-                    at = limitresume.when(con, engine, time.time())
-                if limitresume.schedule(ts, at, engine, chat_id, thread_id):
-                    later = config.clock(datetime.fromtimestamp(at, tz=EASTERN))
-            if later:
-                send(chat_id, f"{engine.capitalize()} hit its usage limit part-way through. "
-                              f"I'll continue this at {later}, once it has reset. "
-                              "Send /stop to cancel that.", thread_id)
-            else:
+            if not (result.rate_limited and pv is None):
                 send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id)
-            if reason:
-                ts["session_id"] = None
-            elif result.session_id:
+            if result.session_id:
                 # A failed turn can still have done an hour of real work --
                 # a timeout kills the process, not the transcript. Keep its
                 # session so their next message continues that work instead of
@@ -1456,7 +1428,13 @@ def handle(update: dict, state: dict) -> None:
                 # turns out not to resume (killed mid-tool-call), the
                 # resume-failed retry above falls back to fresh on its own.
                 ts["session_id"] = result.session_id
+            elif reason:
+                ts["session_id"] = None
         ts["last_ts"] = time.time()
+        if not result.ok and not result.cancelled and result.rate_limited and pv is None:
+            progress = (getattr(working, "_sent_replies", []) or [result.text])[-1]
+            posted += _offer_limit_choice(ts, chat_id, thread_id, progress,
+                                          "" if update.get("_limit_resume") else text)
         # Filed under the session the turn ran in, whatever became of the
         # topic's pointer: a cancelled or failed turn still left a transcript.
         # A private turn is filed nowhere.
@@ -1488,7 +1466,97 @@ def _lock_for(key: str) -> threading.Lock:
         return _topic_locks.setdefault(key, threading.Lock())
 
 
+def _offer_limit_choice(ts: dict, chat_id: int, thread_id: int | None,
+                        progress: str = "", request: str = "") -> list[int]:
+    with db.session() as con:
+        record, text, keyboard = limitchoice.make(con, ts, progress, request)
+    response = api("sendMessage", chat_id=chat_id, text=text,
+                   reply_markup={"inline_keyboard": keyboard},
+                   **({"message_thread_id": thread_id} if thread_id else {}))
+    if response and response.get("ok"):
+        mid = response["result"]["message_id"]
+        record.update(message_id=mid, chat_id=chat_id, thread_id=thread_id)
+        ts[limitchoice.KEY] = record
+        return [mid]
+    return send(chat_id, "The usage limit paused this task, but the choice buttons "
+                         "couldn't be sent. Nothing has been scheduled. Send a new "
+                         "message to continue.", thread_id)
+
+
+def _limit_update(chat_id: int, thread_id: int | None, text: str) -> dict:
+    msg = {"chat": {"id": chat_id, "type": "private" if chat_id > 0 else "supergroup"},
+           "from": {"id": config.secret("telegram.user_id")},
+           "text": text, "date": int(time.time())}
+    if thread_id:
+        msg["message_thread_id"] = thread_id
+    return {"update_id": -1, "message": msg, "_limit_resume": True}
+
+
+def _handle_limit_callback(update: dict, state: dict) -> None:
+    cq = update["callback_query"]
+    if (cq.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        api("answerCallbackQuery", callback_query_id=cq["id"], text="Not your Herald.")
+        return
+    msg = cq.get("message") or {}
+    key = _topic_key({"message": msg})
+    match = re.fullmatch(r"limit:([0-9a-f]{16}):(switch|wait|stop)", cq.get("data") or "")
+    api("answerCallbackQuery", callback_query_id=cq["id"])
+    if not key or not match:
+        return
+    with _lock_for(key):
+        ts = thread_state(state, key)
+        record = ts.get(limitchoice.KEY)
+        if (key in _private or not record or record.get("token") != match[1]
+                or record.get("message_id") != msg.get("message_id")
+                or not limitchoice.current(ts, record)):
+            _replace_picker(msg, (msg.get("text") or "This task was paused.") +
+                            "\n\nThis choice is no longer active.")
+            return
+        chat_id, thread_id = record["chat_id"], record.get("thread_id")
+        action = match[2]
+        if action == "switch":
+            other = record.get("other")
+            with db.session() as con:
+                available = limitchoice.capacity(con, other) if other else None
+            if not available:
+                # Quota can change between displaying a card and tapping it.
+                if not limitchoice.current(ts, record):
+                    return
+                ts.pop(limitchoice.KEY, None)
+                _replace_picker(msg, "The other engine no longer has confirmed capacity. "
+                                "This task is still paused.")
+                _offer_limit_choice(ts, chat_id, thread_id, request=record.get("request", ""))
+                return
+        at = None
+        if action == "wait":
+            with db.session() as con:
+                at = limitresume.when(con, record["engine"], time.time())
+        # /stop can cancel without acquiring the lock while a quota read runs.
+        if not limitchoice.current(ts, record):
+            return
+        # Consume before scheduling or starting work. Duplicate and old taps
+        # cannot launch another turn, including after a bridge restart.
+        limitresume.cancel(ts)
+        if action == "stop":
+            ts["last_ts"] = time.time()
+            _replace_picker(msg, (msg.get("text") or "") + "\n\nStopped. Nothing is scheduled.")
+        elif action == "wait":
+            limitresume.schedule(ts, at, record["engine"], chat_id, thread_id)
+            _replace_picker(msg, (msg.get("text") or "") +
+                            f"\n\nI'll continue on {record['engine'].capitalize()} "
+                            f"{limitchoice.clock(at)}. Send /stop to cancel.")
+        else:
+            _move_to(ts, other, key, "user chose to switch after a usage limit")
+            ts["pinned"] = True
+            _replace_picker(msg, (msg.get("text") or "") +
+                            f"\n\nContinuing on {other.capitalize()}'s default model.")
+        _checkpoint(state)
+        if action == "switch" and ts.get("last_ts") == record["last_ts"]:
+            handle(_limit_update(chat_id, thread_id, limitchoice.CONTINUE), state)
+
+
 def _select_model(ts: dict, engine: str, model: str) -> str:
+    limitresume.cancel(ts)
     switched = engine != (ts.get("engine") or config.default_engine())
     ts.update(engine=engine, model=model, pinned=True)
     if switched:
@@ -1698,6 +1766,7 @@ def _handle_effort_callback(update: dict, state: dict) -> None:
             _replace_picker(msg, "Your model changed. Use /effort for its current choices.")
             return
         level = menu["choices"][int(match[2])]
+        limitresume.cancel(ts)
         ts["effort"] = level
         _replace_picker(msg, f"This topic uses {menu['engine']}/{menu['model']}.\n\n" + _effort_note(level))
 
@@ -2352,27 +2421,35 @@ def _resume_after_limits(state: dict) -> None:
         try:
             if limitresume.import_requests(state.get("threads", {})):
                 _checkpoint(state)
-            for key, record in limitresume.take_due(state.get("threads", {}), time.time()):
-                chat_id, thread_id = record["chat_id"], record.get("thread_id")
-                msg = {"chat": {"id": chat_id, "type": "private" if chat_id > 0 else "supergroup"},
-                       "from": {"id": config.secret("telegram.user_id")},
-                       "text": limitresume.PROMPT, "date": int(time.time())}
-                if thread_id:
-                    msg["message_thread_id"] = thread_id
-                fake = {"update_id": -1, "message": msg, "_limit_resume": True}
-                print(f"[{key}] limit reset, continuing")
-
-                def run(fake=fake, chat_id=chat_id, thread_id=thread_id):
-                    try:
-                        send(chat_id, "*The usage limit has reset, so I'm continuing.*", thread_id)
-                        with _lock_for(_topic_key(fake)):
-                            handle(fake, state)
-                    except Exception as e:                    # noqa: BLE001
-                        print(f"limit continuation error: {e}", file=sys.stderr)
-                    _checkpoint(state)
-                threading.Thread(target=run, daemon=True).start()
+            for key, ts in list(state.get("threads", {}).items()):
+                record = ts.get(limitresume.KEY)
+                if isinstance(record, dict) and record.get("at", 0) <= time.time():
+                    threading.Thread(target=_run_limit_resume,
+                                     args=(state, key, record), daemon=True).start()
         except Exception as e:                                # noqa: BLE001
             print(f"limit continuation loop error: {e}", file=sys.stderr)
+
+
+def _run_limit_resume(state: dict, key: str, record: dict) -> None:
+    try:
+        with _lock_for(key):
+            ts = thread_state(state, key)
+            # /stop or a new message can win while the worker waits for this
+            # lock. Check the live record here, before consuming it.
+            if ts.get(limitresume.KEY) is not record or key in _private:
+                return
+            ts.pop(limitresume.KEY)
+            last_ts = ts.get("last_ts")
+            _checkpoint(state)
+            chat_id, thread_id = record["chat_id"], record.get("thread_id")
+            send(chat_id, "The scheduled continuation is starting. I'll check where the work stopped.",
+                 thread_id)
+            if ts.get("last_ts") == last_ts:
+                handle(_limit_update(chat_id, thread_id, limitresume.PROMPT), state)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"limit continuation error: {e}", file=sys.stderr)
+    finally:
+        _checkpoint(state)
 
 
 def _dispatch(update: dict, state: dict) -> None:
@@ -2382,7 +2459,9 @@ def _dispatch(update: dict, state: dict) -> None:
     handed_off = False
     try:
         if update.get("callback_query"):
-            if (update["callback_query"].get("data") or "").startswith(questions.CALLBACK + ":"):
+            if (update["callback_query"].get("data") or "").startswith("limit:"):
+                _handle_limit_callback(update, state)
+            elif (update["callback_query"].get("data") or "").startswith(questions.CALLBACK + ":"):
                 _handle_question_callback(update, state)
             elif (update["callback_query"].get("data") or "").startswith("model:"):
                 _handle_model_callback(update, state)

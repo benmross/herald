@@ -44,6 +44,7 @@ class ReplyResume(unittest.TestCase):
         self.con = sqlite3.connect(":memory:", check_same_thread=False)
         self.con.row_factory = sqlite3.Row
         self.con.executescript(db.SCHEMA)
+        self.addCleanup(self.con.close)
 
         @contextlib.contextmanager
         def session():
@@ -123,7 +124,7 @@ class ReplyResume(unittest.TestCase):
         self.say("something else")
         self.assertEqual(ts["work"]["request"], "something else")
 
-    def test_auto_finishes_the_turn_on_the_other_provider_at_a_limit(self):
+    def test_auto_pauses_for_a_choice_at_a_limit(self):
         results = iter([
             types.SimpleNamespace(ok=False, cancelled=False, rate_limited=True, text="",
                                   session_id="sess-A", cost_usd=None, error="limit"),
@@ -138,14 +139,17 @@ class ReplyResume(unittest.TestCase):
         with mock.patch.object(self.tg.think, "think", limited), \
                 mock.patch.object(self.tg.routing, "enabled", return_value=True), \
                 mock.patch.object(self.tg.routing, "before_turn", return_value=None), \
-                mock.patch.object(self.tg.routing, "alternative", return_value="codex"), \
+                mock.patch.object(self.tg.limitchoice, "capacity", return_value=None), \
+                mock.patch.object(self.tg.limitresume, "reset_at", return_value=None), \
                 mock.patch.object(self.tg.think, "resolve_engine", side_effect=lambda e: e or "claude"):
             self.say("finish this")
         ts = self.state["threads"][KEY]
-        self.assertEqual(engines, ["claude", "codex"])
-        self.assertEqual((ts["engine"], ts["session_id"]), ("codex", "sess-X"))
-        self.assertTrue(any("hit its limit" in m for m in self.sent))
-        self.assertTrue(any("done on codex" in m for m in self.sent))
+        self.assertEqual(engines, ["claude"])
+        self.assertEqual((ts["engine"], ts["session_id"]), ("claude", "sess-A"))
+        self.assertIn(self.tg.limitchoice.KEY, ts)
+        self.assertNotIn(self.tg.limitresume.KEY, ts)
+        self.assertTrue(any("hit its usage limit" in m for m in self.sent))
+        self.assertFalse(any("done on codex" in m for m in self.sent))
 
     def test_new_cards_follow_static_preamble_and_precede_request(self):
         for provider in ("claude", "codex"):

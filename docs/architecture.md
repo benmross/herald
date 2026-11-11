@@ -366,11 +366,21 @@ can resume into the work that did happen rather than redoing it.
 
 Telegram topics can opt out of that since 30 October 2026. With
 `engines.auto.enabled`, set at setup, `lib/herald/routing.py` moves an unpinned
-topic to another enabled provider when a cached reading shows its own at a
-limit, or when a turn fails on one. Only a verified quota limit qualifies: an
+topic to another enabled provider before a turn when a cached reading shows its
+own at a limit. Only a verified quota limit qualifies: an
 authentication error needs reconnecting and a bug needs fixing, and another
 provider fixes neither. A topic stays where it is until then, and `think()` still
 runs one engine per call. Nothing is bought. Every move is a `route` fact.
+
+A quota failure during a Telegram turn instead pauses for an owner-only choice:
+switch to the opposite engine's configured default model and effort, continue
+on the same engine after reset, or stop. `limitchoice.py` builds the context card
+without inference and offers switching only with a successful fresh quota
+reading. The bridge rechecks that reading on a switch tap. `limitresume.py`
+queues an explicitly chosen continuation. New messages and `/stop` cancel it;
+old or repeated taps cannot revive newer work. Both the choice and the queue
+live in the topic's saved cursor. The interrupted session, including a failed
+first turn, remains available for resuming or a transcript handoff.
 
 ## Topics and sessions
 

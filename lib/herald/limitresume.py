@@ -1,18 +1,12 @@
 """Continue a Telegram turn that a usage limit stopped, once the limit has reset.
 
-A turn that runs out of quota part-way ends as a failure, and the work waits
-for the user to notice and say "continue". Someone who starts a long job and
-goes to sleep expecting the limit to be hit loses every hour between the reset
-and waking up. With `engines.resume_after_limit` on, the bridge instead notes
-when the limit lifts, says so, and at that time gives the topic one message,
-written by Herald and marked as such, asking the session to carry on.
-
-It stays opt-in because the default rule is that a failure stays a failure and
-nothing runs that the user did not send. It buys nothing and switches no
-provider: under Auto a topic that could move to another provider has already
-moved, and this only covers a turn that still ended at a limit. A message from
-the user, or /stop, cancels a pending continuation; approvals never carry over
-into the continued turn.
+A turn that runs out of quota now waits for the user's limit-choice button.
+Choosing to wait notes when the limit lifts and gives the topic one message,
+written by Herald and marked as such, asking the session to carry on. Legacy
+queues and explicit maintenance requests still work; the old
+`engines.resume_after_limit` setting no longer schedules new failures by itself.
+A message from the user, or /stop, cancels a pending continuation and any limit
+choice. Approvals never carry over into the continued turn.
 
 The time comes from a quota reading, never from the error text. A limit with
 no reading to explain it (an overloaded API, a reading that could not be
@@ -62,10 +56,16 @@ def _windows(con, engine: str) -> list[dict]:
 
 def when(con, engine: str, now: float) -> float:
     """The time to continue: after the last full quota window resets."""
+    reset = reset_at(con, engine, now)
+    return reset + GRACE_SECONDS if reset else now + RETRY_SECONDS
+
+
+def reset_at(con, engine: str, now: float) -> float | None:
+    """The reported reset, or None when only a timed retry is possible."""
     resets = [w["resets_at"] for w in _windows(con, engine)
               if w.get("resets_at") and w["resets_at"] > now
               and w.get("used_percent", 0) >= FULL_PERCENT]
-    return max(resets) + GRACE_SECONDS if resets else now + RETRY_SECONDS
+    return max(resets) if resets else None
 
 
 def schedule(ts: dict, at: float, engine: str, chat_id: int, thread_id: int | None) -> bool:
@@ -83,7 +83,8 @@ def schedule(ts: dict, at: float, engine: str, chat_id: int, thread_id: int | No
 def cancel(ts: dict) -> bool:
     """Drop a pending continuation. True if there was one."""
     ts.pop(ATTEMPTS, None)
-    return ts.pop(KEY, None) is not None
+    choice = ts.pop("limit_choice", None)
+    return ts.pop(KEY, None) is not None or choice is not None
 
 
 def request(topic: str, ts: dict, at: float) -> str:

@@ -52,8 +52,9 @@ restarting after three failures in an hour rather than flapping.
 
 A cycle's engine has no fallback. When `claude` or `codex` hits a usage limit
 or hangs, the run fails with that error and the user is told; the other engine
-does not take over. A Telegram topic does move on a quota limit if
-`engines.auto.enabled` is on, unless it was pinned by a command or `/models`. See "Two engines, chosen, never
+does not take over. Before a Telegram turn, Auto can move an unpinned topic
+whose provider is already at quota. A limit during a turn pauses for a choice.
+See "Two engines, chosen, never
 fallen back to" in `docs/architecture.md` for what that traded away. A
 Telegram topic can be moved by hand with `/codex` or `/claude`, and `herald
 status` shows which engines are installed.
@@ -197,10 +198,26 @@ on Claude and 14,000 mostly cached on Codex, measured 30 October 2026.
 
 ## Subscription usage
 
-With `engines.resume_after_limit` enabled, a Telegram turn stopped by quota
-continues after the exhausted window resets. A new message or `/stop` cancels
-the continuation. The bridge keeps the session's provider and carries no old
-approval into the new turn.
+A Telegram turn stopped by quota pauses with a card showing the current
+request, latest progress when available, reset time and remaining quota on the
+other enabled engine. Its buttons offer switching to that engine's configured
+default model and effort, continuing on the same engine after reset, or stopping.
+The switch appears only after a successful fresh quota reading confirms remaining
+capacity in every reported window. The tap checks capacity again. A failed,
+missing, stale or exhausted reading hides the switch.
+
+Nothing continues until a choice is tapped, even with Auto or the legacy
+`engines.resume_after_limit` setting enabled. Waiting queues one continuation,
+90 seconds after the last exhausted window resets. Without a verified reset it
+queues a retry in 15 minutes; another limit presents a new choice. A new message
+or `/stop` cancels the pending continuation and invalidates the old card. Choices
+and queued continuations survive bridge restarts. Switching carries saved work
+and the previous transcript into a new native session. Approvals never carry
+over. Private sessions retain their existing read-only failure behavior.
+
+The optional `limit_choice` topic field is additive; existing saved topic cursors
+and `limit_resume` records keep their meaning and need no conversion. Already
+queued continuations still run, including ones queued before this change.
 
 For a session stopped before this setting was loaded, local maintenance code
 can call `limitresume.request(topic, saved_topic_state, at)` to queue the same

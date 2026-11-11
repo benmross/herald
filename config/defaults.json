@@ -13,10 +13,10 @@
     "command_menu": "short"
   },
   "engines": {
-    "_comment": "Choose claude, codex, or both during setup. enabled lists the providers you use (null keeps both available for existing installs). default_engine is your choice for cycles, terminal sessions and new Telegram topics; null requires a choice. Model and effort null use the selected CLI defaults. No provider is preferred, and a failure switches providers only under auto below. engines.primary remains a compatibility alias for engines.claude.",
+    "_comment": "Choose claude, codex, or both during setup. enabled lists the providers you use (null keeps both available for existing installs). default_engine is your choice for cycles, terminal sessions and new Telegram topics; null requires a choice. Model and effort null use the selected CLI defaults. No provider is preferred. Auto can switch before a turn; a mid-turn quota limit asks for a choice. engines.primary remains a compatibility alias for engines.claude.",
     "default_engine": null,
-    "_auto_comment": "auto keeps Telegram topics running across subscriptions. When a topic's provider is at limit_percent of a quota, its next turn moves to another enabled provider and continues from the topic's saved work. It reads cached quota, buys no overage, and leaves topics pinned with /claude, /codex or a model choice alone. Off, a failure stays a failure. Setup offers it to anyone using both providers.",
-    "_resume_comment": "resume_after_limit continues a Telegram turn that a usage limit stopped part-way, once a quota reading says the limit has reset. The topic gets one message written by Herald asking the session to carry on; a message from you or /stop cancels it, and approvals do not carry over. Off, a turn stopped by a limit waits for you.",
+    "_auto_comment": "Auto moves an unpinned Telegram topic before a turn if its provider is already at quota. A usage limit during a turn always pauses for a choice: switch to the other enabled engine default when fresh quota confirms capacity, continue after reset, or stop.",
+    "_resume_comment": "Legacy setting retained for compatibility. New Telegram usage-limit failures always ask whether to switch, wait for reset, or stop. Existing queued continuations and explicit maintenance requests still run. New messages and /stop cancel pending choices and continuations; approvals never carry over.",
     "resume_after_limit": false,
     "auto": {
       "enabled": false,
