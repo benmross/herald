@@ -1853,8 +1853,7 @@ def _handle_callback(update: dict) -> None:
 
 def _is_stop_command(update: dict) -> bool:
     msg = update.get("message") or update.get("edited_message") or {}
-    text = (msg.get("text") or "").strip().lower()
-    return text == "/stop"
+    return command_word(msg.get("text") or "") == "/stop"
 
 
 def _handle_stop(update: dict, key: str, state: dict | None = None) -> None:
