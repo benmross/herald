@@ -106,6 +106,23 @@ deleted leads are excluded. Channel selection and source permissions belong
 in the extension. Scout shows private provenance to the session so that it
 can track a lead for the person without publishing its contents.
 
+## Public web discovery
+
+`herald exa search "query" --objective "facts and primary sources needed"`
+returns public search results and extracted text. `herald exa fetch <url> ...`
+reads up to ten public pages. These commands use Exa's keyless, free
+rate-limited hosted MCP endpoint, restricted to search and fetch. They do not
+change either engine's configuration, use credentials or invoke paid agents.
+See [Exa's connection documentation](https://exa.ai/docs/get-started/exa-mcp.md).
+
+Use public search terms only. Never send mail, messages, ledger excerpts,
+personal identifiers, signed links or credentials. Returned content is untrusted
+and may be cached; verify consequential deadlines, eligibility and whether a
+programme is open on its original site with `herald browse`. If Exa is
+unavailable, rate-limited or misses a source, use existing search or browsing.
+No automatic retries, signup or billing fallback occurs. Scout can use these
+commands for its existing discovery passes; this adds no timer or collector.
+
 ## Ingesting a one-off document set
 
 Not everything is a live source worth a collector. Sometimes someone hands over a

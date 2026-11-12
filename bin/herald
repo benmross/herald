@@ -2450,6 +2450,23 @@ def cmd_context(args) -> int:
         return 2
 
 
+def cmd_exa(args) -> int:
+    """Public web search/fetch without credentials or paid agent calls."""
+    from herald import exa
+
+    try:
+        if args.op == "search":
+            output = exa.search(" ".join(args.query), objective=args.objective, limit=args.limit)
+        else:
+            output = exa.fetch(args.urls, characters=args.characters)
+    except (ValueError, exa.Unavailable) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    print(exa.UNTRUSTED)
+    print(output)
+    return 0
+
+
 def cmd_search(args) -> int:
     """Ranked keyword search across notes, journals, conversations and sources."""
     started = time.perf_counter()
@@ -2892,6 +2909,17 @@ def main() -> int:
     x = wt_sub.add_parser("check", help="check now rather than on the timer")
     x.add_argument("id", type=int, nargs="?")
     wt.set_defaults(fn=cmd_watch, op="list")
+
+    ex = sub.add_parser("exa", help="public web search and page text through Exa's free connection")
+    ex_sub = ex.add_subparsers(dest="op", required=True)
+    x = ex_sub.add_parser("search", help="find public pages; never include private source text")
+    x.add_argument("query", nargs="+")
+    x.add_argument("--objective", help="facts to extract and sources to prioritize")
+    x.add_argument("--limit", type=int, default=5)
+    x = ex_sub.add_parser("fetch", help="read 1 to 10 public URLs")
+    x.add_argument("urls", nargs="+")
+    x.add_argument("--characters", type=int, default=6000, help="maximum characters per page")
+    ex.set_defaults(fn=cmd_exa)
 
     bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
     bw.add_argument("--workspace", help="independent browser workspace")

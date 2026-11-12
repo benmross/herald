@@ -1,6 +1,6 @@
 ---
 name: herald-browse
-description: Browse the web in a real browser on this machine with `herald browse`, for anything WebFetch cannot render or any task that needs clicking, filling, signing in or reading many pages. Use it for career sites (Workday, Eightfold, iCIMS, Greenhouse, Ashby, Lever), any page that needs JavaScript, any page WebFetch returned empty or truncated, checking whether a posting or programme is open, filling in a form for the user to submit, anything that needs the user signed in, and bulk research over dozens to thousands of pages. Load it before writing a Playwright script by hand.
+description: Search public web pages with `herald exa`, or browse in a real browser on this machine with `herald browse` for anything WebFetch cannot render or any task that needs clicking, filling, signing in or reading many pages. Use it for opportunity and employer discovery, career sites (Workday, Eightfold, iCIMS, Greenhouse, Ashby, Lever), any page that needs JavaScript, any page WebFetch returned empty or truncated, checking whether a posting or programme is open, filling in a form for the user to submit, anything that needs the user signed in, and bulk research over dozens to thousands of pages. Load it before writing a Playwright script by hand.
 ---
 
 # Browsing
@@ -15,8 +15,9 @@ for that device.
 
 | Need | Use |
 |---|---|
-| a fact that a search answers | WebSearch |
-| a static page: docs, a blog post, a README | WebFetch |
+| discovering opportunities, employers, research or other public pages | `herald exa search` first; WebSearch if unavailable or coverage is weak |
+| a fact that a search answers | WebSearch or `herald exa search` |
+| a static page: docs, a blog post, a README | `herald exa fetch` or WebFetch |
 | a page built by JavaScript, or WebFetch came back empty or vague | `herald browse fetch <url>` |
 | look around, follow links, read several sections of one site | `herald browse open`, then `text` / `links` / `go` |
 | fill a form | `open`, `fields`, `fill` / `select` / `check` / `upload` |
@@ -31,6 +32,22 @@ nothing for an NVIDIA posting that the browser read in five seconds. If the
 answer matters and the page is an application site, use the browser first.
 
 ## Commands
+
+Exa returns search results with extracted text through its free, rate-limited
+connection. It has no account, API key or paid agent calls. Both engines use the
+same commands, without loading a separate MCP tool catalog:
+
+```bash
+herald exa search "software engineering internships for first-year students" --limit 5 --objective "Find current employer application pages with eligibility and deadlines"
+herald exa fetch https://example.com/programme --characters 6000
+```
+
+Send only public search terms and public URLs to Exa. Never include mail,
+messages, ledger excerpts, personal identifiers, signed links or credentials.
+Its extracted text may be cached: check consequential deadlines, eligibility and
+open/closed status on the original site with `herald browse`. Search failure or
+no results is not evidence that a programme is closed. On a rate limit or error,
+use existing search or browsing; do not sign up, add billing or retry in a loop.
 
 Interactive commands use a durable workspace lease. `herald browse workspaces`
 lists ownership; `herald browse workspace <name>` registers an independent

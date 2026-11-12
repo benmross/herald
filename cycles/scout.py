@@ -235,6 +235,13 @@ already did today; the journal says what you checked.
 repeating the same search and look for employers not yet tracked. Search
 across the person's preferred regions and fields, including ordinary
 companies with software or AI teams rather than only technology employers.
+For public-web discovery, try `herald exa search` with a specific query and
+`--objective` describing the eligibility, dates and primary sources needed.
+Use only public search terms, never mail, messages, ledger excerpts or personal
+identifiers. Exa returns extracted text that may be cached; verify consequential
+deadlines, eligibility and open status on the original page using the browser
+skill. If Exa fails, is rate-limited or has weak coverage, use existing web search
+and browsing without repeated retries or treating absence as a closed round.
 Check primary employer job boards as well as the crowdsourced feeds. Record
 which sources and employers you checked, their dates, and any coverage gaps.
 For a promising employer whose rounds the feeds miss, add a concrete watched
@@ -880,6 +887,7 @@ def main() -> int:
                        "WebSearch", "WebFetch",
                        "Bash(herald db *)", "Bash(herald status *)", "Bash(herald context *)",
                        "Bash(herald fact *)", "Bash(herald search *)",
+                       "Bash(herald exa *)",
                        "Bash(herald obligation *)", "Bash(herald deadline *)",
                        f"Bash({config.ROOT / 'skills' / 'google-workspace' / 'scripts' / 'grun'} *)",
                        *amber.CYCLE_TOOLS],
