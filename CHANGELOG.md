@@ -2,6 +2,40 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.7: 11 November 2026
+
+- Give both engines free public-web retrieval for opportunity discovery
+- Let interrupted Telegram tasks wait for a quota recovery choice
+- Let Scout read private opportunity leads outside the inbox
+- Honor Telegram-addressed stop commands without invoking a model
+- Keep Scout from crashing after useful work or on malformed input
+- Keep malformed source links from aborting calendar syncs
+- Queue sessions stopped before automatic continuation was loaded
+- Continue a Telegram turn after the usage limit that stopped it resets
+- Accept model weekly quotas when Claude omits the only suffix
+- Stop repeated usage failure alerts when Claude loses its subscription login
+- Stop a leftover Monitor from holding an answered turn open
+- Let an extension take over reading event mail from scout
+- Append tool progress to mid-turn replies to avoid duplicate notifications
+- Prevent process polling from matching its own waiting shell
+- Let screenshots and file albums update the turn already doing the work
+- Keep Claude tool results and steering inside the response they belong to
+- Explain session activity without treating bookkeeping as work
+- Make session behavior inspectable without stripping tool evidence
+- Let an install offer every Telegram command in autocomplete
+- Keep the bridge tests from following the machine's Auto setting
+- Store calendar times in the user's timezone so feed events read correctly
+- Make topics the conversation and keep subscription windows useful
+- Preserve reader corrections and bind cached interpretations to their sources
+- Show the typing indicator in a Telegram forum's General topic
+- Keep current conclusions ahead of archived work in context retrieval
+- Keep fresh session facts after the reusable instruction prefix
+- Keep startup instructions compact enough to reach both engines in full
+- Stop redacting place names and domains from the search index
+- Fit the session handoff to how sessions are actually resumed
+- Keep background task notices out of session handoffs and search
+- Give a new session the handoff when it is started on purpose
+
 ## v0.4.6: 30 October 2026
 
 - Cancel a calendar event that has empty fields
