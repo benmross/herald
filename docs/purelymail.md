@@ -74,3 +74,19 @@ The action changes future delivery; it does not import historical forwarded mail
 ManageSieve writes and route creation refuse calls outside an approved red
 performer. If a multi-step change fails, inspect both the active filter and
 routing before retrying. The action refuses to overwrite its existing script.
+
+## Delivering a domain catch-all to the mailbox
+
+`purelymail.catchall-local` replaces one existing domain-wide empty-prefix rule
+with delivery to the configured local mailbox. It requires an existing exact
+self-targeting mailbox rule, and preserves all other routing and Sieve filters.
+The approval payload contains `domain`, `address`, `expected_rules` (the full
+live routing snapshot), and `expected_active_filters` (active script names and
+contents). Changed routing or filters refuse the action before any write.
+
+Use `herald act run purelymail.catchall-local --payload-file <file> --show` to
+preview, then the same command without `--show` to request the tap. The API
+requires deleting and recreating the broad rule. If creation fails, the action
+reads routing back and restores the original only when no replacement exists.
+Inspect routing after any failure before retrying. Future catch-all mail enters
+the mailbox and follows its existing filters; historical mail is not imported.
