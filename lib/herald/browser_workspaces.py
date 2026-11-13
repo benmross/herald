@@ -14,6 +14,7 @@ import socket
 import shutil
 import platform
 import subprocess
+import sys
 import time
 import uuid
 from urllib.parse import urlsplit
@@ -158,6 +159,29 @@ def assert_agent(workspace, url=None):
             raise Busy('This employer account is in a review workspace; other applications on that account are paused.')
 
 
+def note_holder(fd) -> None:
+    """Write who holds a lock into it. On 13 Nov 2026 a Busy error was read
+    as "another session", and nothing could say what had actually held it."""
+    try:
+        cmd = ' '.join(sys.argv[1:4])[:120]
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, f'{os.getpid()} {int(time.time())} {cmd}'.encode(), 0)
+    except OSError:
+        pass
+
+
+def holder(fd) -> str:
+    try:
+        pid, since, *cmd = os.pread(fd, 300, 0).decode().split(' ', 2)
+        alive = os.path.exists(f'/proc/{pid}')
+        age = int(time.time()) - int(since)
+        what = cmd[0] if cmd else 'unknown command'
+        return (f'held by process {pid} ({what}) for {age}s'
+                + ('' if alive else ', which has exited'))
+    except (OSError, ValueError):
+        return 'holder unknown'
+
+
 @contextlib.contextmanager
 def lease(workspace='default', *, human=False, timeout=8):
     workspace = name(workspace)
@@ -174,8 +198,10 @@ def lease(workspace='default', *, human=False, timeout=8):
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise Busy('Another session owns this browser workspace; retry after it checkpoints.')
+                    raise Busy(f'This browser workspace is busy: {holder(fd)}. '
+                               'Retry when that finishes.')
                 time.sleep(0.1)
+        note_holder(fd)
         if not human:
             assert_agent(workspace)
         elif get(workspace)['state'] not in ('human', 'review'):

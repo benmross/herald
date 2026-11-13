@@ -400,9 +400,11 @@ def refuse_submit(label: str, filled: int = 0) -> None:
     if SUBMIT.search(label or "") and not HARMLESS.match(label or ""):
         raise SystemExit(
             f"refused: {label!r} reads like a final submit, send or purchase. That "
-            "is red, and there is no red.py kind for it. Fill the form, then tell "
-            "the user it is ready for them to submit (`herald browse login` gives "
-            "them the tab).")
+            "is red. Fill the form, then tell the user it is ready for them to "
+            "submit (`herald browse login` gives them the tab). If they asked for "
+            "this exact action and approved it with `herald ask --approval`, run it "
+            "with `herald browse do <tab> 'click <ref>' --approval <id> --covers "
+            "'<the approved words>'`. Job applications are never submitted.")
 
 
 # --- the user's view: one-time links -------------------------------------------

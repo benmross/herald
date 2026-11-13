@@ -1831,6 +1831,21 @@ def cmd_browse(args) -> int:
         print(f"  profile          {browse.profile_dir()}")
         print(f"  user view        {browse.view_base() or 'off: set surfaces.browser_view.url'}")
         return 0
+    if op in ("snap", "do"):
+        from herald import browse_agent
+        req = {"cmd": op, "tab": args.tab}
+        if op == "snap":
+            req.update(scope=args.scope, page=args.page, full=args.full, find=args.find)
+        else:
+            steps = list(args.steps)
+            if args.file:
+                steps.append(pathlib.Path(args.file).read_text())
+            if not steps:
+                raise SystemExit("give steps, e.g. `do <tab> 'fill e4 \"Alex\"' 'click e9'`, or --file")
+            req.update(steps=steps, quiet=args.quiet, approval=args.approval, covers=args.covers)
+        r = browse_agent.request(getattr(args, "workspace", None) or "default", req)
+        print(r["out"])
+        return 0 if r["ok"] else 1
     if op == "fetch":
         url, text = browse.fetch_text(args.url, args.wait)
         print(url)
@@ -2942,6 +2957,19 @@ def main() -> int:
     x.add_argument("--max", type=int, default=12000); x.add_argument("--offset", type=int, default=0)
     x = bw_sub.add_parser("links", help="a tab's links, label<TAB>href")
     x.add_argument("tab"); x.add_argument("--match", help="regex on label or href")
+    x = bw_sub.add_parser("snap", help="the page (or its open dialog) as an accessibility tree with refs to act on")
+    x.add_argument("tab"); x.add_argument("--scope", help="a ref: show only that subtree")
+    x.add_argument("--page", action="store_true", help="the whole page even when a dialog is open")
+    x.add_argument("--full", action="store_true", help="keep containers, URLs and every option")
+    x.add_argument("--find", help="only lines containing this text")
+    x = bw_sub.add_parser("do", help="run steps on refs from `snap` in one call, then show the result")
+    x.add_argument("tab"); x.add_argument("steps", nargs="*",
+                   help="click e7 | fill e4 TEXT | type e4 TEXT | pick e4 TEXT [OPTION] | select e5 LABEL | "
+                        "check e6 | uncheck e6 | press [e4] KEY | wait MS|TEXT | goto URL | scroll [DY] | snap")
+    x.add_argument("--file", help="steps, one per line")
+    x.add_argument("--quiet", action="store_true", help="no snapshot after the steps")
+    x.add_argument("--approval", type=int, help="a tapped `herald ask --approval` id that covers one click")
+    x.add_argument("--covers", help="the approved text this click carries out, quoted exactly")
     x = bw_sub.add_parser("fields", help="form fields with handles to fill, and the buttons")
     x.add_argument("tab")
     for name, h in (("fill", "type a value"), ("select", "choose an option by its label"),

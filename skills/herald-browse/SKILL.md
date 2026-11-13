@@ -20,7 +20,7 @@ for that device.
 | a static page: docs, a blog post, a README | `herald exa fetch` or WebFetch |
 | a page built by JavaScript, or WebFetch came back empty or vague | `herald browse fetch <url>` |
 | look around, follow links, read several sections of one site | `herald browse open`, then `text` / `links` / `go` |
-| fill a form | `open`, `fields`, `fill` / `select` / `check` / `upload` |
+| fill a form, edit a profile, use a dialog | `open`, `snap`, `do` (`upload` for files) |
 | anything behind the user's sign-in | `herald browse login` once, then the commands above |
 | more than about ten pages | `herald browse crawl` |
 | GitHub | `gh api`, which is faster and exact |
@@ -30,6 +30,34 @@ WebFetch summarises a page through a small model, does not run JavaScript, and
 fails on most career sites without saying so. On 22 Oct 2026 it returned
 nothing for an NVIDIA posting that the browser read in five seconds. If the
 answer matters and the page is an application site, use the browser first.
+
+## Acting on a page: `snap` and `do`
+
+For anything interactive (forms, dialogs, menus, profile edits) use refs, not
+text or handles. Rebuilt 13 Nov 2026: a LinkedIn edit took about seventy calls
+with the older commands. It takes about ten this way.
+
+```bash
+herald browse open <url>                 # prints the tab id
+herald browse snap <tab>                 # accessibility tree with refs; only the open dialog if there is one
+herald browse snap <tab> --find "Save"   # just the matching lines
+herald browse do <tab> 'pick e9 "Acme Robotics"' 'fill e12 "Built the operator console."' 'check e16' 'click e19'
+```
+
+`do` runs every step in one call over a connection a small per-workspace server
+keeps open. It waits for the page to settle after each action, stops at the
+first failure and ends with a fresh snapshot (`--quiet` skips it). Steps are:
+`click e7`, `fill e4 TEXT`, `type e4 TEXT` (key by key, for fields that ignore
+fill), `pick e4 TEXT [OPTION]` (type into a search dropdown, then choose the
+first option containing OPTION), `select e5 LABEL`, `check e6` and `uncheck e6`
+(work on styled radios and checkboxes too), `press [e4] KEY`, `wait MS|TEXT`,
+`goto URL`, `scroll [DY]` and `snap`. `--file steps.txt` takes one step per line.
+
+Refs stay valid until the page changes underneath them. A stale one says so;
+take a new `snap`. The snapshot shows checked, selected and filled state, so
+read it before saving. Hidden defaults, like a role form set to replace your
+headline, show up there. Protected fields are redacted and refused, and the
+submit guard applies to every click.
 
 ## Commands
 
@@ -109,11 +137,19 @@ The sign-in persists in the profile, so ask once per site, not once per task.
 
 ## Submitting is theirs
 
-`click` refuses a button that reads like submit, apply, send, pay, register or
-post, and `press Enter` is refused in a form that is not a search box. These
-are red actions with no red.py kind. Fill everything, check it with `fields`
-and a `shot`, then tell the user it is ready and send `login` so they can
-review and submit from their phone. Never look for another way to click it.
+`click` and `do` refuse a button that reads like submit, apply, send, pay,
+register, delete or post, and `press Enter` is refused in a form that is not a
+search box. Fill everything, check it with `snap` and a `shot`, then tell the
+user it is ready and send `login` so they can review and submit from their
+phone. Never look for another way to click it.
+
+One exception, for an action the user asked for in this conversation: write
+the exact action into a file and get it tapped with `herald ask --approval
+--file`. Then run that one click with `herald browse do <tab> 'click e20'
+--approval <id> --covers '<words quoted exactly from the approved text>'`.
+Every word of the button's label must appear in the quote. The approval must be
+under two hours old and covers one click. The click is logged as a red action.
+Job applications are never covered.
 
 ## Crawling many pages
 
