@@ -1,6 +1,7 @@
 """Continue a Telegram turn that a usage limit stopped, once the limit has reset.
 
-A turn that runs out of quota now waits for the user's limit-choice button.
+A turn that runs out of quota now waits for the user's limit-choice button,
+and an unanswered card defaults to waiting once the reset arrives (13 Nov 2026).
 Choosing to wait notes when the limit lifts and gives the topic one message,
 written by Herald and marked as such, asking the session to carry on. Legacy
 queues and explicit maintenance requests still work; the old

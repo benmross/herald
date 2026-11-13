@@ -206,8 +206,10 @@ The switch appears only after a successful fresh quota reading confirms remainin
 capacity in every reported window. The tap checks capacity again. A failed,
 missing, stale or exhausted reading hides the switch.
 
-Nothing continues until a choice is tapped, even with Auto or the legacy
-`engines.resume_after_limit` setting enabled. Waiting queues one continuation,
+A card nobody answers by the reset counts as "continue when limit resets":
+the same session continues on the same engine, through the same queued
+continuation and attempt cap as the button, and the card says so. It never
+switches or stops on its own. Waiting queues one continuation,
 90 seconds after the last exhausted window resets. Without a verified reset it
 queues a retry in 15 minutes; another limit presents a new choice. A new message
 or `/stop` cancels the pending continuation and invalidates the old card. Choices

@@ -1481,7 +1481,7 @@ def _offer_limit_choice(ts: dict, chat_id: int, thread_id: int | None,
                    **({"message_thread_id": thread_id} if thread_id else {}))
     if response and response.get("ok"):
         mid = response["result"]["message_id"]
-        record.update(message_id=mid, chat_id=chat_id, thread_id=thread_id)
+        record.update(message_id=mid, chat_id=chat_id, thread_id=thread_id, text=text)
         ts[limitchoice.KEY] = record
         return [mid]
     return send(chat_id, "The usage limit paused this task, but the choice buttons "
@@ -2432,8 +2432,43 @@ def _resume_after_limits(state: dict) -> None:
                 if isinstance(record, dict) and record.get("at", 0) <= time.time():
                     threading.Thread(target=_run_limit_resume,
                                      args=(state, key, record), daemon=True).start()
+                choice = ts.get(limitchoice.KEY)
+                if (isinstance(choice, dict) and choice.get("message_id")
+                        and choice.get("at", 0) <= time.time()):
+                    threading.Thread(target=_default_limit_choice,
+                                     args=(state, key, choice), daemon=True).start()
         except Exception as e:                                # noqa: BLE001
             print(f"limit continuation loop error: {e}", file=sys.stderr)
+
+
+def _default_limit_choice(state: dict, key: str, record: dict) -> None:
+    """A limit card nobody answered by the reset: continue the same session.
+
+    The user's rule (13 Nov 2026): an untouched card means "continue when the
+    limit resets", never a switch and never a stop. It goes through the same
+    queued continuation as a tap on that button, so /stop, a new message and
+    the attempt cap all still apply, and a card answered meanwhile wins.
+    """
+    try:
+        with _lock_for(key):
+            ts = thread_state(state, key)
+            if key in _private or not limitchoice.current(ts, record):
+                return
+            ts.pop(limitchoice.KEY, None)
+            chat_id, thread_id = record["chat_id"], record.get("thread_id")
+            if not limitresume.schedule(ts, time.time(), record["engine"], chat_id, thread_id):
+                note = "\n\nNo choice was made, and this task has already stopped at the limit too many times in a row. Nothing is scheduled."
+            else:
+                note = (f"\n\nNo choice was made by the reset, so I'm continuing on "
+                        f"{record['engine'].capitalize()} in the same session. Send /stop to cancel.")
+            _checkpoint(state)
+        try:
+            _replace_picker({"chat": {"id": chat_id}, "message_id": record["message_id"]},
+                            (record.get("text") or "This task was paused.") + note)
+        except Exception as e:                                # noqa: BLE001
+            print(f"limit card update error: {e}", file=sys.stderr)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"limit default choice error: {e}", file=sys.stderr)
 
 
 def _run_limit_resume(state: dict, key: str, record: dict) -> None:

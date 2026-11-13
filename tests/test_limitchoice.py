@@ -47,7 +47,7 @@ class Capacity(unittest.TestCase):
                 self.assertIn("wallpaper exporter", text)
                 self.assertIn("Export tests passed", text)
                 self.assertIn("resets", text)
-                self.assertIn("Nothing continues", text)
+                self.assertIn("If you don't choose, I'll continue on Claude in this session", text)
                 if snapshot:
                     self.assertIn("gpt-6.1-sol", text)
                     self.assertIn("high", text)
@@ -118,6 +118,34 @@ class Choices(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.calls[-1]["resume"], "stopped")
         self.assertEqual(self.calls[-1]["engine"], "claude")
+
+    def test_an_unanswered_card_continues_the_same_session_after_reset(self):
+        ts = self.limited()
+        self.state = json.loads(json.dumps(self.state))     # survives a restart too
+        ts = self.state["threads"][KEY]
+        choice = ts[limitchoice.KEY]
+        self.assertIn("If you don't choose", choice["text"])
+        with mock.patch.object(self.tg, "_checkpoint"):
+            self.tg._default_limit_choice(self.state, KEY, choice)
+            self.tg._default_limit_choice(self.state, KEY, choice)   # a second tick is a no-op
+        self.assertNotIn(limitchoice.KEY, ts)
+        record = ts[self.tg.limitresume.KEY]
+        self.assertEqual(record["engine"], "claude")
+        with mock.patch.object(self.tg, "_checkpoint"), \
+                mock.patch.object(self.tg.think, "resolve_engine", side_effect=lambda e: e):
+            self.tg._run_limit_resume(self.state, KEY, record)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[-1]["resume"], "stopped")
+        self.assertEqual(self.calls[-1]["engine"], "claude")
+
+    def test_an_answered_card_is_not_defaulted(self):
+        ts = self.limited()
+        choice = ts[limitchoice.KEY]
+        self.tap("stop")
+        with mock.patch.object(self.tg, "_checkpoint"):
+            self.tg._default_limit_choice(self.state, KEY, choice)
+        self.assertNotIn(self.tg.limitresume.KEY, ts)
+        self.assertEqual(self.calls, [])
 
     def test_stop_and_new_messages_invalidate_old_cards(self):
         ts = self.limited()

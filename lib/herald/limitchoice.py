@@ -72,9 +72,8 @@ def make(con, ts: dict, progress: str = "", request: str = "") -> tuple[dict, st
         lines.append("Task: " + clip(request, 300))
     if progress:
         lines.append("Last update: " + clip(progress, 600))
-    lines.append(f"The limit resets {clock(reset)}. I'll resume just after that if you choose to wait."
-                 if reset else "I couldn't verify the reset time. If you choose to wait, "
-                 "I'll retry in 15 minutes.")
+    lines.append(f"The limit resets {clock(reset)}." if reset else
+                 "I couldn't verify the reset time, so waiting means a retry in 15 minutes.")
     buttons = []
     if snapshot:
         model = config.get(f"engines.{other}.model") or "CLI default"
@@ -87,7 +86,8 @@ def make(con, ts: dict, progress: str = "", request: str = "") -> tuple[dict, st
                          "callback_data": f"limit:{token}:switch"}])
     elif other:
         lines.append(f"Switch unavailable: {other.capitalize()} has no confirmed remaining usage.")
-    lines.append("Nothing continues until you choose. Previous approvals do not carry over.")
+    lines.append(f"If you don't choose, I'll continue on {engine.capitalize()} in this session "
+                 "once the limit resets. Previous approvals do not carry over.")
     buttons += [[{"text": "Continue when limit resets", "callback_data": f"limit:{token}:wait"}],
                 [{"text": "Stop", "callback_data": f"limit:{token}:stop"}]]
     return record, "\n\n".join(lines), buttons
