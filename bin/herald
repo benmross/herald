@@ -1833,7 +1833,9 @@ def cmd_browse(args) -> int:
         return 0
     if op in ("snap", "do"):
         from herald import browse_agent
-        req = {"cmd": op, "tab": args.tab}
+        # A collector can hold the workspace for a minute or two (Instagram's
+        # does); waiting out a run beats failing with Busy mid-task.
+        req = {"cmd": op, "tab": args.tab, "timeout": 150}
         if op == "snap":
             req.update(scope=args.scope, page=args.page, full=args.full, find=args.find)
         else:

@@ -43,7 +43,10 @@ IDLE_SECONDS = 600
 SNAP_LIMIT = 12000
 
 # Lines of the AI snapshot that carry structure but nothing to read or act on.
-_NOISE = re.compile(r"^\s*- (generic|group|none|presentation)( \[ref=\w+\])?( \[cursor=pointer\])?:?$")
+_NOISE = re.compile(r"^\s*- (generic|group|none|presentation|list|listitem|figure|status|alert|region|toolbar)"
+                    r"( \[ref=\w+\])?( \[cursor=pointer\])?:?$")
+# A child line that only repeats words already in its parent's name.
+_ECHO = re.compile(r'^\s*- (generic|text|paragraph)( \[ref=\w+\])?: "?([^"]*)"?$')
 _URL = re.compile(r"^\s*- /url: ")
 _OPTION = re.compile(r"^(\s*)- option ")
 _REF = re.compile(r"\[ref=(f?\d*e\d+)\]")
@@ -76,6 +79,9 @@ def compact(snapshot: str, *, full: bool = False) -> str:
                 out.append(f"{opt_indent}- … {options - 8} more options")
             opt_indent, options = None, 0
         if not full and (_NOISE.match(line) or _URL.match(line)):
+            continue
+        echo = _ECHO.match(line)
+        if not full and echo and out and echo.group(3).strip() and echo.group(3).strip() in out[-1]:
             continue
         name = _NAME.match(line)
         if name and PROTECTED.search(name.group(1)) and re.search(r"\]: .+$", line):
@@ -436,24 +442,33 @@ def request(workspace: str, req: dict, *, timeout: float = 180) -> dict:
     from . import browser_workspaces as bw
     workspace = bw.name(workspace)
     path = sock_path(workspace)
-    for attempt in range(2):
-        try:
-            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            c.settimeout(timeout)
-            c.connect(path)
-            break
-        except (FileNotFoundError, ConnectionRefusedError):
-            if attempt:
-                raise SystemExit("the browse server did not start; see "
-                                 f"{config.HOME / 'browser' / 'agent.log'}")
-            _spawn(workspace)
-            deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and not os.path.exists(path):
-                time.sleep(0.1)
-            time.sleep(0.2)
+    c = _connect(path, timeout)
+    if c is None:
+        # No server, or a stale socket left by one that was killed.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(path)
+        _spawn(workspace)
+        deadline = time.monotonic() + 30
+        while c is None and time.monotonic() < deadline:
+            time.sleep(0.15)
+            c = _connect(path, timeout)
+        if c is None:
+            raise SystemExit("the browse server did not start; see "
+                             f"{config.HOME / 'browser' / 'agent.log'}")
     with c:
         c.sendall(json.dumps(req).encode() + b"\n")
         return json.loads(_recv(c))
+
+
+def _connect(path: str, timeout: float):
+    c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    c.settimeout(timeout)
+    try:
+        c.connect(path)
+        return c
+    except (FileNotFoundError, ConnectionRefusedError):
+        c.close()
+        return None
 
 
 def _spawn(workspace: str) -> None:

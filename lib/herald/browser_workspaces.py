@@ -163,7 +163,7 @@ def note_holder(fd) -> None:
     """Write who holds a lock into it. On 13 Nov 2026 a Busy error was read
     as "another session", and nothing could say what had actually held it."""
     try:
-        cmd = ' '.join(sys.argv[1:4])[:120]
+        cmd = (' '.join(sys.argv[1:4]) or os.path.basename(sys.argv[0] or '?'))[:120]
         os.ftruncate(fd, 0)
         os.pwrite(fd, f'{os.getpid()} {int(time.time())} {cmd}'.encode(), 0)
     except OSError:
