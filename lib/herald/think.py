@@ -618,6 +618,16 @@ def _handle_stream_line(line: str, state: dict, on_progress,
         # closes nothing -- checked rather than assumed, because counting it
         # would attribute the model's first think to a tool.
         for block in (candidate.get("message") or {}).get("content") or []:
+            if (isinstance(block, dict) and block.get("type") == "text"
+                    and (block.get("text") or "").startswith(_STOP_HOOK_FEEDBACK)):
+                # A Stop hook (tools/prose_hook.py) refused the reply the model
+                # just wrote, and it is about to write it again. That draft is
+                # not narration: a caller holding it as a possible answer must
+                # drop it. On 13 Nov 2026 the bridge took the rewrite that
+                # followed as proof the draft was narration and sent both.
+                if on_progress:
+                    on_progress(Progress("retract", block.get("text") or ""))
+                continue
             if not isinstance(block, dict) or block.get("type") != "tool_result":
                 continue
             pend = state.setdefault("pending_tools", {}).pop(
@@ -686,6 +696,10 @@ def _handle_stream_line(line: str, state: dict, on_progress,
                     if entry is not None:
                         entry["progress"] = summary
 
+
+# How `claude -p` stream-json reports a Stop hook that exited 2: a `user` event
+# whose text block opens with this, verified against the CLI on 13 Nov 2026.
+_STOP_HOOK_FEEDBACK = "Stop hook feedback:"
 
 _MONITOR_STARTED = re.compile(r"Monitor started \(task ([A-Za-z0-9_-]+)")
 

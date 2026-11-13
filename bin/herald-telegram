@@ -404,6 +404,12 @@ class Working:
         text = getattr(event, "text", str(event))
         if not text:
             return
+        if kind == "retract":
+            # A Stop hook sent the held draft back for a rewrite. It was never
+            # narration; the rewrite that follows is the answer.
+            with self._lock:
+                self._pending = None
+            return
         if kind == "interim":
             self._drop_pending(text)
             return self._interim(text)

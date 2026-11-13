@@ -32,6 +32,13 @@ def _events(*messages) -> list:
 
 
 class NothingIsDropped(unittest.TestCase):
+    def test_stop_hook_feedback_retracts_the_draft(self):
+        seen: list = []
+        state: dict = {}
+        think._handle_stream_line(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Draft."}]}}), state, seen.append)
+        think._handle_stream_line(json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "Stop hook feedback:\n[x]: rewrite"}]}}), state, seen.append)
+        self.assertEqual([e.kind for e in seen], ["text", "retract"])
+
     def test_narration_and_tools_arrive_in_order(self):
         seen = _events(
             [{"type": "text", "text": "Reading the collector first."}],
@@ -332,6 +339,16 @@ class NarrationAsMessages(_Bridge):
         w.on_progress(think.Progress("text", "Second thing."))
         self.assertTrue(any("First thing." in t for t in self.texts()))
         self.assertFalse(any("Second thing." in t for t in self.texts()))
+
+    def test_a_draft_sent_back_by_the_stop_hook_is_never_sent(self):
+        # 13 Nov 2026: the prose hook refused a reply, the rewrite followed,
+        # and the bridge sent both because the rewrite looked like a second block.
+        w = self.w
+        w.on_progress(think.Progress("text", "You're right about the draft."))
+        w.on_progress(think.Progress("retract", "Stop hook feedback: ..."))
+        w.on_progress(think.Progress("text", "The rewritten answer."))
+        w.settle("The rewritten answer.")
+        self.assertFalse(any("right about the draft" in t for t in self.texts()))
 
     def test_reasoning_stays_in_the_block(self):
         w = self.w
