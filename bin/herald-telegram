@@ -73,6 +73,14 @@ GENERAL_THREAD_ID = 1      # a forum's General topic; sendChatAction needs it
 PROGRESS_AFTER_SECONDS = 6
 PROGRESS_EDIT_SECONDS = 4
 PROGRESS_LIMIT = 3400
+# A turn can go minutes without an event: a slow or retried model request, or
+# a tool that runs long. The block used to be edited only when something new
+# arrived, so its clock froze too, and a working turn looked exactly like a
+# hung one (14 Nov 2026: three minutes in one model request, then a wait loop
+# whose command was failing silently, until the user stopped it). The header
+# now keeps time on its own and says how long nothing has happened.
+PROGRESS_REFRESH_SECONDS = 30
+QUIET_NOTE_SECONDS = 60
 TOOL_BULLET = "\u2023"      # a single right-pointing bracket
 # A topic IS the conversation, for as long as the user wants it to be.
 #
@@ -370,6 +378,7 @@ class Working:
         self._anchor_units = 0
         self._sent_text = ""
         self._last_edit = 0.0
+        self._last_event = self.started   # the latest narration or tool call
         self._settled = False
         self._typing_in_general = chat_id < 0 and thread_id is None
         self._sent_replies: list[str] = []   # interim replies already sent
@@ -404,6 +413,7 @@ class Working:
         text = getattr(event, "text", str(event))
         if not text:
             return
+        self._last_event = time.monotonic()
         if kind == "retract":
             # A Stop hook sent the held draft back for a rewrite. It was never
             # narration; the rewrite that follows is the answer.
@@ -545,6 +555,9 @@ class Working:
             head = f"{'stopped' if failed else 'done'} · {clock}{step_note}"
         else:
             head = f"working · {clock}{step_note}"
+            quiet = int(time.monotonic() - self._last_event)
+            if quiet >= QUIET_NOTE_SECONDS:
+                head += f" · nothing new for {quiet // 60}m {quiet % 60}s"
         prefix = anchor + "\n\n" if anchor else ""
         if done and not lines:
             return prefix + f"<i>{tgtext.escape(head)}</i>"
@@ -648,9 +661,14 @@ class Working:
             self._send_typing()
             with self._lock:
                 dirty = self._dirty
-            due = (time.monotonic() - self._last_edit) >= PROGRESS_EDIT_SECONDS
+            since_edit = time.monotonic() - self._last_edit
+            due = since_edit >= PROGRESS_EDIT_SECONDS
             first = self._msg_id is None and self.elapsed >= PROGRESS_AFTER_SECONDS
-            if (dirty and due) or (first and dirty):
+            # Keep the clock moving while nothing arrives, so a long wait reads
+            # as one. Only a block that is already showing is refreshed.
+            stale = (self._msg_id is not None and not self._settled
+                     and since_edit >= PROGRESS_REFRESH_SECONDS)
+            if (dirty and due) or (first and dirty) or stale:
                 with self._lock:
                     self._dirty = False
                 self._publish()

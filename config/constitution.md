@@ -165,4 +165,7 @@ context is free or that shorter prompts guarantee faster answers.
 
 Track long-running work by its PID or task ID, and use completion notifications
 or bounded status checks. Do not wait using `pgrep -f` loops: they can match the
-waiting shell's own command line and never finish.
+waiting shell's own command line and never finish. Run a polling loop's
+command once by hand first, and never discard its errors with `2>/dev/null`: a
+failing check looks identical to "not done yet". In Telegram, say what you are
+waiting on before a wait longer than a minute.

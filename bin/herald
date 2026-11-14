@@ -532,7 +532,41 @@ def cmd_session(args) -> int:
 
 # --------------------------------------------------------------------------- notify
 
+# How long an identical notification counts as a repeat. A session that reruns
+# a command after a failed step resends whatever rode along with it: on 14 Nov
+# 2026 `git add ... && git commit ...; herald notify --file ...` ran the notify
+# although the add failed, the retry ran it again, and the same CSV arrived
+# twice eight seconds apart. A deliberate resend says --again.
+NOTIFY_REPEAT_SECONDS = 600
+
+
+def _notify_repeat(title: str, body: str) -> str | None:
+    """When an identical notification already landed recently, its time."""
+    since = (dt.datetime.now().astimezone()
+             - dt.timedelta(seconds=NOTIFY_REPEAT_SECONDS)).isoformat(timespec="seconds")
+    try:
+        rows = db.query(
+            "SELECT ts FROM notifications WHERE ok = 1 AND ts >= ? AND title = ?"
+            " AND COALESCE(body, '') = ? ORDER BY ts DESC LIMIT 1",
+            (since, title, body or ""))
+    except Exception:
+        return None
+    return rows[0][0] if rows else None
+
+
 def cmd_notify(args) -> int:
+    if not args.again:
+        if args.file:
+            name = pathlib.Path(args.file).expanduser().name
+            key = (f"document: {name}",
+                   args.title if not args.body else f"{args.title}\n{args.body}")
+        else:
+            key = (args.title, args.body or "")
+        when = _notify_repeat(*key)
+        if when:
+            print(f"not sent: the same notification already landed at {when}; "
+                  "pass --again to send it anyway", file=sys.stderr)
+            return 0
     if args.file:
         # A file is a Telegram-only thing: the push channel carries text. The
         # title and body become the caption, so the file arrives labelled.
@@ -3020,6 +3054,8 @@ def main() -> int:
     n.add_argument("--priority", default="default")
     n.add_argument("--tags")
     n.add_argument("--click")
+    n.add_argument("--again", action="store_true",
+                   help="send even if the identical notification landed in the last ten minutes")
     n.set_defaults(fn=cmd_notify)
 
     b = sub.add_parser("brain", help="the persistent conversational session")
