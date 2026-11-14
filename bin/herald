@@ -2522,6 +2522,11 @@ def _reads_only(args) -> bool:
 
 
 def main() -> int:
+    # `cf` takes arbitrary flags of its own (`--help`, `--json`), which argparse
+    # would claim, so it is dispatched before parsing.
+    if len(sys.argv) > 1 and sys.argv[1] == "cf":
+        from herald import cloudflare
+        return cloudflare.main(sys.argv[2:])
     p = argparse.ArgumentParser(
         prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent(__doc__ or ""))
@@ -2937,6 +2942,9 @@ def main() -> int:
     x.add_argument("urls", nargs="+")
     x.add_argument("--characters", type=int, default=6000, help="maximum characters per page")
     ex.set_defaults(fn=cmd_exa)
+
+    cfp = sub.add_parser("cf", help="Cloudflare's cf CLI, authenticated with the stored API token")
+    cfp.add_argument("arguments", nargs=argparse.REMAINDER)
 
     bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
     bw.add_argument("--workspace", help="independent browser workspace")

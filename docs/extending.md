@@ -106,6 +106,21 @@ deleted leads are excluded. Channel selection and source permissions belong
 in the extension. Scout shows private provenance to the session so that it
 can track a lead for the person without publishing its contents.
 
+## Cloudflare
+
+`herald cf <arguments>` runs Cloudflare's `cf` CLI with the API token stored at
+`secrets.json` `cloudflare.api_token` (override with `cloudflare.token_secret`;
+pin an account with `cloudflare.account_id`; pick the executable with
+`cloudflare.cli`). The token travels only in the child's environment as
+`CLOUDFLARE_API_TOKEN`, which `cf` and Wrangler both prefer over an OAuth login,
+so nothing expires or needs a browser. `CLOUDFLARE_API_KEY`,
+`CLOUDFLARE_EMAIL` and `CLOUDFLARE_AUTH_PROFILE` are removed so a global key or
+stray profile cannot act instead. Find commands with `herald cf cli search
+"<task>"` (keep queries free of names, domains and IDs) and Cloudflare docs
+with `herald cf docs search "<question>"`. Install `cf` with
+`npm install --global cf` on Node 22.18 or later built with TypeScript type
+stripping. Store a token with `herald secret request cloudflare.api_token`.
+
 ## Public web discovery
 
 `herald exa search "query" --objective "facts and primary sources needed"`
