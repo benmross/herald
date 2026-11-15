@@ -304,7 +304,7 @@ def sent_at_line(msg: dict) -> str:
 
 
 def api(method: str, **params):
-    return tgapi.call(method, timeout=POLL_TIMEOUT + 15, **params)
+    return tgapi.call(method, http_timeout=POLL_TIMEOUT + 15, **params)
 
 
 # The Unicode math-italic table that used to live here is gone. It existed to

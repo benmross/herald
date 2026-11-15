@@ -72,6 +72,15 @@ class Transport(unittest.TestCase):
         self.request.return_value = self.response({'ok': True, 'result': []})
         self.assertTrue(self.client.call('getUpdates', offset=10)['ok'])
 
+    def test_long_poll_timeout_reaches_telegram_separately_from_http_timeout(self):
+        # getUpdates takes its own `timeout` parameter. It once collided with the
+        # client's HTTP timeout keyword and crashed the bridge on every start.
+        self.request.return_value = self.response({'ok': True, 'result': []})
+        self.assertTrue(self.client.call('getUpdates', http_timeout=65, offset=10, timeout=50)['ok'])
+        request = self.request.call_args.args[0]
+        self.assertEqual(json.loads(request.data)['timeout'], 50)
+        self.assertEqual(self.request.call_args.kwargs['timeout'], 65)
+
     def test_short_flood_control_delay_is_respected_before_retry(self):
         self.request.side_effect = [http_error(429, {'parameters': {'retry_after': 3}}), self.response({'ok': True})]
         self.assertTrue(self.client.call('sendMessage', chat_id=1, text='Ready')['ok'])

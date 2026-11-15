@@ -121,7 +121,7 @@ TELEGRAM_LIMIT = tgtext.LIMIT
 
 
 def _telegram_api(method: str, **params) -> dict | None:
-    return tgapi.call(method, timeout=25, **params)
+    return tgapi.call(method, http_timeout=25, **params)
 
 
 def _telegram_chat_id() -> int | None:

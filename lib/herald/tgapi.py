@@ -39,7 +39,7 @@ class Client:
         self._lock = threading.Lock()
         self._until = 0.0
 
-    def call(self, method: str, *, timeout: float = 25, **params):
+    def call(self, method: str, *, http_timeout: float = 25, **params):
         token = config.secret("telegram.bot_token")
         if not token:
             return {"ok": False, "error_code": 401, "description": "Bot token unavailable"}
@@ -66,7 +66,7 @@ class Client:
                         return response or {"ok": False, "error_code": 429,
                                             "parameters": {"retry_after": self._until - time.monotonic()}}
             try:
-                with urllib.request.urlopen(request, timeout=min(timeout, 10) if method == "sendChatAction" else timeout) as result:
+                with urllib.request.urlopen(request, timeout=min(http_timeout, 10) if method == "sendChatAction" else http_timeout) as result:
                     response = json.load(result)
                 if not isinstance(response, dict):
                     response = None
@@ -103,5 +103,5 @@ class Client:
 _client = Client()
 
 
-def call(method: str, *, timeout: float = 25, **params):
-    return _client.call(method, timeout=timeout, **params)
+def call(method: str, *, http_timeout: float = 25, **params):
+    return _client.call(method, http_timeout=http_timeout, **params)
