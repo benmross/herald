@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 import uuid
 
-from . import config, db, tgtext
+from . import config, db, tgapi, tgtext
 
 PRIORITIES = ("min", "low", "default", "high", "urgent")
 
@@ -121,18 +121,7 @@ TELEGRAM_LIMIT = tgtext.LIMIT
 
 
 def _telegram_api(method: str, **params) -> dict | None:
-    token = config.secret("telegram.bot_token")
-    if not token:
-        return None
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    req = urllib.request.Request(
-        url, data=json.dumps(params).encode(), method="POST",
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=25) as r:
-            return json.load(r)
-    except (urllib.error.URLError, OSError, json.JSONDecodeError):
-        return None
+    return tgapi.call(method, timeout=25, **params)
 
 
 def _telegram_chat_id() -> int | None:
@@ -196,7 +185,7 @@ def telegram(text: str, *, record: bool = True,
         resp = _telegram_api("sendMessage", chat_id=chat_id,
                              text=tgtext.to_html(part), parse_mode="HTML",
                              link_preview_options={"is_disabled": True}, **extra)
-        if not (resp and resp.get("ok")):
+        if tgapi.formatting_error(resp):
             resp = _telegram_api("sendMessage", chat_id=chat_id, text=part,
                                  link_preview_options={"is_disabled": True},
                                  **extra)

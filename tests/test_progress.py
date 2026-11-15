@@ -401,7 +401,7 @@ class TypingIndicator(unittest.TestCase):
         self.assertEqual(calls, [("sendChatAction", None)])
 
     def test_a_group_without_general_falls_back_and_stops_trying(self):
-        w, calls = self._typing(-100, responses=[None])
+        w, calls = self._typing(-100, responses=[{"ok": False, "error_code": 400}])
         w._send_typing()
         w._send_typing()
         self.assertEqual(calls, [("sendChatAction", 1), ("sendChatAction", None),

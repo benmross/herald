@@ -279,6 +279,24 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications (ts DESC);
 
+-- Completed replies and terminal progress edits awaiting Telegram recovery.
+-- Private conversations never enter this table.
+CREATE TABLE IF NOT EXISTS telegram_outbox (
+    id INTEGER PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    method TEXT NOT NULL,
+    params TEXT NOT NULL,
+    fallback TEXT,
+    session_id TEXT,
+    dedupe_key TEXT UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt REAL NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_outbox_due
+    ON telegram_outbox (state, next_attempt, id);
+
 -- Every write Herald makes outside its own ledger: a calendar event, a task,
 -- a label, a draft. CLAUDE.md's amber tier says such an action is "never
 -- silent -- every amber action appears in the journal and the next digest",

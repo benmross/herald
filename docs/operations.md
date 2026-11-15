@@ -96,7 +96,28 @@ prints the traceback. A collector reported as *off* is not failing: it needs a
 capability nobody connected, and `herald status` says which.
 
 **Telegram silent.** `systemctl --user status herald-telegram`. There are two
-causes, and the unit reads `active (running)` for both, so trust the log over the status.
+common local causes, and the unit reads `active (running)` for both, so trust the log over the status.
+
+HTTP 429 means flood control; Herald honors Telegram's `retry_after` cooldown
+across the bridge's threads and skips typing during that wait. HTTP 5xx and
+network failures use bounded backoff. These failures do not trigger the
+plain-text formatting fallback. See Telegram's
+[response parameters](https://core.telegram.org/bots/api#responseparameters).
+
+Completed replies are saved in `telegram_outbox` before delivery. A worker
+retries pending replies and failed terminal progress edits after recovery,
+including across bridge restarts, without rerunning the model or its tools.
+Chunks stay in order within a topic, and delivered message IDs retain their
+original session for reply-to-message continuation. Private conversations are
+never queued. Permanent rejections remain marked `failed` for inspection:
+
+```bash
+herald db "select id, created_at, method, attempts, state, last_error from telegram_outbox order by id"
+```
+
+Successful rows are removed. A crashed delivery is retried once its five-minute
+lease expires. Telegram has no idempotency key for sending a message, so a
+connection timeout after acceptance can still produce a duplicate on retry.
 
 A 409 means something else is polling the same bot: Telegram allows exactly one
 `getUpdates` consumer. The Claude Code telegram plugin is one candidate: it

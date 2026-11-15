@@ -58,7 +58,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, limitchoice, limitresume, private as private_mod, routing, usage  # noqa: E402
+from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -304,17 +304,7 @@ def sent_at_line(msg: dict) -> str:
 
 
 def api(method: str, **params):
-    token = config.secret("telegram.bot_token")
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    req = urllib.request.Request(
-        url, data=json.dumps(params).encode(), method="POST",
-        headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=POLL_TIMEOUT + 15) as r:
-            return json.load(r)
-    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
-        print(f"telegram api {method}: {e}", file=sys.stderr)
-        return None
+    return tgapi.call(method, timeout=POLL_TIMEOUT + 15, **params)
 
 
 # The Unicode math-italic table that used to live here is gone. It existed to
@@ -380,6 +370,7 @@ class Working:
         self._last_edit = 0.0
         self._last_event = self.started   # the latest narration or tool call
         self._settled = False
+        self._finished_failed = False
         self._typing_in_general = chat_id < 0 and thread_id is None
         self._sent_replies: list[str] = []   # interim replies already sent
         self.message_ids: list[int] = []     # everything this turn has posted
@@ -582,6 +573,10 @@ class Working:
             self._publish_current(done=done, failed=failed)
 
     def _publish_current(self, *, done: bool = False, failed: bool = False) -> None:
+        # A typing/progress thread may still be returning from a slow request
+        # after settle(). It must never overwrite "done" with "working".
+        done = done or self._settled
+        failed = failed or self._finished_failed
         text = self._render(done=done, failed=failed)   # already HTML
         if text == self._sent_text:
             return
@@ -599,11 +594,19 @@ class Working:
             # send, since _last_edit was still 0.
             self._last_edit = time.monotonic()
             return
-        resp = api("editMessageText", chat_id=self.chat_id,
-                   message_id=self._msg_id, text=text, parse_mode="HTML",
-                   link_preview_options={"is_disabled": True})
+        params = dict(chat_id=self.chat_id, message_id=self._msg_id, text=text,
+                      parse_mode="HTML", link_preview_options={"is_disabled": True})
+        resp = api("editMessageText", **params)
         if resp and resp.get("ok"):
             self._sent_text = text
+        elif done and tgapi.transient(resp):
+            key = f"{self.chat_id}:{self.thread_id or 'main'}"
+            if key not in _private:
+                try:
+                    tgoutbox.enqueue("editMessageText", params,
+                                     key=f"progress:{self.chat_id}:{self._msg_id}")
+                except Exception as exc:  # noqa: BLE001 -- never lose the actual reply
+                    print(f"terminal progress not queued ({type(exc).__name__})", file=sys.stderr)
         self._last_edit = time.monotonic()
 
     def settle(self, reply: str = "", *, stopped: bool = False) -> None:
@@ -636,6 +639,8 @@ class Working:
         Deliberately not deleted: what the turn actually did is the part worth
         keeping, and the reply that follows says what came of it rather than how.
         """
+        self._settled = True
+        self._finished_failed = failed
         if self._msg_id is None and not self._lines:
             return
         self._publish(done=True, failed=failed)
@@ -652,6 +657,8 @@ class Working:
                        message_thread_id=GENERAL_THREAD_ID)
             if resp and resp.get("ok"):
                 return
+            if tgapi.transient(resp):
+                return  # A cooldown/outage says nothing about General support.
             self._typing_in_general = False
         extra = {"message_thread_id": self.thread_id} if self.thread_id else {}
         api("sendChatAction", chat_id=self.chat_id, action="typing", **extra)
@@ -676,7 +683,8 @@ class Working:
 
 
 def send(chat_id: int, text: str, thread_id: int | None = None,
-         *, markup: bool = True) -> list[int]:
+         *, markup: bool = True, durable: bool = False,
+         session_id: str | None = None) -> list[int]:
     """One reply, as HTML this process generated itself.
 
     Markdown mode was tried and removed, for a reason worth keeping in mind
@@ -699,6 +707,7 @@ def send(chat_id: int, text: str, thread_id: int | None = None,
     """
     extra = {"message_thread_id": thread_id} if thread_id else {}
     ids: list[int] = []
+    durable = durable and f"{chat_id}:{thread_id or 'main'}" not in _private
 
     def sent(resp) -> bool:
         if not (resp and resp.get("ok")):
@@ -713,12 +722,26 @@ def send(chat_id: int, text: str, thread_id: int | None = None,
         sent(api("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
                  link_preview_options={"is_disabled": True}, **extra))
         return ids
+    queued = []
     for chunk in tgtext.chunks(text, MAX_REPLY):
-        if not sent(api("sendMessage", chat_id=chat_id, text=tgtext.to_html(chunk),
-                        parse_mode="HTML",
-                        link_preview_options={"is_disabled": True}, **extra)):
+        params = dict(chat_id=chat_id, text=tgtext.to_html(chunk), parse_mode="HTML",
+                      link_preview_options={"is_disabled": True}, **extra)
+        if durable:
+            try:
+                queued.append(tgoutbox.enqueue("sendMessage", params, fallback=chunk,
+                                              session_id=session_id))
+                continue
+            except Exception as exc:  # noqa: BLE001 -- bookkeeping must not kill a turn
+                print(f"reply not queued ({type(exc).__name__}); attempting direct delivery", file=sys.stderr)
+        response = api("sendMessage", **params)
+        if not sent(response) and tgapi.formatting_error(response):
             sent(api("sendMessage", chat_id=chat_id, text=chunk,
                      link_preview_options={"is_disabled": True}, **extra))
+    for identifier in queued:
+        try:
+            sent(tgoutbox.deliver(identifier, api))
+        except Exception as exc:  # noqa: BLE001 -- the saved reply remains retryable
+            print(f"queued reply delivery deferred ({type(exc).__name__})", file=sys.stderr)
     return ids
 
 
@@ -1428,7 +1451,8 @@ def handle(update: dict, state: dict) -> None:
             ts["context_tokens"] = getattr(result, "context_tokens", None)
             ts["context_window"] = getattr(result, "context_window", None)
             if not working.already_sent(result.text):
-                posted += send(chat_id, result.text or "(no reply)", thread_id)
+                posted += send(chat_id, result.text or "(no reply)", thread_id,
+                               durable=pv is None, session_id=result.session_id or ts.get("session_id"))
             ts["session_id"] = result.session_id or ts.get("session_id")
             ts["turns"] = 1 if reason else ts.get("turns", 0) + 1
             ts.pop(limitresume.ATTEMPTS, None)
@@ -1443,7 +1467,8 @@ def handle(update: dict, state: dict) -> None:
             ts["session_id"] = None
         else:
             if not (result.rate_limited and pv is None):
-                send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id)
+                send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id,
+                     durable=pv is None, session_id=result.session_id or ts.get("session_id"))
             if result.session_id:
                 # A failed turn can still have done an hour of real work --
                 # a timeout kills the process, not the transcript. Keep its
@@ -2571,6 +2596,16 @@ def _dispatch(update: dict, state: dict) -> None:
     _maybe_restart()
 
 
+def _retry_deliveries() -> None:
+    """Retry saved text after recovery, without starting a model turn."""
+    while True:
+        try:
+            tgoutbox.retry(api)
+        except Exception as exc:  # noqa: BLE001 -- keep retrying after a ledger lock
+            print(f"telegram outbox retry skipped ({type(exc).__name__})", file=sys.stderr)
+        time.sleep(5)
+
+
 def main() -> int:
     if not config.secret("telegram.bot_token"):
         print("no telegram.bot_token in config/secrets.json", file=sys.stderr)
@@ -2597,6 +2632,7 @@ def main() -> int:
           f"{len(threads)} conversation(s): {', '.join(threads) or 'none yet'})")
 
     threading.Thread(target=_resume_after_limits, args=(state,), daemon=True).start()
+    threading.Thread(target=_retry_deliveries, daemon=True).start()
 
     while True:
         resp = api("getUpdates", offset=state["offset"], timeout=POLL_TIMEOUT,
