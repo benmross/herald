@@ -71,6 +71,25 @@ docker exec -it herald herald attach
 docker exec -it herald herald update
 ```
 
+`herald update` updates Herald and its extensions inside the volume. To pick
+up a change to the image itself (the Dockerfile or compose.yml), run `git pull`
+in the recipe folder and the `up -d --build` command again. Your data is in the
+volume and survives this.
+
+### Installed before November 2026?
+
+compose.yml now names its project `herald` instead of letting Compose name it
+`docker` after the folder. The volume keeps its old name, so nothing is lost,
+but the old container has to be removed once before the new one can start:
+
+```bash
+git pull
+docker compose -p docker -f docker/compose.yml down
+docker compose -f docker/compose.yml up -d --build
+```
+
+`down` without `-v` leaves the volume alone.
+
 ## Keeping it running
 
 Compose sets `restart: unless-stopped`, so the container comes back when

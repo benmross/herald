@@ -33,7 +33,9 @@ class Workspaces(unittest.TestCase):
                         mock.patch.object(config, 'link_ledger', return_value=None),
                         mock.patch.object(config, 'LEDGER', root/'ledger'),
                         mock.patch.object(config, 'DB_PATH', root/'facts.db'),
-                        mock.patch.object(bw, 'available_memory_mb', return_value=12000)]
+                        mock.patch.object(bw, 'available_memory_mb', return_value=12000),
+                        # Managed workers need systemd; pretend, so these run in a container too.
+                        mock.patch.object(bw, 'managed_workers', return_value=True)]
         for p in self.patches:p.start()
 
     def tearDown(self):

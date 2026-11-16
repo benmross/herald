@@ -80,6 +80,13 @@ class Supervisor(unittest.TestCase):
         self.assertTrue(health.healthy(self._checks()))
 
 
+class Files(unittest.TestCase):
+    def test_no_config_before_setup_is_only_a_warning(self):
+        with mock.patch.object(health.config, "CONFIG_PATH", pathlib.Path("/nonexistent/config.json")):
+            self.assertTrue(health.healthy(health._files(False)))
+            self.assertFalse(health.healthy(health._files(True)))
+
+
 class Result(unittest.TestCase):
     def test_a_warning_never_makes_it_unhealthy(self):
         checks = [health.Check("database", True), health.Check("failing sources", False, "x", fatal=False)]

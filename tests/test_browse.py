@@ -47,8 +47,14 @@ class Views(unittest.TestCase):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
         self.p = mock.patch.object(browse, "spool", lambda: self.tmp)
         self.p.start()
+        # Workspace views exist only where systemd runs the browser workers.
+        # Pretend it does, so these pass in a container or on a Mac too.
+        from herald import browser_workspaces as bw
+        self.workers = mock.patch.object(bw, "managed_workers", return_value=True)
+        self.workers.start()
 
     def tearDown(self):
+        self.workers.stop()
         self.p.stop()
 
     def test_token_round_trip_and_close(self):

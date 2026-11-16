@@ -2,6 +2,13 @@
 #
 #   docker compose -f docker/compose.yml up -d --build
 #
+# The project is named here rather than taken from the folder. Compose would
+# otherwise call it "docker", after docker/, and share that project with any
+# other stack started from a folder of that name (Portainer's install guide
+# makes one), so `down` or `--remove-orphans` there could touch Herald.
+# Reported by Eli Ferrara (benmross/herald#17).
+name: herald
+
 services:
   herald:
     build:
@@ -35,4 +42,7 @@ services:
 
 volumes:
   # Everything: the program, its logins, and what Herald knows about you.
+  # Named explicitly with the name it had while the project was still called
+  # "docker", so an install from before keeps its data across the rename.
   herald-home:
+    name: docker_herald-home

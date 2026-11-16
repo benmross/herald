@@ -75,10 +75,14 @@ def _supervisor(container: bool) -> tuple[list[Check], bool]:
     return out, True
 
 
-def _files() -> list[Check]:
+def _files(enabled: bool) -> list[Check]:
+    """Config and ledger. Before setup has switched the jobs on they may not
+    exist yet, which is expected, so their absence only warns."""
     out = []
     for path in (config.CONFIG_PATH, config.LEDGER):
-        out.append(Check(path.name, path.exists(), "" if path.exists() else f"missing: {path}"))
+        out.append(Check(path.name, path.exists(),
+                         "" if path.exists() else f"missing: {path}"
+                         + ("" if enabled else " (setup not run yet)"), fatal=enabled))
     free = shutil.disk_usage(config.HOME).free // (1024 * 1024)
     out.append(Check("disk", free >= MIN_FREE_MB, f"{free} MB free"))
     return out
@@ -166,7 +170,7 @@ def run(*, container: bool | None = None, use_cache: bool = True) -> list[Check]
     if container is None:
         container = os.environ.get("HERALD_CONTAINER") == "1"
     checks, enabled = _supervisor(container)
-    checks += _files()
+    checks += _files(enabled)
     checks += _database(enabled)
     if enabled:
         checks += _logins(use_cache)
