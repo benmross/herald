@@ -1,6 +1,6 @@
 ---
 name: herald-self
-description: How to change Herald itself: its collectors, cycles, surfaces, prompts, skills and rules. Use this whenever the user asks to add a data source, change what the morning digest does, adjust how or when something runs, fix a bug in Herald, alter the autonomy rules, or extend the agent in any way. Also use it before editing anything in the Herald checkout outside the ledger, and before restarting any herald service. Covers the invariants that must not be broken, how to verify a change, and how to recover when something goes wrong.
+description: "How to change Herald itself: its collectors, cycles, surfaces, prompts, skills and rules. Use this whenever the user asks to add a data source, change what the morning digest does, adjust how or when something runs, fix a bug in Herald, alter the autonomy rules, or extend the agent in any way. Also use it before editing anything in the Herald checkout outside the ledger, and before restarting any herald service. Covers the invariants that must not be broken, how to verify a change, and how to recover when something goes wrong."
 ---
 
 # Changing Herald
@@ -64,7 +64,7 @@ sends a notification; the snapshot is free and silent.
 `herald check` enforces these. If one fails, the fix is the code, not the check.
 
 1. **Only `lib/herald/think.py` launches an engine.** Everything else calls
-   `think.think()`. Herald runs `claude` or `codex` as a subprocess and never
+   `think.think()`. Herald runs `claude`, `codex` or `kiro-cli` as a subprocess and never
    speaks to a model API. That is what keeps it on the user's subscription instead
    of metered billing, and it is a terms-of-service requirement.
    The engine is chosen before the run (`engine=`, `/codex`, `/claude`,

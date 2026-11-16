@@ -1,17 +1,17 @@
-"""Choose one first-party provider or both before checking any model CLI."""
+"""Choose first-party providers before checking any model CLI."""
 from __future__ import annotations
 
 from herald import config
 from .engine import DONE, TODO, Field, Outcome, Prompt, State, Step
 
-CHOICES = {"Claude only": ["claude"], "Codex only": ["codex"], "Both": ["claude", "codex"]}
+CHOICES = {"Claude only": ["claude"], "Codex only": ["codex"], "Both": ["claude", "codex"], "Kiro only": ["kiro"], "Claude and Kiro": ["claude", "kiro"], "Codex and Kiro": ["codex", "kiro"], "All three": ["claude", "codex", "kiro"]}
 
 
 def status(state: State) -> tuple[str, str]:
     try:
         engine = config.default_engine()
     except ValueError:
-        return TODO, "Choose Claude, Codex, or both"
+        return TODO, "Choose Claude, Codex, Kiro, or a combination"
     # Legacy installs get an explicit default through the update migration.
     return DONE, f"{', '.join(config.enabled_engines())}; default: {engine}"
 
@@ -21,16 +21,16 @@ def prompt(state: State) -> Prompt:
     current = next((label for label, names in CHOICES.items() if enabled == names), "Choose providers")
     return Prompt(title="Your model providers",
         blurb="Herald runs the first-party CLI on your subscription. Choose Claude "
-              "only, Codex only, or both. Either one supports Telegram, terminal "
+              "only, Codex, Kiro, or a combination. Each supports Telegram, terminal "
               "conversations and scheduled jobs. The next page checks only the "
               "providers you choose and gives the install and sign-in commands.",
         fields=[Field(key="providers", label="Providers", type="choice", required=True,
                       choices=["Choose providers", *CHOICES], default=current),
-                Field(key="default_engine", label="Default provider (when using both)", type="choice",
-                      choices=["Choose if using both", "claude", "codex"],
+                Field(key="default_engine", label="Default provider (when using multiple providers)", type="choice",
+                      choices=["Choose if using both", "claude", "codex", "kiro"],
                       default=config.get("engines.default_engine") or "Choose if using both",
                       help="Used for scheduled jobs, the terminal and new Telegram topics."),
-                Field(key="auto", label="Keep going when one provider hits a limit (recommended when using both)",
+                Field(key="auto", label="Keep going when one provider hits a limit (recommended when using multiple providers)",
                       type="bool", default=enabled is None or bool(config.get("engines.auto.enabled")),
                       help="A Telegram topic continues on your other subscription from where "
                            "it stopped. Nothing is bought, and you can pin a topic to one provider."),
@@ -43,10 +43,10 @@ def prompt(state: State) -> Prompt:
 def apply(state: State, answers: dict) -> Outcome:
     enabled = CHOICES.get(answers.get("providers"))
     if not enabled:
-        return Outcome(ok=False, message="Choose Claude only, Codex only, or both.")
+        return Outcome(ok=False, message="Choose one or more model providers.")
     default = enabled[0] if len(enabled) == 1 else answers.get("default_engine")
     if default not in enabled:
-        return Outcome(ok=False, message="Choose your default provider when using both.")
+        return Outcome(ok=False, message="Choose your default provider when using multiple providers.")
     if answers.get("remote_control") and "claude" not in enabled:
         return Outcome(ok=False, message="Claude Remote Control requires selecting Claude.")
     was_remote = config.remote_control_enabled()
@@ -64,5 +64,5 @@ def apply(state: State, answers: dict) -> Outcome:
     return Outcome(ok=True, message=message, warnings=warnings)
 
 
-STEP = Step(key="providers", title="Your model providers", summary="Claude only, Codex only, or both",
+STEP = Step(key="providers", title="Your model providers", summary="Choose Claude, Codex, Kiro, or a combination",
             status_fn=status, prompt_fn=prompt, apply_fn=apply)

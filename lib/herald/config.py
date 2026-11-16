@@ -322,23 +322,23 @@ def agent_env() -> dict:
     """
     env = dict(os.environ)
     for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE",
-              "OPENAI_API_KEY", "CODEX_API_KEY"):
+              "OPENAI_API_KEY", "CODEX_API_KEY", "KIRO_API_KEY"):
         env.pop(k, None)
     home = env.get("HOME", str(pathlib.Path.home()))
     env["PATH"] = os.pathsep.join([f"{home}/.local/bin", env.get("PATH", "/usr/bin:/bin")])
     return env
 
 
-ENGINE_NAMES = ("claude", "codex")
+ENGINE_NAMES = ("claude", "codex", "kiro")
 
 
 def enabled_engines() -> tuple[str, ...]:
     """Providers explicitly enabled, or both for legacy configurations."""
     value = get("engines.enabled")
     if value is None:
-        return ENGINE_NAMES
+        return ("claude", "codex")  # New providers require an explicit opt-in.
     if not isinstance(value, list) or not value or any(e not in ENGINE_NAMES for e in value):
-        raise ValueError("engines.enabled must list claude, codex, or both")
+        raise ValueError("engines.enabled must list supported providers: " + ", ".join(ENGINE_NAMES))
     return tuple(dict.fromkeys(value))
 
 

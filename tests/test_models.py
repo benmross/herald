@@ -172,7 +172,7 @@ class TelegramModels(unittest.TestCase):
         self.assertEqual(self.state['threads'][self.key]['model'],'haiku')
 
     def test_partial_catalog_failure_keeps_the_other_engine(self):
-        with patch.object(self.tg.think,'available_models',side_effect=lambda e:
+        with patch.object(self.tg.config,'enabled_engines',return_value=('claude','codex')), patch.object(self.tg.think,'available_models',side_effect=lambda e:
                           ROWS[:2] if e=='claude' else (_ for _ in ()).throw(TimeoutError())):
             rows, errors=self.catalog_helper()
         self.assertEqual(rows,ROWS[:2]); self.assertEqual(len(errors),1)

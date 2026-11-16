@@ -98,7 +98,7 @@ def main() -> int:
         if p.name == "think.py":
             continue
         text = p.read_text()
-        for m in re.finditer(r'^\s*(?:cmd|proc).*?\[\s*"(claude|codex)"', text, re.M):
+        for m in re.finditer(r'^\s*(?:cmd|proc).*?\[\s*"(claude|codex|kiro-cli)"', text, re.M):
             launchers.append(f"{p.relative_to(ROOT)}: launches {m.group(1)!r}")
     c.check("only lib/herald/think.py launches an engine", not launchers,
             "; ".join(launchers[:3]) + ". Route it through think.think() instead.")
@@ -109,7 +109,7 @@ def main() -> int:
             f"so it would demand an API key.")
 
     keyed = [str(p.relative_to(ROOT)) for p in files
-             if re.search(r'os\.environ\[["\'](?:ANTHROPIC|OPENAI|CODEX)_API_KEY',
+             if re.search(r'os\.environ\[["\'](?:ANTHROPIC|OPENAI|CODEX|KIRO)_API_KEY',
                           p.read_text())]
     c.check("nothing sets an engine API key", not keyed, ", ".join(keyed))
 
@@ -192,6 +192,16 @@ def main() -> int:
     c.check("the tier guard actually blocks a red call", rc == 2,
             f"tools/guard.py exited {rc} on a synthetic red call instead of 2, "
             f"so sessions are unguarded. Run it by hand to see why.")
+    kiro_probe = {**probe, "tool_name": "execute_bash"}
+    try:
+        rc = _subprocess.run(
+            [_sys.executable, str(ROOT / "tools" / "kiro_hook.py")],
+            input=_json.dumps(kiro_probe), capture_output=True, text=True, timeout=20,
+            env={**_os.environ, "HERALD_GUARD_PROBE": "1"}).returncode
+    except (OSError, _subprocess.SubprocessError):
+        rc = None
+    c.check("Kiro's native tool adapter blocks a red call", rc == 2,
+            f"tools/kiro_hook.py exited {rc}, expected 2")
 
     # The same proof for Herald's own safety rules (lib/herald/safety.py),
     # which since 4 Oct 2026 may be the only check a Claude session has. A

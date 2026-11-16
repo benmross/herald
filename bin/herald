@@ -2878,7 +2878,7 @@ def main() -> int:
     t.add_argument("--label", default="ask")
     t.add_argument("--model")
     t.add_argument("--engine", choices=list(think_mod.ENGINES),
-                   help="claude or codex; default is engines.default_engine")
+                   help="claude, codex or kiro; default is engines.default_engine")
     t.add_argument("--effort", choices=list(think_mod.EFFORTS),
                    help="how hard to think; default is the engine's own")
     t.add_argument("--cwd")

@@ -1,6 +1,6 @@
 ---
 name: herald-projects
-description: Start or build a software project for the user under projects/: scaffolding, private GitHub repositories, handing a session link over, asking them to authorise something, committing as you go, and batching work on a remote device. Use whenever they ask you to build something new, or for any multi-step build.
+description: "Start or build a software project for the user under projects/: scaffolding, private GitHub repositories, handing a session link over, asking them to authorise something, committing as you go, and batching work on a remote device. Use whenever they ask you to build something new, or for any multi-step build."
 ---
 
 # Building things with them

@@ -133,14 +133,14 @@ FULL_MENU = (*MENU,
              ("effort", "Choose a thinking level"),
              ("low", "Low effort"), ("medium", "Medium effort"), ("high", "High effort"),
              ("xhigh", "Extra-high effort"), ("max", "Max effort"), ("ultra", "Ultra effort"),
-             ("claude", "Use Claude in this topic"), ("codex", "Use Codex in this topic"),
+             ("claude", "Use Claude in this topic"), ("codex", "Use Codex in this topic"), ("kiro", "Use Kiro in this topic"),
              ("fable", "Use Fable"), ("opus", "Use Opus"), ("sonnet", "Use Sonnet"),
              ("compact", "Compact this conversation"),
              ("debug", "This conversation's context and latency"),
              ("session", "Same as /debug"), ("context", "Same as /debug"),
              ("clear", "Same as /new"), ("reset", "Same as /new"))
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
-ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex"}
+ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex", "/kiro": "kiro"}
 # Per-topic thinking level, for either engine: `/effort high`, or the level
 # as its own command. None means the engine's configured default.
 EFFORT_COMMANDS = {f"/{level}": level for level in think.EFFORTS}
@@ -2017,7 +2017,7 @@ def _handle_usage(update: dict, key: str, state: dict) -> None:
     words = (msg.get("text") or "").split()
     engine = words[1].lower() if len(words) > 1 else None
     if len(words) > 2 or engine and engine not in config.ENGINE_NAMES:
-        send(msg["chat"]["id"], "Use /usage, /usage claude or /usage codex.", msg.get("message_thread_id"))
+        send(msg["chat"]["id"], "Use /usage, /usage claude, /usage codex or /usage kiro.", msg.get("message_thread_id"))
         return
     try:
         with db.session() as con:

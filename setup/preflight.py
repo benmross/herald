@@ -75,10 +75,11 @@ def _subscription() -> str | None:
 
 
 INSTALL = {
+    "kiro": "curl -fsSL https://cli.kiro.dev/install | bash",
     "claude": "curl -fsSL https://claude.ai/install.sh | bash",
     "codex": "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
 }
-LOGIN = {"claude": "claude auth login", "codex": "codex login"}
+LOGIN = {"kiro": "kiro-cli login", "claude": "claude auth login", "codex": "codex login"}
 
 
 def provider_checks() -> list[dict]:
@@ -92,7 +93,7 @@ def provider_checks() -> list[dict]:
         return [dict(name="Model provider choice", ok=False, required=True,
                      detail="not chosen", fix="Run `herald setup --step providers`.")]
     for engine in config.enabled_engines():
-        name = "Claude Code" if engine == "claude" else "Codex CLI"
+        name = {"claude": "Claude Code", "codex": "Codex CLI", "kiro": "Kiro CLI"}[engine]
         cmd = config.engine_settings(engine).get("cmd") or engine
         installed = bool(shutil.which(cmd, path=config.agent_env()["PATH"]))
         out.append(dict(name=name, ok=installed, required=True,
@@ -102,6 +103,13 @@ def provider_checks() -> list[dict]:
             auth = claude_auth()
             signed_in = bool(auth.get("loggedIn"))
             subscription = signed_in and auth.get("apiProvider") in (None, "firstParty") and bool(auth.get("subscriptionType"))
+        elif installed and engine == "kiro":
+            try:
+                r = subprocess.run([cmd, "whoami"], capture_output=True, text=True, timeout=15, env=config.agent_env())
+                text = (r.stdout + r.stderr).lower()
+                signed_in = subscription = r.returncode == 0 and "logged in" in text and "api key" not in text
+            except (OSError, subprocess.SubprocessError):
+                pass
         elif installed:
             try:
                 r = subprocess.run([cmd, "login", "status"], capture_output=True,
@@ -115,7 +123,7 @@ def provider_checks() -> list[dict]:
                         detail="signed in on subscription" if subscription else
                                "non-subscription login" if signed_in else "not signed in",
                         fix=f"Run `{LOGIN[engine]}` and sign in with your "
-                            + ("Claude" if engine == "claude" else "ChatGPT") + " account."))
+                            + {"claude": "Claude", "codex": "ChatGPT", "kiro": "Kiro"}[engine] + " account."))
     return out
 
 
@@ -186,7 +194,7 @@ def _wsl_checks(root: pathlib.Path) -> list[dict]:
     for engine in config.enabled_engines():
         path = shutil.which(config.engine_settings(engine).get("cmd") or engine) or ""
         if path.startswith("/mnt/"):
-            name = "Claude Code" if engine == "claude" else "Codex CLI"
+            name = {"claude": "Claude Code", "codex": "Codex CLI", "kiro": "Kiro CLI"}[engine]
             out.append({
                 "name": f"{name} is the Linux one, not the Windows one",
                 "ok": False, "required": True, "detail": path,

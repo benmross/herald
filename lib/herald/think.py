@@ -1,13 +1,13 @@
 """The one place Herald reaches a model — by running a first-party CLI.
 
-Nothing here speaks HTTP to a model API. `claude` (Claude Code) or `codex`
-(the Codex CLI) is launched as a subprocess and authenticates itself against
+Nothing here speaks HTTP to a model API. `claude` (Claude Code), `codex`
+(the Codex CLI) or `kiro-cli` is launched as a subprocess and authenticates itself against
 the user's own subscription. That is what makes this legitimate under either
 vendor's terms (subscription OAuth is authorized for the first-party tools
 only, never for third-party callers), and it is why this module must never be
 "optimized" into an SDK client.
 
-Two engines, chosen, never fallen back to. Herald used to hand an interrupted
+Engines are chosen and never fallen back to. Herald used to hand an interrupted
 run to `codex exec` with a saved work record when Claude hit a usage limit;
 that came out on 9 September 2026 because the redundancy was not worth the
 amount of logic it took to carry a transcript handoff between two engines.
@@ -57,7 +57,8 @@ from . import config, db, private as private_mod
 # where a caller told "exit 1" goes looking for a bug that is not there.
 _RATE_LIMIT_STATUSES = {429, 529}
 _RATE_LIMIT_HINTS = ("rate limit", "usage limit", "quota", "overloaded",
-                     "too many requests", "capacity", "session limit", "rate_limit")
+                     "too many requests", "capacity", "session limit", "rate_limit",
+                     "insufficient credits", "credits exhausted", "credit limit", "out of credits")
 
 # A prompt longer than this is written to a file and referenced by path instead
 # of passed on argv.
@@ -96,6 +97,8 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     if topic:
         env["HERALD_TELEGRAM_TOPIC"] = topic
     scratch = _private_scratch()
+    if engine == "kiro":
+        kwargs["start_new_session"] = True
     if scratch is not None:
         cmd = private_mod.wrap(cmd, engine, scratch, env)
         env[private_mod.ENV] = "1"
@@ -217,6 +220,12 @@ def subscription_usage(engine: str, timeout: int = 45) -> dict | str:
         cmd = [config.engine_settings(engine).get("cmd") or engine,
                "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
                "--tools", ""]
+        if engine == "kiro":
+            from . import kiro
+            name = kiro.profile(lean=True)
+            kiro.verify_workspace(name, config.ROOT)
+            cmd = [config.engine_settings(engine).get("cmd") or "kiro-cli",
+                   "chat", "--v3", "--agent", name, "--trust-workspace"]
         tmux("new-session", "-d", "-s", "usage", "-x", "180", "-y", "80",
              "-c", str(config.ROOT), shlex.join(cmd))
         deadline = time.monotonic() + timeout
@@ -230,16 +239,22 @@ def subscription_usage(engine: str, timeout: int = 45) -> dict | str:
                     and time.monotonic() - stable_since >= 0.6):
                 # Subscription login is gone. Do not open /cost in API mode.
                 return screen
-            if not sent and _usage_prompt_ready(screen) and time.monotonic() - stable_since >= 0.6:
+            ready = (_usage_prompt_ready(screen) if engine != "kiro" else
+                     bool(re.search(r"^›\s+ask a question or describe a task", screen, re.M))
+                     and not re.search(r"trust this|sign in|log in|any key to dismiss", screen, re.I))
+            if not sent and ready and time.monotonic() - stable_since >= 0.6:
                 # /cost is the built-in /usage alias. Unlike the primary
                 # name, built-in aliases cannot be replaced by a skill:
                 # https://code.claude.com/docs/en/slash-commands#where-skills-live
-                tmux("send-keys", "-t", "usage:0.0", "-l", "/cost")
+                tmux("send-keys", "-t", "usage:0.0", "-l", "/usage" if engine == "kiro" else "/cost")
                 tmux("send-keys", "-t", "usage:0.0", "Enter")
                 sent = True
             # Wait for data, not just the initial loading panel. Unknown or
             # blocked screens are returned at the deadline and rejected.
             if (sent and "%" in screen and "Current session" in screen and "Current week" in screen
+                    and time.monotonic() - stable_since >= 2):
+                return screen
+            if (engine == "kiro" and sent and "credit" in screen.lower()
                     and time.monotonic() - stable_since >= 2):
                 return screen
             time.sleep(0.3)
@@ -256,7 +271,17 @@ def available_models(engine: str) -> list[dict]:
     No credential files, SDK clients or model HTTP APIs are involved.
     """
     resolve_engine(engine)
-    if engine == "claude":
+    if engine == "kiro":
+        value = subprocess.run([config.engine_settings(engine).get("cmd") or "kiro-cli",
+            "chat", "--v3", "--list-models", "--format", "json"],
+            env=config.agent_env(), capture_output=True, text=True, timeout=20)
+        if value.returncode:
+            raise RuntimeError("Kiro could not list models; check its login")
+        rows = json.loads(value.stdout).get("models", [])
+        result = [{"engine": engine, "model": r["model_id"], "name": r["model_name"],
+                   "efforts": [], "context_window": r.get("context_window_tokens"),
+                   "rate_multiplier": r.get("rate_multiplier")} for r in rows]
+    elif engine == "claude":
         cmd = [config.engine_settings("claude").get("cmd") or "claude", "-p", "--input-format", "stream-json", "--output-format",
                "stream-json", "--verbose", "--no-session-persistence"]
         with _catalog_process(cmd) as ask:
@@ -454,6 +479,7 @@ class Result:
     denials: list = field(default_factory=list)
     context_tokens: int | None = None
     context_window: int | None = None
+    credits_used: float | None = None
 
     def json(self) -> dict | None:
         """The reply parsed as JSON, whether it came back structured or fenced."""
@@ -817,6 +843,147 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
     finally:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
+
+
+def _handle_kiro_line(line, state, on_progress, cancel_key=None):
+    """Read native V3 ACP events, retaining only a confirmed final result."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(event, dict):
+        return
+    params = event.get("data") or event.get("params") or {}
+    session = event.get("session_id") or event.get("sessionId") or params.get("sessionId")
+    if session:
+        state["session_id"] = session
+        if state.get("t0") is not None and not state.get("saw_init"):
+            state["saw_init"] = True
+            _mark(state, "startup", None, state["t0"])
+    update = params.get("update") or event.get("update") or event
+    kind = update.get("sessionUpdate") or update.get("type")
+    if kind == "config_option_update":
+        for option in update.get("configOptions", []):
+            if option.get("id") in ("model", "effortLevel"):
+                state["kiro_" + option["id"]] = option.get("currentValue")
+    meta = (update.get("_meta") or {}).get("kiro") or {}
+    if meta.get("kind") == "turn_completion":
+        credits = [r["usage"] for r in meta.get("promptTurnSummaries", [])
+                   if r.get("unit") == "credit" and isinstance(r.get("usage"), (int, float))]
+        if credits:
+            state["credits_used"] = sum(credits)
+    if meta.get("kind") == "context_usage":
+        percentage = (meta.get("contextUsage") or {}).get("usagePercentage")
+        if isinstance(percentage, (int, float)):
+            state["context_percent"] = percentage
+    if kind == "session_info_update" and ((update.get("_meta") or {}).get("kiro") or {}).get("turnStart"):
+        state["round_trips"] = state.get("round_trips", 0) + 1
+        for key, expected in (("model", state.get("expected_model")),
+                              ("effortLevel", state.get("expected_effort"))):
+            if expected and state.get("kiro_" + key) != expected:
+                state["abort"] = True
+                state["payload"] = {"is_error": True, "result": "Kiro did not confirm requested " + key,
+                                    "session_id": state.get("session_id")}
+    if kind == "agent_message_chunk":
+        content = update.get("content") or {}
+        if content.get("type") == "text":
+            state["last_text"] = state.get("last_text", "") + content.get("text", "")
+    elif kind in ("tool_call", "tool_call_update"):
+        tool_id = update.get("toolCallId")
+        title = update.get("title") or update.get("kind") or "Kiro tool"
+        pending = state.setdefault("pending_tools", {})
+        if kind == "tool_call":
+            if state.get("mark") is not None:
+                _mark(state, "model", None, state["mark"])
+            pending[tool_id] = (time.monotonic(), title)
+            if cancel_key:
+                with _active_lock:
+                    if entry := _active.get(cancel_key):
+                        entry["progress"] = title
+        elif update.get("status") in ("completed", "failed") and tool_id in pending:
+            since, title = pending.pop(tool_id)
+            _mark(state, "tool", title, since)
+        if kind == "tool_call" and state.get("last_text"):
+            if on_progress:
+                on_progress(Progress("text", state["last_text"]))
+            state["last_text"] = ""
+        if on_progress and (kind == "tool_call" or update.get("status") == "failed"):
+            on_progress(Progress("tool", update.get("title") or update.get("kind") or "Kiro tool"))
+    result = event.get("result")
+    if event.get("type") == "runFinished":
+        if state.get("mark") is not None:
+            _mark(state, "model", None, state["mark"])
+        state["payload"] = {"type": "result", "session_id": state.get("session_id"),
+            "result": params.get("finalText") or state.get("last_text", ""),
+            "is_error": params.get("status") != "success" or params.get("stopReason") != "end_turn"}
+        state["payload"]["credits_used"] = state.get("credits_used")
+    if isinstance(result, dict) and result.get("stopReason"):
+        state["payload"] = {"type": "result", "session_id": state.get("session_id"),
+            "result": state.get("last_text", ""),
+            "is_error": result["stopReason"] != "end_turn"}
+    if event.get("error"):
+        state["abort"] = True
+        state["payload"] = {"type": "result", "session_id": state.get("session_id"),
+            "result": str(event["error"]), "is_error": True}
+
+
+def _run_kiro(prompt, *, model, effort, cwd, timeout, idle_timeout, resume,
+              append_system_prompt, json_schema, allowed_tools, permission_mode,
+              on_progress=None, cancel_key=None, timing=None, lean=False):
+    from . import kiro
+    # An unsupported per-tool restriction must never silently grant everything.
+    tool_map = {"Bash": ("execute_bash",), "Read": ("read_file", "list_directory"),
+                "Glob": ("file_search",), "Grep": ("grep_search",),
+                "Write": ("fs_write", "fs_append"), "Edit": ("str_replace",)}
+    if allowed_tools and any(tool not in tool_map for tool in allowed_tools):
+        raise ValueError("Unsupported tool restriction for Kiro")
+    native_tools = [native for tool in allowed_tools for native in tool_map[tool]] if allowed_tools is not None else None
+    if effort and effort not in ("low", "medium", "high", "xhigh", "max"):
+        raise ValueError("Kiro does not support effort " + effort)
+    name = kiro.profile(lean=lean, read_only=permission_mode == "plan", no_tools=allowed_tools == [], allowed_tools=native_tools)
+    kiro.verify_workspace(name, cwd)
+    catalog = available_models("kiro")
+    selected = next((row for row in catalog if row["model"] == model), None)
+    if model and selected is None:
+        raise RuntimeError("Requested Kiro model is unavailable; no run started")
+    window = (selected or {}).get("context_window")
+    cmd = [config.engine_settings("kiro").get("cmd") or "kiro-cli", "chat", "--v3",
+           "--mode", "default", "--agent", name, "--trust-workspace",
+           "--no-interactive", "--output-format", "stream-json", "--trust-all-tools"]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
+    if resume:
+        cmd += ["--resume-id", resume]
+    if append_system_prompt:
+        prompt = append_system_prompt + "\n\n" + prompt
+    if json_schema:
+        prompt += "\n\nReturn only JSON matching this schema:\n" + json.dumps(json_schema)
+
+    def write(proc, text):
+        proc.stdin.write(text)
+        proc.stdin.close()
+
+    def finish(state):
+        payload = state.get("payload")
+        if payload and json_schema and not payload.get("is_error"):
+            try:
+                payload["structured_output"] = json.loads(payload["result"])
+            except ValueError:
+                payload.update(is_error=True, result="Kiro returned invalid structured JSON")
+        if payload:
+            payload["context_window"] = window
+        percent = state.get("context_percent")
+        return payload, int(window * percent / 100) if window and percent is not None else None
+
+    def handle(line, state, progress, key):
+        state["expected_model"], state["expected_effort"] = model, effort
+        _handle_kiro_line(line, state, progress, key)
+
+    return _run_process("kiro", cmd, prompt, write=write, steerable=False,
+        handler=handle, finish=finish, cwd=cwd, timeout=timeout,
+        idle_timeout=idle_timeout, on_progress=on_progress, cancel_key=cancel_key, timing=timing)
 
 
 def _toml_string(text: str) -> str:
@@ -1479,7 +1646,7 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                 _active[cancel_key] = {"proc": proc, "cancelled": cancelled,
                                         "steer_queue": steer_queue,
                                         "accepting_steers": steerable, "progress": "",
-                                        "process_group": _private_scratch() is not None}
+                                        "process_group": _private_scratch() is not None or engine == "kiro"}
 
         _write_user_message(prompt)
 
@@ -1542,6 +1709,12 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
             if debug_trace:
                 debug_trace.emit("stdout", line)
             handler(line, state, on_progress, cancel_key)
+            if state.get("abort"):
+                if engine == "kiro":
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                break
 
             if state["payload"] is not None and _waiting_on_work(state):
                 # A result while background work is still out is a pause, not
@@ -1627,6 +1800,13 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
         return (124, None, None, "".join(out_lines),
                 f"{engine} {timeout_reason}", cancelled.is_set())
     finally:
+        if engine == "kiro" and proc is not None:
+            # The CLI can spawn shell children. Kill the process group even
+            # when the CLI itself already exited after a timeout/cancel.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            if proc.poll() is None:
+                proc.wait(timeout=5)
         if cancel_key:
             with _active_lock:
                 if _active.get(cancel_key, {}).get("proc") is proc:
@@ -1750,6 +1930,7 @@ def _ok_result(payload: dict, engine: str, model: str | None,
         denials=payload.get("permission_denials") or [],
         context_tokens=context_tokens,
         context_window=payload.get("context_window") or (max(windows) if windows else None),
+        credits_used=payload.get("credits_used"),
     )
     return result, usage
 
@@ -1772,6 +1953,12 @@ def _session_from_stream(stream: str) -> str | None:
             return event.get("session_id") or event.get("thread_id")
         if isinstance(event, dict):
             params = event.get("params") or {}
+            if event.get("type") in ("sessionUpdate", "runFinished"):
+                session = (event.get("data") or {}).get("sessionId")
+                if session:
+                    return session
+            if event.get("sessionId") or params.get("sessionId"):
+                return event.get("sessionId") or params["sessionId"]
             if params.get("threadId"):
                 return params["threadId"]
             if event.get("method") == "thread/started":
@@ -1845,7 +2032,7 @@ def think(prompt: str, *, label: str,
     `label` is what shows up in the runs table — use `cycle:dawn`,
     `collector:opportunities`, `ask`, so spend can be attributed later.
 
-    `engine` is "claude" or "codex"; None means `engines.default_engine` from
+    `engine` is "claude", "codex" or "kiro"; None means `engines.default_engine` from
     the config. `model` and `effort` are read as belonging to that engine:
     a model name is passed through as given, and None means the engine's
     configured model (`engines.claude.model` for claude, `engines.codex.model`
@@ -1884,6 +2071,9 @@ def think(prompt: str, *, label: str,
     session id means nothing to the other one.
     """
     if private is not None:
+        if resolve_engine(engine) == "kiro":
+            return Result(ok=False, engine="kiro", model=model,
+                          error="Kiro private sessions are not supported; choose Claude or Codex.")
         reason = private_mod.unavailable()
         if reason:
             return Result(ok=False, engine=engine or "", model=model, error=reason)
@@ -1947,6 +2137,16 @@ def think(prompt: str, *, label: str,
         add_dirs.append(home)
 
     def _run_launch(text: str, resume_id: str | None, timing: dict):
+        if engine == "kiro":
+            try:
+                return _run_kiro(text, model=model, effort=effort, cwd=cwd,
+                    timeout=timeout, idle_timeout=idle_timeout, resume=resume_id,
+                    append_system_prompt=append_system_prompt, json_schema=json_schema,
+                    allowed_tools=allowed_tools, permission_mode=permission_mode,
+                    on_progress=on_progress, cancel_key=cancel_key, timing=timing, lean=lean)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                return (1, {"is_error": True, "result": "Kiro launch failed: " + str(exc),
+                            "session_id": resume_id}, None, "", "", False)
         if engine == "codex":
             runner = _run_codex_app_server if codex_transport == "app-server" else _run_codex
             return runner(
@@ -1993,7 +2193,8 @@ def think(prompt: str, *, label: str,
                 duration_ms=elapsed, exit_code=code,
                 error="cancelled by user")
         return Result(ok=False, engine=engine, model=model, duration_ms=elapsed,
-                      error="cancelled by user", cancelled=True)
+                      error="cancelled by user", cancelled=True,
+                      session_id=_session_from_stream(out))
 
     # The empty-result anomaly is a claude-code CLI bug (see _is_anomalous);
     # Codex reports no cost at all, so its zero-cost half would fire on every
@@ -2004,6 +2205,9 @@ def think(prompt: str, *, label: str,
     if payload and not payload.get("is_error") and code == 0 and not anomalous:
         result, usage = _ok_result(payload, engine, model, payload.get("duration_ms", elapsed),
                                    context_tokens)
+        if engine == "kiro":
+            from . import kiro
+            kiro.record(result, prompt, label)
         _record(timing=timing, label=label, engine=engine, model=model,
                 session_id=result.session_id, duration_ms=result.duration_ms,
                 cost_usd=result.cost_usd,
@@ -2113,14 +2317,19 @@ def interactive(engine: str | None = None) -> int:
     engine = resolve_engine(engine)
     settings = config.engine_settings(engine)
     cmd = [settings.get("cmd") or engine]
+    if engine == "kiro":
+        from . import kiro
+        name = kiro.profile()
+        kiro.verify_workspace(name, config.ROOT)
+        cmd += ["chat", "--v3", "--mode", "default", "--agent", name, "--trust-workspace"]
     if engine == "codex":
         cmd += ["--dangerously-bypass-hook-trust", "-c", 'project_doc_fallback_filenames=["CLAUDE.md"]']
     if settings.get("model"):
         cmd += ["--model", settings["model"]]
     effort = normalize_effort(settings.get("effort"))
     if effort:
-        if engine == "claude":
-            cmd += ["--effort", claude_effort(effort)]
+        if engine in ("claude", "kiro"):
+            cmd += ["--effort", claude_effort(effort) if engine == "claude" else effort]
         else:
             cmd += ["-c", "model_reasoning_effort=" + json.dumps(codex_effort(effort))]
     return subprocess.call(cmd, cwd=config.ROOT, env=config.agent_env())

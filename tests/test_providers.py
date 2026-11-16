@@ -70,7 +70,7 @@ class Providers(unittest.TestCase):
     def test_both_requires_an_explicit_default_and_allows_either(self):
         self.assertFalse(self.choose('Both').ok)
         self.assertFalse(config.CONFIG_PATH.exists())
-        for provider in config.ENGINE_NAMES:
+        for provider in ('claude', 'codex'):
             self.assertTrue(self.choose('Both', default_engine=provider).ok)
             self.assertEqual(config.default_engine(), provider)
 
@@ -147,11 +147,11 @@ class Providers(unittest.TestCase):
 
     def test_terminal_launches_either_cli_with_its_own_settings(self):
         for provider in config.ENGINE_NAMES:
-            self.choose('Claude only' if provider == 'claude' else 'Codex only')
+            self.choose({'claude':'Claude only','codex':'Codex only','kiro':'Kiro only'}[provider])
             with mock.patch.object(think.subprocess, 'call', return_value=0) as call:
                 self.assertEqual(think.interactive(), 0)
             args = call.call_args.args[0]
-            self.assertEqual(args[0], provider)
+            self.assertEqual(args[0], "kiro-cli" if provider == "kiro" else provider)
             self.assertNotIn('--model', args)
             if provider == 'codex':
                 self.assertIn('project_doc_fallback_filenames=["CLAUDE.md"]', args)
@@ -167,7 +167,7 @@ class Providers(unittest.TestCase):
     def test_telegram_catalog_only_asks_enabled_provider(self):
         tg = load(ROOT / 'bin' / 'herald-telegram', 'tg_providers_catalog')
         for provider in config.ENGINE_NAMES:
-            self.choose('Claude only' if provider == 'claude' else 'Codex only')
+            self.choose({'claude':'Claude only','codex':'Codex only','kiro':'Kiro only'}[provider])
             with mock.patch.object(think, 'available_models', return_value=[]) as catalog:
                 rows, errors = tg._model_catalog()
             self.assertEqual(errors, [])
@@ -182,7 +182,7 @@ class Providers(unittest.TestCase):
         working = mock.MagicMock()
         working.__enter__.return_value.elapsed = 0
         for provider in config.ENGINE_NAMES:
-            self.choose('Claude only' if provider == 'claude' else 'Codex only')
+            self.choose({'claude':'Claude only','codex':'Codex only','kiro':'Kiro only'}[provider])
             with mock.patch.object(tg.config, 'secret', return_value=42), \
                     mock.patch.object(tg, 'send', return_value=[]), \
                     mock.patch.object(tg, 'delta_for', return_value=''), \

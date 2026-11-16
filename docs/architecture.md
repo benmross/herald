@@ -753,3 +753,33 @@ line is the entire security model.
 - **No web dashboard.** The surfaces people use are a chat thread and a
   terminal. The one web page Herald has is the setup wizard, which exists because
   pasting JSON into a shell prompt is not a thing to ask of anyone.
+
+### Optional Kiro native transport
+
+`kiro` is an explicitly enabled third engine. Existing installs whose
+`engines.enabled` is null retain Claude and Codex. Set `engines.kiro.model` and
+`engines.kiro.effort` independently; `/kiro` selects it in a Telegram topic.
+`herald attach --engine kiro` opens the first-party terminal interface.
+
+Only `think.py` launches `kiro-cli chat --v3`, using its native subscription
+login and streaming ACP events. API keys are removed from the environment.
+The adapter verifies the selected model and effort at the turn boundary and
+fails if either was not confirmed. It never retries on Auto or another model.
+
+Herald generates an install-specific global agent profile with its constitution,
+skills, ordinary file and shell tools, and an inline PreToolUse guard. The
+profile travels across working directories; workspace name collisions fail
+closed. The guard normalizes native tools into Herald's existing Google tiers
+and machine safety rules. Unknown tools fail closed. Powers, MCP discovery,
+specs, sub-agents and background shell calls are excluded. Private sessions
+are refused until Kiro's native persistence can be isolated correctly.
+
+The native session ID supports resume. Conversation text is mirrored in
+`ledger/raw/kiro-sessions/` for the normal transcript reader. Native per-turn
+credit receipts are saved as `subscription_usage` consumption facts, separate
+from dollar cost and token counts. `/usage kiro` reads the monthly credit pane
+in a disposable tmux server without inference. Its reset date is the CLI's
+estimate. Auto requires a fresh nonempty credit balance before choosing Kiro;
+five-hour quota anchors do not apply. Structured JSON uses a prompt instruction
+and JSON parsing, without a native schema guarantee. Mid-turn steering and
+extension-specific Claude/Codex hooks are not translated by this adapter.

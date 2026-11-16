@@ -154,6 +154,21 @@ def parse_claude(screen: str, now: dt.datetime | None = None) -> list[dict]:
     return windows
 
 
+def parse_kiro(screen: str) -> list[dict]:
+    """Kiro V3's monthly subscription credit pane, strictly parsed."""
+    balance = re.search(r"Credits\s*\(([\d,.]+) of ([\d,.]+) covered in plan\)", screen)
+    reset = re.search(r"Estimated Usage\s*\|\s*resets on (\d{4}-\d{2}-\d{2})", screen)
+    if not balance or not reset:
+        raise UsageParseError("Cannot parse Kiro /usage pane; no fresh reading saved")
+    used, total = (float(n.replace(",", "")) for n in balance.groups())
+    if total <= 0 or used < 0:
+        raise UsageParseError("Kiro returned invalid credit values")
+    resets = dt.datetime.fromisoformat(reset[1]).replace(tzinfo=config.tz()).timestamp()
+    return [{"key": "monthly", "label": "Monthly credits", "used_percent": used / total * 100,
+             "resets_at": resets, "window_minutes": None, "credits_used": used,
+             "credits_total": total}]
+
+
 def parse_codex(payload: dict) -> list[dict]:
     buckets = payload.get("rateLimitsByLimitId")
     if buckets is None:
@@ -205,7 +220,7 @@ def refresh(con, engine: str) -> dict:
             raise UsageError(f"{engine} usage check is already running; retry shortly") from None
         try:
             raw = think.subscription_usage(engine)
-            windows = parse_claude(raw) if engine == "claude" else parse_codex(raw)
+            windows = {"claude": parse_claude, "codex": parse_codex, "kiro": parse_kiro}[engine](raw)
             now = dt.datetime.now(config.tz()).timestamp()
             if any(w["resets_at"] is not None and w["resets_at"] <= now for w in windows):
                 raise UsageError(f"{engine} returned expired quota windows; no fresh reading saved")
@@ -369,6 +384,11 @@ def report(con, engines=None, *, force: bool = False, cached_only: bool = False)
             w["resets_at"] is not None and w["resets_at"] <= now for w in snapshot["windows"])
         lines.append(f"{engine} ({'STALE, ' if stale or status and not status['ok'] else ''}sampled {age}m ago)")
         for window in snapshot["windows"]:
+            if "credits_total" in window:
+                reset = dt.datetime.fromtimestamp(window["resets_at"], config.tz())
+                lines.append(f"  {window['credits_used']:g} / {window['credits_total']:g} credits used; "
+                             f"estimated reset {reset.strftime('%a %d %b')}")
+                continue
             if window["resets_at"] is None:
                 lines.append(f"  {window['label']}: not started; begins with the next message")
                 continue

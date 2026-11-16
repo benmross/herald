@@ -134,6 +134,8 @@ def turns(path: pathlib.Path) -> list[dict]:
 def locate(session_ids=None) -> dict[str, pathlib.Path]:
     """{session id: transcript}, for sessions run from this checkout."""
     found = {}
+    for path in (config.RAW / "kiro-sessions").glob("*.jsonl"):
+        found[path.stem] = path
     slug = str(config.ROOT).replace("/", "-")
     for path in (pathlib.Path.home() / ".claude" / "projects" / slug).glob("*.jsonl"):
         found[path.stem] = path

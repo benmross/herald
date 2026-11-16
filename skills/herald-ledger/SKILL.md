@@ -1,6 +1,6 @@
 ---
 name: herald-ledger
-description: Query what Herald knows about the person it works for: deadlines and due dates, every calendar and event, recent mail and which threads await a reply, messages and who is waiting on a reply, tasks, contacts, where they have been, GitHub activity, and tracked opportunities with their deadlines. Use this for any question about their schedule, deadlines, inbox, messages, commitments, whereabouts, opportunities, or what they have been working on, and before answering anything about "this week", "what's due", "who am I forgetting", "did I reply to", or "where was I". Also covers Herald's own spend and collector health.
+description: "Query what Herald knows about the person it works for: deadlines and due dates, every calendar and event, recent mail and which threads await a reply, messages and who is waiting on a reply, tasks, contacts, where they have been, GitHub activity, and tracked opportunities with their deadlines. Use this for any question about their schedule, deadlines, inbox, messages, commitments, whereabouts, opportunities, or what they have been working on, and before answering anything about \"this week\", \"what's due\", \"who am I forgetting\", \"did I reply to\", or \"where was I\". Also covers Herald's own spend and collector health."
 ---
 
 # The ledger

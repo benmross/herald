@@ -22,8 +22,8 @@ before every push and restart; `herald restart` checks automatically. Never
 weaken a safety rule without the user's instruction. Stored-data or path changes
 need a migration that preserves existing installs.
 
-Only `lib/herald/think.py` launches model engines, through first-party `claude`
-or `codex` subprocesses. Never call a model HTTP API or use subscription OAuth
+Only `lib/herald/think.py` launches model engines, through first-party `claude`,
+`codex` or `kiro-cli` subprocesses. Never call a model HTTP API or use subscription OAuth
 in an SDK or other caller. Never use `--bare` or supply model API keys. Use the
 chosen engine, model and effort. A failure never switches providers, except that
 an install with `engines.auto.enabled` moves an unpinned Telegram topic on a
@@ -103,7 +103,7 @@ Questions use `herald ask 'question' --option 'choice' --option 'choice'`, or
 with `herald ask --result <id>`. `--wait` waits, `--timeout` sets expiry.
 Silence, expiry and ordinary text replies never count as approval.
 
-The guard enforces Google write routing and machine safety on both engines:
+The guard enforces Google write routing and machine safety on all engines:
 egress, remote execution, tunnels, secrets, destructive git, protected paths and
 self-protection. Never rephrase a blocked command to evade it. For a requested
 action, `herald safety allow <rule> --why '...'` asks for a ten-minute exception;

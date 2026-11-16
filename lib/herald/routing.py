@@ -39,7 +39,21 @@ def _limit_until(con, engine: str, now: float) -> float | None:
 def alternative(con, engine: str) -> str | None:
     now = dt.datetime.now(config.tz()).timestamp()
     return next((e for e in config.enabled_engines()
-                 if e != engine and _limit_until(con, e, now) is None), None)
+                 if e != engine and _eligible(con, e, now) and _limit_until(con, e, now) is None), None)
+
+
+def _eligible(con, engine, now):
+    if engine != "kiro":
+        return True
+    # A newly enabled credit plan must be sampled before Auto can use it.
+    row = con.execute("SELECT data FROM facts WHERE source=? AND kind='snapshot' AND external_id=?",
+                      (usage.SOURCE, engine)).fetchone()
+    if not row:
+        return False
+    snapshot = json.loads(row[0])
+    return (now - snapshot["sampled_at"] <= float(config.get("usage.max_age_minutes", 45)) * 60
+            and any(w.get("credits_total", 0) > w.get("credits_used", 0)
+                    and (w.get("resets_at") or 0) > now for w in snapshot["windows"]))
 
 
 def before_turn(con, engine: str) -> tuple[str, float] | None:
