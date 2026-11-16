@@ -64,11 +64,12 @@ conversation.
 
 | Telegram command | What it does |
 |---|---|
-| `/new` | start the topic over |
+| `/new` | forget this conversation; model and thinking level stay |
 | `/stop` | cancel the running turn |
 | `/private` | read-only and unrecorded until `/private off` |
-| `/models`, `/effort` | pick a model and thinking level |
-| `/claude`, `/codex` | pick a provider for this topic |
+| `/models`, `/effort` | pick a model and thinking level; the conversation continues on the same provider |
+| `/claude`, `/codex` | switch provider; a new conversation starts with a summary of the topic's work |
+| `/context` | what this topic is using and how full its memory is (`/debug` for the technical report) |
 | `/update` | update Herald and its extensions |
 | `/obligations` | what you owe people |
 

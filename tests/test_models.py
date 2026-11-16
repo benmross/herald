@@ -93,8 +93,16 @@ class TelegramModels(unittest.TestCase):
         for p in (patch.object(self.tg.config,'secret',return_value=42),
                   patch.object(self.tg,'api',side_effect=api),
                   patch.object(self.tg,'send',side_effect=lambda chat,text,*a,**k:self.sent.append(text)),
-                  patch.object(self.tg,'_model_catalog',return_value=(ROWS,[]))):
+                  patch.object(self.tg,'_model_catalog',return_value=(ROWS,[])),
+                  patch.object(self.tg.config,'get',side_effect=self.config_get)):
             p.start(); self.addCleanup(p.stop)
+
+    real_get=staticmethod(importlib.import_module('herald.config').get)
+
+    def config_get(self,key,default=None):
+        """This server's own engine models and levels must not decide a test."""
+        if key.startswith('engines.') and key.endswith(('.model','.effort')):return default
+        return self.real_get(key,default)
 
     def menu(self):
         self.tg._handle_models({'message':self.msg},self.state)
@@ -279,7 +287,7 @@ class TelegramModels(unittest.TestCase):
         buttons=next(kw['reply_markup']['inline_keyboard']
                for method,kw in reversed(self.calls) if kw.get('reply_markup',{}).get('inline_keyboard'))
         labels=[b['text'] for row in buttons for b in row]
-        self.assertEqual(labels,['CLI default','low','high','max','ultra'])
+        self.assertEqual(labels,['Codex decides','low','high','max','ultra'])
         self.assertTrue(all(len(b['callback_data'].encode())<=64 for row in buttons for b in row))
 
     def test_typed_model_selection_also_opens_effort_picker(self):
@@ -362,12 +370,13 @@ class TelegramModels(unittest.TestCase):
         self.tg.handle({'message':self.msg},self.state)
         self.assertEqual(self.state['threads'][self.key]['effort'],'max')
 
-    def test_model_shortcut_does_not_carry_an_incompatible_level(self):
+    def test_switching_engine_uses_the_new_engines_configured_level(self):
         self.effort_menu()
         self.state['threads'][self.key]['effort']='ultra'
         self.msg['text']='/opus'
         self.tg.handle({'message':self.msg},self.state)
-        self.assertEqual(self.state['threads'][self.key]['effort'],'auto')
+        self.assertIsNone(self.state['threads'][self.key]['effort'])
+        self.assertIn('earlier choice of ultra',self.sent[-1])
         self.assertNotIn('effort_caps',self.state['threads'][self.key])
 
     def test_model_and_effort_choices_edit_the_same_message_without_new_messages(self):
@@ -379,7 +388,7 @@ class TelegramModels(unittest.TestCase):
         self.assertEqual(len(self.sent),sends)
         self.assertFalse(any(method=='sendMessage' for method,kw in model_calls))
         edit=next(kw for method,kw in model_calls if method=='editMessageText')
-        self.assertEqual(edit['message_id'],77);self.assertIn('codex/gpt-probe',edit['text'])
+        self.assertEqual(edit['message_id'],77);self.assertIn('Codex gpt-probe',edit['text'])
         self.assertTrue(all(b['callback_data'].startswith('effort:')
                             for row in edit['reply_markup']['inline_keyboard'] for b in row))
         token=next(iter(self.state['effort_menus']))
@@ -391,8 +400,8 @@ class TelegramModels(unittest.TestCase):
         self.assertEqual(len(self.sent),sends)
         self.assertFalse(any(method=='sendMessage' for method,kw in effort_calls))
         edit=next(kw for method,kw in effort_calls if method=='editMessageText')
-        self.assertEqual(edit['message_id'],77);self.assertIn('codex/gpt-probe',edit['text'])
-        self.assertIn('Thinking at max',edit['text'])
+        self.assertEqual(edit['message_id'],77);self.assertIn('Codex gpt-probe',edit['text'])
+        self.assertIn('Thinking level set to max',edit['text'])
         self.assertEqual(edit['reply_markup'],{'inline_keyboard':[]})
 
     def test_model_without_effort_updates_original_and_removes_all_buttons(self):
@@ -400,7 +409,7 @@ class TelegramModels(unittest.TestCase):
         self.tg._handle_model_callback(update,self.state)
         self.assertEqual(len(self.sent),sends)
         edit=next(kw for method,kw in self.calls[calls:] if method=='editMessageText')
-        self.assertIn('claude/haiku',edit['text']);self.assertIn('no adjustable',edit['text'])
+        self.assertIn('Claude Haiku · no adjustable',edit['text']);self.assertIn('no adjustable',edit['text'])
         self.assertEqual(edit['reply_markup'],{'inline_keyboard':[]})
         self.assertNotIn('effort_menus',self.state)
 

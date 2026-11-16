@@ -57,7 +57,7 @@ from datetime import datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, usage  # noqa: E402
+from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, topicstatus, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -137,21 +137,26 @@ def interactive_tools(engine):
 # Every other command still works when typed. Topics and these three are all
 # most people should need, so they are all the default menu offers;
 # telegram.command_menu "full" adds the rest for someone who uses them.
-MENU = (("new", "Start this topic over"), ("stop", "Stop what I'm doing"),
+MENU = (("new", "Forget this conversation, keep settings"), ("stop", "Stop what I'm doing"),
         ("private", "Private conversation, nothing saved"))
 FULL_MENU = (*MENU,
              ("update", "Update Herald to the latest release"),
              ("obligations", "What you owe and this week's deadlines"),
              ("usage", "Subscription usage and reset times"),
-             ("models", "Choose a model and thinking level"),
-             ("effort", "Choose a thinking level"),
-             ("low", "Low effort"), ("medium", "Medium effort"), ("high", "High effort"),
-             ("xhigh", "Extra-high effort"), ("max", "Max effort"), ("ultra", "Ultra effort"),
-             ("claude", "Use Claude in this topic"), ("codex", "Use Codex in this topic"), ("kiro", "Use Kiro in this topic"),
-             ("fable", "Use Fable"), ("opus", "Use Opus"), ("sonnet", "Use Sonnet"),
-             ("compact", "Compact this conversation"),
-             ("debug", "This conversation's context and latency"),
-             ("session", "Same as /debug"), ("context", "Same as /debug"),
+             ("models", "Choose model and thinking level"),
+             ("effort", "Thinking level"),
+             ("low", "Thinking: low"), ("medium", "Thinking: medium"), ("high", "Thinking: high"),
+             ("xhigh", "Thinking: extra high"), ("max", "Thinking: max"), ("ultra", "Thinking: ultra"),
+             ("claude", "Switch to Claude (new conversation, keeps a summary)"),
+             ("codex", "Switch to Codex (new conversation, keeps a summary)"),
+             ("kiro", "Switch to Kiro (new conversation, keeps a summary)"),
+             ("fable", "Claude Fable, same conversation if on Claude"),
+             ("opus", "Claude Opus, same conversation if on Claude"),
+             ("sonnet", "Claude Sonnet, same conversation if on Claude"),
+             ("compact", "Shrink this conversation, keep going"),
+             ("context", "What this topic is using and remembering"),
+             ("debug", "Technical report: tokens, timing, session id"),
+             ("session", "Same as /debug"),
              ("clear", "Same as /new"), ("reset", "Same as /new"))
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
 ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex", "/kiro": "kiro"}
@@ -161,7 +166,7 @@ EFFORT_COMMANDS = {f"/{level}": level for level in think.EFFORTS}
 EFFORT_COMMANDS["/effort"] = None
 # Answered by this process from `runs`, never by a model: asking how big the
 # context is should not itself grow the context, or wait behind the turn it is
-# asking about.
+# asking about. /context is the plain summary; /debug the technical report.
 DEBUG_COMMANDS = ("/debug", "/session", "/context")
 # The open obligations and this week's deadlines, read straight from the
 # ledger. Asking what you owe should not cost a model turn.
@@ -1321,6 +1326,7 @@ def handle(update: dict, state: dict) -> None:
 
     if command_word(text) in ("/new", "/clear", "/reset"):
         ended, turns = ts.get("session_id"), ts.get("turns", 0)
+        had = topicstatus.has_conversation(ts) or bool(ts.get("work"))
         ts["previous_session"] = ended or ts.get("previous_session")
         ts["session_id"] = None
         ts["turns"] = 0
@@ -1329,8 +1335,7 @@ def handle(update: dict, state: dict) -> None:
         ts.pop("handoff_from", None)
         ts.pop("work", None)
         _clear_context(ts)
-        note = send(chat_id, "Fresh start in this topic. To go back, reply to "
-                             "any earlier message here.", thread_id)
+        note = send(chat_id, topicstatus.new_note(ts, had), thread_id)
         # The command and its answer are the last two messages of the
         # conversation they ended, so a reply to either one resumes it. This
         # also saves the session itself, which is what makes a conversation
@@ -1356,8 +1361,17 @@ def handle(update: dict, state: dict) -> None:
         except ValueError as exc:
             send(chat_id, str(exc), thread_id)
             return
-        switched = engine != (ts.get("engine") or config.default_engine())
-        if ts.get("effort_caps") and (switched or model != ts.get("model")):
+        before = ts.get("engine") or config.default_engine()
+        switched = engine != before
+        had = topicstatus.has_conversation(ts)
+        dropped = None
+        if switched:
+            # A level is chosen for one engine's scale; the new engine uses
+            # its own configured level, and the reply says so.
+            dropped = ts.get("effort") if ts.get("effort") not in (None, "auto") else None
+            ts.pop("effort_caps", None)
+            ts["effort"] = None
+        elif ts.get("effort_caps") and model != ts.get("model"):
             ts.pop("effort_caps", None)
             ts["effort"] = "auto"
         ts["engine"] = engine
@@ -1365,18 +1379,13 @@ def handle(update: dict, state: dict) -> None:
         ts["pinned"] = True
         if switched:
             # The other engine cannot read this one's transcript, so the
-            # next message starts over from the ledger. Said out loud,
-            # because "same conversation" would be a lie here. The handoff
-            # reads the transcript as text, so it still crosses engines.
+            # next message starts a new session. The handoff reads the old
+            # transcript as text, so a summary of the work still crosses.
             _hand_off(ts, ts.get("session_id"))
             ts["last_ts"] = time.time()
-        shown = f"{engine}/{model}" if model else engine
         _sync_topic_name(ts, key)
-        send(chat_id, f"This topic runs on {shown} from here on, until you "
-                      f"switch it again. "
-                      + ("Fresh session: the other engine's transcript does not "
-                         "carry over, but the ledger does."
-                         if switched else "Same conversation, nothing else changed."),
+        send(chat_id, topicstatus.switch_note(ts, before, had, dropped) if switched else
+             topicstatus.same_conversation_note(ts, f"Model set to {topicstatus.model_name(*topicstatus.resolved(ts)[:2])}."),
              thread_id)
         print(f"[{key}] engine set to {engine}, model {model}")
         return
@@ -1396,10 +1405,10 @@ def handle(update: dict, state: dict) -> None:
             if caps:
                 _show_effort_picker(state, key, msg, caps)
                 return
-            current = ts.get("effort") or "the engine's default"
-            send(chat_id, f"Effort here is {current}. Say /effort followed by "
+            send(chat_id, f"{topicstatus.now(ts)}\nTo change it, say /effort followed by "
                           f"one of {', '.join(think.EFFORTS)}, or the level as "
-                          f"its own command. Use /models to pick from this model's supported levels.", thread_id)
+                          f"its own command, like /high. /models shows the levels "
+                          f"each model supports.", thread_id)
             return
         level = level.strip().lower()
         if caps and "efforts" in caps and level != "auto" and level not in caps["efforts"]:
@@ -1414,7 +1423,7 @@ def handle(update: dict, state: dict) -> None:
                  thread_id)
             return
         ts["effort"] = level
-        send(chat_id, _effort_note(level), thread_id)
+        send(chat_id, _effort_note(ts), thread_id)
         print(f"[{key}] effort set to {level}")
         return
 
@@ -1717,21 +1726,32 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
             handle(_limit_update(chat_id, thread_id, limitchoice.CONTINUE), state)
 
 
-def _select_model(ts: dict, engine: str, model: str) -> str:
+def _select_model(ts: dict, engine: str, model: str, adjust=None) -> str:
+    """Point the topic at a model and describe the result. `adjust(ts)` runs
+    after the move and before the description, for the caller's effort rules."""
     limitresume.cancel(ts)
-    switched = engine != (ts.get("engine") or config.default_engine())
+    before = ts.get("engine") or config.default_engine()
+    switched = engine != before
+    had = topicstatus.has_conversation(ts)
+    dropped = None
+    if switched:
+        dropped = ts.get("effort") if ts.get("effort") not in (None, "auto") else None
+        ts["effort"] = None
     ts.update(engine=engine, model=model, pinned=True)
     if switched:
         _hand_off(ts, ts.get("session_id"))
         ts["last_ts"] = time.time()
-    return (f"This topic now uses {engine}/{model}. " +
-            ("Your next message starts a fresh session; your ledger carries over."
-             if switched else "Your conversation continues."))
+    if adjust:
+        adjust(ts)
+    return (topicstatus.switch_note(ts, before, had, dropped) if switched else
+            topicstatus.same_conversation_note(ts, f"Model set to {topicstatus.model_name(engine, model)}."))
 
 
-def _effort_note(level: str) -> str:
-    return (("Using the CLI's default thinking level." if level == "auto" else
-             f"Thinking at {level} in this topic.") + " Your conversation continues.")
+def _effort_note(ts: dict) -> str:
+    engine, _, effort = topicstatus.resolved(ts)
+    return topicstatus.same_conversation_note(
+        ts, f"Thinking level set to {effort}." if effort else
+        f"Thinking level set to {topicstatus.engine_name(engine)}'s default.")
 
 
 def _replace_picker(msg: dict, text: str, keyboard: list | None = None) -> dict | None:
@@ -1760,16 +1780,18 @@ def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict,
             send(chat_id, text, thread_id)
         return
     ts = topic_state(state, key)
-    current = "CLI default" if ts.get("effort") == "auto" else ts.get("effort") or "configured default"
+    _, _, effort = topicstatus.resolved(ts)
+    current = effort or f"{topicstatus.engine_name(choice['engine'])}'s default"
     levels = ["auto", *dict.fromkeys(choice["efforts"])]
     menus = state.setdefault("effort_menus", {})
     for token, menu in list(menus.items()):
         if time.time() - menu.get("created", 0) > 86400:
             menus.pop(token, None)
     token = secrets.token_hex(8)
-    buttons = [{"text": "CLI default" if level == "auto" else level,
+    buttons = [{"text": f"{topicstatus.engine_name(choice['engine'])} decides" if level == "auto" else level,
                 "callback_data": f"effort:{token}:{i}"} for i, level in enumerate(levels)]
-    text = f"Choose a thinking level for {choice['engine']}/{choice['model']}. Current: {current}."
+    text = (f"Choose a thinking level for {topicstatus.model_name(choice['engine'], choice['model'])}. "
+            f"Current: {current}. Changing it keeps the conversation.")
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     if selection_note is not None:
         response = _replace_picker(msg, selection_note + "\n\n" + text, keyboard)
@@ -1803,18 +1825,23 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
             send((msg.get("chat") or {})["id"], text, msg.get("message_thread_id"))
         return
     ts = topic_state(state, key)
-    note = _select_model(ts, choice["engine"], choice["model"])
+
+    def adjust(ts: dict) -> None:
+        if "efforts" in choice:
+            ts["effort_caps"] = choice
+            configured = config.get(f"engines.{choice['engine']}.effort")
+            if (choice["engine"] == "kiro" and configured in choice["efforts"]
+                    and ts.get("effort") != "auto" and ts.get("effort") not in choice["efforts"]):
+                ts.pop("effort", None)  # Use the configured effort, not an accidental CLI default.
+            elif ts.get("effort") is None and configured in choice["efforts"]:
+                pass  # the configured level applies to this model too
+            elif ts.get("effort") not in choice["efforts"]:
+                ts["effort"] = "auto"
+        else:
+            ts.pop("effort_caps", None)
+
+    note = _select_model(ts, choice["engine"], choice["model"], adjust)
     _sync_topic_name(ts, key)
-    if "efforts" in choice:
-        ts["effort_caps"] = choice
-        configured = config.get(f"engines.{choice['engine']}.effort")
-        if (choice["engine"] == "kiro" and configured in choice["efforts"]
-                and ts.get("effort") != "auto" and ts.get("effort") not in choice["efforts"]):
-            ts.pop("effort", None)  # Use the configured effort, not an accidental CLI default.
-        elif ts.get("effort") not in choice["efforts"]:
-            ts["effort"] = "auto"
-    else:
-        ts.pop("effort_caps", None)
     if not edit_picker:
         send((msg.get("chat") or {})["id"], note, msg.get("message_thread_id"))
     _show_effort_picker(state, key, msg, choice, selection_note=note if edit_picker else None)
@@ -1855,8 +1882,10 @@ def _handle_models(update: dict, state: dict) -> None:
             return
         send(chat_id, "Choose a model below, or use /models engine/model.", msg.get("message_thread_id"))
     engine = ts.get("engine") or config.default_engine()
-    current = ts.get("model") or (config.get(f"engines.{engine}.model") or "CLI default")
-    lines = [f"This topic uses {engine}/{current}.", "Tap a model to switch, or use /models engine/model."]
+    lines = [topicstatus.now(ts),
+             "A model from the same provider keeps the conversation. Another provider "
+             "starts a new one with a summary of this topic's work.",
+             "Tap a model to switch, or use /models engine/model."]
     for vendor in config.enabled_engines():
         vendor_rows = [r for r in rows if r["engine"] == vendor]
         if vendor_rows:
@@ -1951,7 +1980,7 @@ def _handle_effort_callback(update: dict, state: dict) -> None:
         level = menu["choices"][int(match[2])]
         limitresume.cancel(ts)
         ts["effort"] = level
-        _replace_picker(msg, f"This topic uses {menu['engine']}/{menu['model']}.\n\n" + _effort_note(level))
+        _replace_picker(msg, _effort_note(ts))
 
 
 def _checkpoint(state: dict) -> None:
@@ -2239,6 +2268,14 @@ def _handle_debug(update: dict, key: str, state: dict) -> None:
                  if a.get("service") == "telegram" and a.get("key") == key), None)
     running = ({"seconds": time.time() - live["started"],
                 "step": think.current_progress(key)} if live else None)
+    if (msg.get("text") or "").strip().lower().split("@")[0] == "/context":
+        try:
+            with db.session() as con:
+                text = topicstatus.context_summary(ts, con, now_ts=time.time(), running=running)
+        except Exception as exc:  # noqa: BLE001 -- a report, never worth a crash
+            text = f"/context failed: {type(exc).__name__}: {exc}"
+        send(chat_id, text, msg.get("message_thread_id"), markup=False)
+        return
     try:
         with db.session() as con:
             engine = ts.get("engine") or config.default_engine()
