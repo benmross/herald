@@ -1822,6 +1822,7 @@ def _handle_models(update: dict, state: dict) -> None:
     for token, menu in list(menus.items()):
         if time.time() - menu.get("created", 0) > 86400:
             menus.pop(token, None)
+    group = secrets.token_hex(8)
     for offset in range(0, len(rows), 40):
         choices = rows[offset:offset + 40]
         token = secrets.token_hex(8)
@@ -1832,7 +1833,7 @@ def _handle_models(update: dict, state: dict) -> None:
                        reply_markup={"inline_keyboard": keyboard},
                        **({"message_thread_id": msg["message_thread_id"]} if msg.get("message_thread_id") else {}))
         if response and response.get("ok"):
-            menus[token] = {"key": key, "message_id": response["result"]["message_id"],
+            menus[token] = {"key": key, "group": group, "message_id": response["result"]["message_id"],
                             "created": time.time(), "choices": choices}
     while len(menus) > 50:
         menus.pop(min(menus, key=lambda token: menus[token]["created"]))
@@ -1857,7 +1858,22 @@ def _handle_model_callback(update: dict, state: dict) -> None:
     with _lock_for(key):
         if menu.get("selected"):
             return  # Another tap on this message already won the topic lock.
-        menu["selected"] = True
+        # Every page from this /models invocation is one choice. Consume all
+        # pages under the topic lock before doing network I/O, so a queued tap
+        # on another page cannot replace the selection. Ungrouped saved menus
+        # predate this field; retire those for this topic together as well.
+        siblings = [m for m in state["model_menus"].values()
+                    if m.get("key") == key and m.get("group") == menu.get("group")]
+        for sibling in siblings:
+            sibling["selected"] = True
+        for sibling in siblings:
+            if sibling["message_id"] == msg["message_id"]:
+                continue
+            response = api("deleteMessage", chat_id=msg["chat"]["id"],
+                           message_id=sibling["message_id"])
+            if not response or not response.get("ok"):
+                api("editMessageReplyMarkup", chat_id=msg["chat"]["id"],
+                    message_id=sibling["message_id"], reply_markup={"inline_keyboard": []})
         choice = menu["choices"][int(match[2])]
         _choose_model(state, key, msg, choice, edit_picker=True)
 

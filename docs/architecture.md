@@ -442,7 +442,10 @@ Selections wait for the topic's current turn before changing its engine or
 model. A model change within one engine preserves its transcript; changing
 engines clears the session pointer. The existing engine commands still work.
 Choosing a model edits the original picker to show the selection and its
-thinking-level buttons. Choosing a level edits that same message again and
+thinking-level buttons and removes the other pages of that picker. All pages
+share a saved group, so a queued tap on another page cannot change the choice.
+Older saved pickers without a group are retired together within their topic.
+Choosing a level edits that same message again and
 removes the buttons. Consumed menus reject subsequent taps, including after
 a bridge restart. `/effort` opens a new picker for the current model.
 

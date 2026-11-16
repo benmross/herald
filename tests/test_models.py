@@ -116,6 +116,70 @@ class TelegramModels(unittest.TestCase):
         ts=self.state['threads'][self.key]
         self.assertEqual(ts['model'],'haiku');self.assertEqual(ts['session_id'],'kept');self.assertEqual(ts['turns'],4)
 
+    def paged_menu(self):
+        rows = [dict(ROWS[0], model=f'model-{i}') for i in range(81)]
+        def api(method, **kw):
+            self.calls.append((method, kw))
+            return {'ok': True, 'result': {'message_id': len(self.calls) + 100}}
+        with patch.object(self.tg, 'api', side_effect=api), \
+                patch.object(self.tg, '_model_catalog', return_value=(rows, [])):
+            self.tg._handle_models({'message': self.msg}, self.state)
+        return list(self.state['model_menus'].items())[-3:]
+
+    def page_tap(self, page):
+        token, menu = page
+        return {'callback_query': {'id': 'page-tap', 'from': {'id': 42},
+                'data': f'model:{token}:0',
+                'message': self.msg | {'message_id': menu['message_id']}}}
+
+    def test_selecting_any_page_closes_siblings_and_survives_reload(self):
+        import json
+        for selected in range(3):
+            with self.subTest(selected=selected):
+                self.state['model_menus'] = {}
+                pages = self.paged_menu()
+                restored = json.loads(json.dumps(self.state))
+                calls = len(self.calls)
+                self.tg._handle_model_callback(self.page_tap(pages[selected]), restored)
+                deleted = [kw['message_id'] for method, kw in self.calls[calls:]
+                           if method == 'deleteMessage']
+                self.assertCountEqual(deleted, [m['message_id'] for i, (_, m) in enumerate(pages)
+                                               if i != selected])
+                self.assertTrue(all(m['selected'] for m in restored['model_menus'].values()))
+                restored = json.loads(json.dumps(restored))
+                chosen = restored['threads'][self.key]['model']
+                self.tg._handle_model_callback(self.page_tap(pages[(selected + 1) % 3]), restored)
+                self.assertEqual(restored['threads'][self.key]['model'], chosen)
+
+    def test_separate_picker_and_other_topic_are_left_open(self):
+        earlier = self.paged_menu()
+        pages = self.paged_menu()
+        self.state['model_menus']['other-topic'] = dict(pages[0][1], key='-100:10')
+        self.tg._handle_model_callback(self.page_tap(pages[0]), self.state)
+        self.assertTrue(all(not self.state['model_menus'][t].get('selected') for t, _ in earlier))
+        self.assertFalse(self.state['model_menus']['other-topic'].get('selected'))
+
+    def test_legacy_pages_close_together(self):
+        pages = self.paged_menu()
+        for _, menu in pages:
+            menu.pop('group')
+        self.tg._handle_model_callback(self.page_tap(pages[0]), self.state)
+        self.assertTrue(all(m['selected'] for _, m in pages))
+        self.assertEqual(sum(method == 'deleteMessage' for method, kw in self.calls), 2)
+
+    def test_failed_page_deletion_still_removes_its_buttons(self):
+        pages = self.paged_menu()
+        calls = len(self.calls)
+        def api(method, **kw):
+            self.calls.append((method, kw))
+            return {'ok': method != 'deleteMessage', 'result': {'message_id': 77}}
+        with patch.object(self.tg, 'api', side_effect=api):
+            self.tg._handle_model_callback(self.page_tap(pages[0]), self.state)
+        stripped = [kw for method, kw in self.calls[calls:] if method == 'editMessageReplyMarkup']
+        self.assertCountEqual([kw['message_id'] for kw in stripped],
+                              [m['message_id'] for _, m in pages[1:]])
+        self.assertTrue(all(kw['reply_markup'] == {'inline_keyboard': []} for kw in stripped))
+
     def test_a_saved_menu_still_selects_the_same_model_after_reload(self):
         import json
         update=self.menu()
