@@ -141,6 +141,7 @@ def interactive_tools(engine):
 MENU = (("new", "Start this topic over"), ("stop", "Stop what I'm doing"),
         ("private", "Private conversation, nothing saved"))
 FULL_MENU = (*MENU,
+             ("update", "Update Herald to the latest release"),
              ("obligations", "What you owe and this week's deadlines"),
              ("usage", "Subscription usage and reset times"),
              ("models", "Choose a model and thinking level"),
@@ -169,8 +170,28 @@ OBLIGATION_COMMANDS = ("/obligations",)
 # Built-in commands the bridge answers itself. Extensions register query
 # commands separately; unknown slash words are refused before reaching a model.
 SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private")
+# These commands ask the selected engine to carry out a documented workflow.
+# Keep the original message for history and add these instructions to its turn.
+PROMPT_COMMANDS = {
+    "/update": """The user requests updating this Herald install to the latest tagged release.
+Load the herald-self skill, then run `herald mode` and `herald update --check`.
+If this is a tracking install and a release is available, explain the target
+version briefly and run `herald update` to install it. This command is the user's
+request to update; use the standard updater rather than editing the checkout
+or installing from main. It handles dependencies, migrations, regenerating
+CLAUDE.md, syncing skills, checks and a deferred restart after active turns end.
+If already current, say so. Fork and maintainer installs do not take updates;
+report their mode and any available release, without switching modes or cutting
+a release. If local changes, connectivity, permissions or checks block the
+update, report the exact problem and preserve the checkout and personal data.
+Never reset, discard edits, force a merge or bypass a failed check to update.
+Verify the installed version after success, record the outcome in the ledger,
+and tell the user whether the deferred restart is still pending.
+""",
+}
 COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
-            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, "/models", "/usage")
+            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS,
+            *PROMPT_COMMANDS, "/models", "/usage")
 
 
 def command_menu(setting: str, extension_commands) -> list[dict]:
@@ -1307,6 +1328,9 @@ def handle(update: dict, state: dict) -> None:
 
     config.reload()
     cmd = command_word(text)
+    if cmd in PROMPT_COMMANDS and pv is not None:
+        send(chat_id, "Updating changes files. Use /private off before /update.", thread_id)
+        return
     arg = text.strip().split(None, 1)[1].strip() if len(text.strip().split(None, 1)) > 1 else ""
     if cmd in MODEL_COMMANDS or cmd in ENGINE_COMMANDS:
         if cmd in MODEL_COMMANDS:
@@ -1441,6 +1465,9 @@ def handle(update: dict, state: dict) -> None:
         print(f"→ a message [{key}] (private)" if pv else
               f"→ {text[:60]!r} [{key}] "
               f"({'new session' if reason else 'continuing'})")
+
+    if cmd in PROMPT_COMMANDS:
+        body += "\n\n" + PROMPT_COMMANDS[cmd]
 
     # Marks this topic active for exactly as long as a `herald restart --defer`
     # issued from *inside* this turn needs to stay pending -- see

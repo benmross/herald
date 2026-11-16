@@ -29,6 +29,14 @@ herald update --check     # what is available, and what it would change
 herald update            # apply it
 ```
 
+In Telegram, `/update` asks your agent to check for the latest tagged release
+and install it using `herald update`. It explains the result and any blockers.
+The command is available in the full Telegram command menu and also works when
+typed. It refuses updates in private conversations; use `/private off` first.
+Fork and maintainer installs report their mode instead of changing it.
+An older install needs an update through the existing update offer or CLI
+before it recognizes this new Telegram command.
+
 Applying one is a fast-forward to the tagged commit, followed by everything a
 running install needs to catch up: dependencies, migrations, a regenerated
 constitution, re-linked extension skills, refreshed background jobs, and a
