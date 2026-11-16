@@ -115,5 +115,40 @@ class SourceURLs(unittest.TestCase):
         audit.assert_not_called()
 
 
+class GmailDrafts(unittest.TestCase):
+    def test_create_and_replace_use_only_the_requested_operation(self):
+        for draft_id, method in ((None, "create"), ("existing", "update")):
+            with self.subTest(method=method):
+                svc = mock.Mock()
+                drafts = svc.users.return_value.drafts.return_value
+                getattr(drafts, method).return_value.execute.return_value = {"id": "saved"}
+                with mock.patch.object(gwrite, "gmail_service", return_value=svc), \
+                        mock.patch.object(gwrite, "_log") as audit:
+                    result = gwrite.gmail_draft(None, actor="test", to="mentor@example.org",
+                                               subject="Summer", body="Updated text",
+                                               thread_id="thread", draft_id=draft_id)
+                self.assertEqual(result["id"], "saved")
+                sent = getattr(drafts, method).call_args.kwargs
+                self.assertEqual(sent["body"]["message"]["threadId"], "thread")
+                if draft_id:
+                    self.assertEqual(sent["id"], draft_id)
+                getattr(drafts, "create" if draft_id else "update").assert_not_called()
+                drafts.send.assert_not_called()
+                audit.assert_called_once()
+                self.assertEqual(audit.call_args.args[-1], "gmail-draft:saved")
+
+    def test_failed_update_does_not_create_a_duplicate_or_log_success(self):
+        svc = mock.Mock()
+        drafts = svc.users.return_value.drafts.return_value
+        drafts.update.return_value.execute.side_effect = RuntimeError("missing draft")
+        with mock.patch.object(gwrite, "gmail_service", return_value=svc), \
+                mock.patch.object(gwrite, "_log") as audit:
+            with self.assertRaisesRegex(RuntimeError, "missing draft"):
+                gwrite.gmail_draft(None, actor="test", to="mentor@example.org",
+                                   subject="Summer", body="Updated", draft_id="existing")
+        drafts.create.assert_not_called()
+        audit.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -609,8 +609,12 @@ def gmail_label(con, *, actor: str, message_id: str, label: str,
 def gmail_draft(con, *, actor: str, to: str, subject: str, body: str,
                 thread_id: str | None = None, in_reply_to: str | None = None,
                 cc: str | None = None, tier: str = "green",
-                attachments: list[str] | None = None) -> dict:
-    """Create a draft in the user's Gmail. Green: nobody sees it until the user sends it.
+                attachments: list[str] | None = None,
+                draft_id: str | None = None) -> dict:
+    """Create or replace a Gmail draft. Green: only the user sees it until sent.
+
+    With `draft_id`, replace that draft in place. Callers must preserve any
+    desired recipients, threading and attachments in the supplied content.
 
     `attachments` are local file paths. A draft that carries the file is the
     whole point when the user asked to send one, and without this the only
@@ -637,9 +641,16 @@ def gmail_draft(con, *, actor: str, to: str, subject: str, body: str,
     payload = {"message": {"raw": raw}}
     if thread_id:
         payload["message"]["threadId"] = thread_id
-    draft = gmail_service().users().drafts().create(userId="me", body=payload).execute()
+    drafts = gmail_service().users().drafts()
+    if draft_id is not None:
+        if not isinstance(draft_id, str) or not draft_id.strip():
+            raise ValueError("draft_id must be a nonempty string")
+        draft = drafts.update(userId="me", id=draft_id, body=payload).execute()
+    else:
+        draft = drafts.create(userId="me", body=payload).execute()
+    verb = "updated draft" if draft_id is not None else "drafted"
     _log(con, actor, tier, "gmail.draft", to,
-         f"drafted '{subject[:60]}' to {to}", f"gmail-draft:{draft['id']}")
+         f"{verb} '{subject[:60]}' to {to}", f"gmail-draft:{draft['id']}")
     return draft
 
 
