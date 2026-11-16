@@ -247,9 +247,12 @@ class Generic:
             return [o["label"] for o in f["options"]]
         if f["kind"] == "combobox":
             el = self.loc(f)
+            self.page.keyboard.press("Escape")
             el.click()
             self.page.wait_for_timeout(600)
-            opts = [o.inner_text().strip() for o in self.page.locator("[role=option]:visible").all()[:80]]
+            cid = el.get_attribute("aria-controls")
+            scope = f["frame"].locator('[id=' + json.dumps(cid) + ']') if cid else self.page
+            opts = [o.inner_text().strip() for o in scope.locator("[role=option]:visible").all()[:80]]
             self.page.keyboard.press("Escape")
             return opts
         return []
@@ -363,8 +366,16 @@ class Generic:
 
     def _combo(self, f, want: str) -> bool:
         el = self.loc(f)
+        # A menu left open by the previous dropdown swallows this click, and
+        # the page-wide option list then belonged to the wrong question: Two
+        # Six's Security Clearance read the government-employee options
+        # (15 Nov 2026). Close it first and confirm this one opened.
+        self.page.keyboard.press("Escape")
         el.click()
         self.page.wait_for_timeout(600)
+        if el.get_attribute("aria-expanded") == "false":
+            el.click()
+            self.page.wait_for_timeout(600)
         cid = el.get_attribute("aria-controls")
         root = f["frame"]
         scope = root.locator('[id=' + json.dumps(cid) + ']') if cid else root.locator("body")
@@ -388,7 +399,10 @@ class Generic:
             return True
         # Searchable lists (schools, cities) show matches only after typing,
         # and a trailing space returned nothing on 23 Oct 2026.
-        term = re.sub(r"\s+", " ", re.sub(r"[\^$\\.*|()?\[\]+]", " ", want.split("|")[0]))[:28].strip()
+        # Type only the part before any ".*": "Example University.*North
+        # Campus" typed as one phrase matched nothing in Greenhouse's school
+        # search (15 Nov 2026); the pattern still picks the campus.
+        term = plain(re.split(r"\.\*", ap._top_level_branches(want)[0] if ap._top_level_branches(want) else want)[0])[:28].strip()
         try:
             el.fill(term)
         except bw.Busy:
@@ -1113,9 +1127,18 @@ def plain(value) -> str:
     a Workday school box received on 23 Oct 2026.
     """
     v = str(value)
-    if not re.search(r"[|^$*\\]", v):
+    if not re.search(r"[|^$*?()\\]", v):
         return v
-    v = v.split("|")[0]
+    # Split on top-level alternation only, then keep each group's first
+    # alternative. Splitting on every "|" typed "careers? (site" into a
+    # how-did-you-hear box (Two Six, 15 Nov 2026).
+    v = ap._top_level_branches(v)[0] if ap._top_level_branches(v) else v
+    while True:
+        inner = re.sub(r"\(([^()]*)\)", lambda m: ap._top_level_branches(m.group(1))[0] if m.group(1).strip() else "", v)
+        if inner == v:
+            break
+        v = inner
+    v = re.sub(r"(?<!\\)[?+]", "", v)
     v = v.replace(".*", ", ").replace("^", "").replace("$", "").replace("\\", "")
     return re.sub(r"\s+", " ", v).strip(" ,")
 
