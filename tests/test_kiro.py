@@ -6,6 +6,8 @@ import tempfile
 import unittest
 import sqlite3
 import datetime as dt
+import importlib.machinery
+import importlib.util
 from contextlib import contextmanager
 from unittest import mock
 
@@ -21,6 +23,40 @@ def feed(state, update):
 
 
 class KiroTests(unittest.TestCase):
+    def test_telegram_policy_launches_with_only_supported_native_tools(self):
+        loader = importlib.machinery.SourceFileLoader('tg_kiro_test', str(ROOT / 'bin/herald-telegram'))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        telegram = importlib.util.module_from_spec(spec)
+        loader.exec_module(telegram)
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(kiro.Path, 'home', return_value=pathlib.Path(td)), \
+                mock.patch.object(kiro, 'verify_workspace'), \
+                mock.patch.object(think, 'available_models', return_value=[]), \
+                mock.patch.object(think, '_run_process') as process:
+            think._run_kiro('test', model=None, effort=None, cwd=ROOT, timeout=1, idle_timeout=1,
+                resume=None, append_system_prompt=None, json_schema=None,
+                allowed_tools=telegram.interactive_tools('kiro'), permission_mode='auto')
+            process.assert_called_once()
+            cmd = process.call_args.args[1]
+            name = cmd[cmd.index('--agent') + 1]
+            profile = json.loads((pathlib.Path(td) / '.kiro/agents' / (name + '.json')).read_text())
+            self.assertEqual(set(profile['tools']), {
+                'read_file', 'list_directory', 'file_search', 'grep_search',
+                'fs_write', 'fs_append', 'str_replace', 'execute_bash'})
+            self.assertTrue(any(r.startswith('skill://') for r in profile['resources']))
+            self.assertEqual(profile['hooks'][0]['trigger'], 'PreToolUse')
+        for engine in ('claude', 'codex'):
+            self.assertTrue({'Skill', 'WebSearch', 'WebFetch'} <= set(telegram.interactive_tools(engine)))
+
+    def test_unsupported_restrictions_still_fail_before_launch(self):
+        for tools in (['Bash(herald fact *)'], ['UnknownTool']):
+            with self.subTest(tools=tools), mock.patch.object(think, '_run_process') as process:
+                with self.assertRaisesRegex(ValueError, 'Unsupported tool restriction'):
+                    think._run_kiro('test', model=None, effort=None, cwd=ROOT, timeout=1, idle_timeout=1,
+                        resume=None, append_system_prompt=None, json_schema=None,
+                        allowed_tools=tools, permission_mode='auto')
+                process.assert_not_called()
+
     def test_live_native_catalog_supplies_effort_levels_without_prompt(self):
         sent = []
         @contextmanager

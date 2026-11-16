@@ -119,6 +119,20 @@ MAX_REPLY = 3900
 INBOX = "documents/inbox"
 MAX_DOWNLOAD = 45 * 1024 * 1024      # Telegram's own bot download cap is 20 MB
 
+
+def interactive_tools(engine):
+    """Choose the tool policy the selected adapter can enforce.
+
+    Kiro loads skills through its guarded profile and uses Herald's shell
+    commands for browsing. Its adapter deliberately rejects Claude-only tool
+    names and command-pattern restrictions rather than granting extra tools.
+    """
+    tools = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
+    if engine != "kiro":
+        tools += ["Skill", "WebSearch", "WebFetch"]
+    return tools
+
+
 # Topic choices override the same provider/model settings used by cycles.
 # Provider-specific model shortcuts are explicit choices, never defaults.
 # Every other command still works when typed. Topics and these three are all
@@ -1418,8 +1432,7 @@ def handle(update: dict, state: dict) -> None:
             # None: think() takes it from safety.engine_mode for the
             # "telegram" surface, so the setting applies here too.
             permission_mode=None,
-            allowed_tools=["Read", "Write", "Edit", "Glob", "Grep", "Skill",
-                           "WebSearch", "WebFetch", "Bash"],
+            allowed_tools=interactive_tools(engine),
             append_system_prompt=system_card,
             on_progress=working.on_progress, cancel_key=key,
             private=pv["scratch"] if pv else None)
