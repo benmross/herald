@@ -97,7 +97,7 @@ class SettingsMerge(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             cfg = self._home_with(td, {})
             self.assertEqual(cfg.get("engines.primary.cmd"), "claude")
-            self.assertEqual(cfg.get("notify.ntfy_url"), "https://ntfy.sh")
+            self.assertEqual(cfg.get("engines.claude.cmd", "claude"), "claude")
 
     def test_the_user_overrides_one_leaf_without_losing_its_siblings(self):
         """The reason this is a deep merge. A user who pins a model must not

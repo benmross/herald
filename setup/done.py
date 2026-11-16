@@ -27,7 +27,6 @@ def prompt(state: State) -> Prompt:
     exts = [e.name for e in extensions.enabled()]
     jobs = services.status()
     telegram = bool(config.secret("telegram.chat_id"))
-    ntfy = bool(config.get("notify.ntfy_topic"))
 
     lines = [
         f"**{agent} is yours now, {who['first']}.**",
@@ -38,7 +37,6 @@ def prompt(state: State) -> Prompt:
         + (friendly(on) or "nothing yet") + ")",
         "- 06:30: a digest of what matters that day"
         + (", sent to Telegram" if telegram else
-           ", sent as a notification" if ntfy else
            ". **Nothing carries it to your phone yet.** It is written to a file "
            "in your Herald folder and that is all. `herald setup --step "
            "telegram` fixes that in five minutes."),

@@ -205,7 +205,7 @@ def python() -> str:
 
 
 def get(path: str, default=None):
-    """Read a dotted path out of the config, e.g. get("notify.ntfy_topic")."""
+    """Read a dotted path out of the config, e.g. get("telegram.chat_id")."""
     node = load()
     for part in path.split("."):
         if not isinstance(node, dict) or part not in node:

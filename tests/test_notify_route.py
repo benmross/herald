@@ -1,4 +1,4 @@
-"""One channel per message: Telegram, and ntfy only when Telegram fails.
+"""One channel: Telegram. ntfy was removed on 16 Nov 2026.
 
 `push()` used to be ntfy itself, so `herald notify` without a file and every
 cycle-failure alert skipped Telegram entirely.
@@ -14,19 +14,17 @@ from herald import notify  # noqa: E402
 
 
 class Route(unittest.TestCase):
-    def test_telegram_carries_it_and_ntfy_stays_quiet(self):
-        with mock.patch.object(notify, "telegram", return_value=True) as tg, \
-                mock.patch.object(notify, "ntfy") as fallback:
-            self.assertTrue(notify.push("Scout failed", "timeout"))
+    def test_push_goes_to_telegram_and_ignores_old_ntfy_arguments(self):
+        with mock.patch.object(notify, "telegram", return_value=True) as tg:
+            self.assertTrue(notify.push("Scout failed", "timeout", priority="high",
+                                        tags="warning", actions=[{"label": "x"}]))
         self.assertIn("Scout failed", tg.call_args.args[0])
-        fallback.assert_not_called()
 
-    def test_ntfy_only_when_telegram_fails(self):
-        with mock.patch.object(notify, "telegram", return_value=False), \
-                mock.patch.object(notify, "ntfy", return_value=True) as fallback:
-            self.assertTrue(notify.push("Scout failed", "timeout", priority="high"))
-            self.assertEqual(notify.tell("Digest", "body"), "ntfy (telegram unreachable)")
-        self.assertEqual(fallback.call_args_list[0].kwargs["priority"], "high")
+    def test_a_failed_telegram_is_reported_not_rerouted(self):
+        with mock.patch.object(notify, "telegram", return_value=False):
+            self.assertFalse(notify.push("Scout failed", "timeout"))
+            self.assertEqual(notify.tell("Digest", "body"), "nowhere")
+        self.assertFalse(hasattr(notify, "ntfy"))
 
 
 if __name__ == "__main__":

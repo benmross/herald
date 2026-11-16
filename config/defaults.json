@@ -64,10 +64,6 @@
       "weekly_limit_percent": 90
     }
   },
-  "notify": {
-    "ntfy_url": "https://ntfy.sh",
-    "default_tags": "scroll"
-  },
   "calendars": {
     "_comment": "Which calendar each kind of event is written to, and -- more importantly -- what each existing calendar is evidence OF. Google's accessRole says 'owner' for a calendar the user's own scraper writes into, which is true and completely misleading.",
     "write": {

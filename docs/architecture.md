@@ -55,7 +55,7 @@ onto metered billing while appearing to work perfectly.
 ```
 L4  surfaces     Telegram (herald-telegram), the primary one · optional Claude app/web
                  (herald-brain, Remote Control) · a terminal
-                 (herald attach) · ntfy, only when Telegram is unreachable
+                 (herald attach)
 
 L3  brain        herald-brain      persistent session server, one session per
                                    conversation, spawned on demand

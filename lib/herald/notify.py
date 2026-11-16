@@ -1,12 +1,11 @@
-"""Reach the user.
+"""Reach the user, on Telegram.
 
-Telegram is the channel: it is where the user reads and replies. ntfy is a
-fallback for when Telegram is unreachable or not set up, never a second buzz.
-`push()` and `tell()` both follow that order; `ntfy()` is the raw fallback.
-Until 16 Nov 2026 `push()` *was* ntfy, so `herald notify` without a file and
-every cycle-failure alert skipped Telegram, while `herald notify --file` used
-it: which channel a session's message took depended on whether it attached
-something.
+Telegram is the one channel: it is where the user reads and replies, so a
+session tells them something by saying it there. ntfy was removed on
+16 Nov 2026. It had become a second, inconsistent route (`herald notify`
+without a file and every cycle-failure alert went to ntfy alone), setup never
+offered it, so other installs never had it, and a message that only
+reaches a phone's lock screen cannot be answered.
 """
 
 from __future__ import annotations
@@ -20,116 +19,21 @@ import uuid
 
 from . import config, db, tgapi, tgtext
 
-PRIORITIES = ("min", "low", "default", "high", "urgent")
-
-# HTTP header values are latin-1. The message body is a UTF-8 payload and can
-# say anything, but Title and Tags are headers, so an em dash in a generated
-# headline is enough to take down the whole notification -- which is exactly how
-# the first dawn cycle failed after doing all its work.
-_TRANSLIT = {
-    "\u2014": "-", "\u2013": "-", "\u2012": "-", "\u2212": "-",
-    "\u2018": "'", "\u2019": "'", "\u201a": ",",
-    "\u201c": '"', "\u201d": '"',
-    "\u2026": "...", "\u00a0": " ", "\u2022": "*", "\u2192": "->",
-}
-
-
-def _header_safe(text: str) -> str:
-    """Make a string survive latin-1 header encoding without turning to mush."""
-    for bad, good in _TRANSLIT.items():
-        text = text.replace(bad, good)
-    return text.encode("latin-1", "replace").decode("latin-1")
-
-
 def push(title: str, message: str, *, priority: str = "default",
          tags: str | None = None, click: str | None = None,
          actions: list[dict] | None = None, record: bool = True) -> bool:
-    """Reach the user once: Telegram, else ntfy. Returns whether it landed."""
-    text = f"**{title}**\n\n{message}" if title else message
-    if telegram(text):
-        return True
-    return ntfy(title or "Herald", message, priority=priority, tags=tags,
-                click=click, actions=actions, record=record)
+    """Tell the user on Telegram. Returns whether it landed.
 
-
-def ntfy(title: str, message: str, *, priority: str = "default",
-         tags: str | None = None, click: str | None = None,
-         actions: list[dict] | None = None, record: bool = True) -> bool:
-    """Send one ntfy notification, the fallback channel. Returns whether it landed.
-
-    `actions` are ntfy action buttons, e.g.
-        [{"action": "http", "label": "Yes", "url": "...", "method": "POST"}]
-    which is how a notification becomes a one-tap answer instead of a nudge to
-    go open something.
-    """
-    if priority not in PRIORITIES:
-        priority = "default"
-
-    base = config.get("notify.ntfy_url", "https://ntfy.sh").rstrip("/")
-    topic = config.get("notify.ntfy_topic")
-    if not topic:
-        # No topic means no channel, not a topic called "None". ntfy topics are
-        # public by name, so posting a digest to https://ntfy.sh/None would
-        # hand the user's morning to anyone subscribed to that word. A fresh
-        # install without Telegram or ntfy has nowhere to push, and the caller
-        # already handles "nowhere"; the digest is still written to
-        # ledger/digests/.
-        if record:
-            try:
-                with db.session() as con:
-                    con.execute(
-                        "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
-                        " VALUES (?, 'ntfy', ?, ?, ?, 0)",
-                        (db.now(), priority, title, message))
-            except Exception:                                       # noqa: BLE001
-                pass
-        return False
-    url = f"{base}/{topic}"
-
-    headers = {
-        "Title": _header_safe(title)[:200],
-        "Priority": priority,
-        "Tags": _header_safe(tags or config.get("notify.default_tags", "scroll")),
-        "User-Agent": "herald/0.1",
-    }
-    if click:
-        headers["Click"] = _header_safe(click)
-    if actions:
-        headers["Actions"] = json.dumps(actions)
-
-    ok = False
-    try:
-        req = urllib.request.Request(url, data=message.encode("utf-8"),
-                                     method="POST", headers=headers)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            ok = 200 <= r.status < 300
-    except (urllib.error.URLError, OSError):
-        ok = False
-
-    if record:
-        try:
-            with db.session() as con:
-                con.execute(
-                    "INSERT INTO notifications (ts, channel, priority, title, body, ok)"
-                    " VALUES (?, 'ntfy', ?, ?, ?, ?)",
-                    (db.now(), priority, title, message, int(ok)),
-                )
-                con.commit()
-        except Exception:
-            pass  # never let bookkeeping swallow the notification itself
-    return ok
+    `priority`, `tags`, `click` and `actions` are accepted and ignored: they
+    were ntfy's, and callers (including extensions) still pass them."""
+    return telegram(f"**{title}**\n\n{message}" if title else message, record=record)
 
 
 # --------------------------------------------------------------------------
 # Telegram
 #
-# ntfy is the right shape for a headline on a watch and the wrong shape for a
-# digest: a push is a glance, and anything past a couple of lines is either
-# truncated by the client or unread. Telegram takes the long version, keeps it
-# scrollable, and is the same thread the user can talk back on.
-#
-# So the two are not alternatives. ntfy says what happened; Telegram carries the
-# thing itself.
+# Telegram takes the long version, keeps it scrollable, and is the same thread
+# the user can talk back on.
 # --------------------------------------------------------------------------
 
 #: Kept as an alias; the real value and the chunker live in tgtext.
@@ -503,25 +407,17 @@ def buttons(text: str, rows: list[list[tuple[str, str]]], *,
 # --------------------------------------------------------------------------
 # One notification, not two.
 #
-# the user was getting an ntfy push and a Telegram message for the same event, which
-# is one more buzz than the event deserves. Telegram is where the user can actually
-# read the thing and reply to it, so it is the channel; ntfy stays only as the
-# way to reach them when Telegram is the thing that is broken.
+# There used to be a second channel and the user got two buzzes for one event.
+# Telegram is where the user can read the thing and reply to it.
 # --------------------------------------------------------------------------
 
 def tell(title: str, body: str, *, priority: str = "default",
          tags: str | None = None, click: str | None = None,
          thread_id: int | None = None) -> str:
-    """Reach the user once. Returns the channel that carried it.
-
-    Telegram first. ntfy only if Telegram failed, because a fallback that always
-    fires is not a fallback, it is a second notification.
-    """
+    """Reach the user once. Returns "telegram", or "nowhere" if it failed."""
     # Bold, not italic: a digest headline is the one line that has to be
     # readable at a glance on a watch.
     message = f"**{title}**\n\n{body}" if title else body
     if telegram(message, thread_id=thread_id):
         return "telegram"
-    if ntfy(title or "Herald", body, priority=priority, tags=tags, click=click):
-        return "ntfy (telegram unreachable)"
     return "nowhere"

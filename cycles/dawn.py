@@ -282,8 +282,7 @@ def main() -> int:
     (out_dir / f"{now:%Y-%m-%d}.md").write_text("\n".join(body))
 
     # One notification. Telegram carries the whole digest and is where they can
-    # reply to it; ntfy fires only if Telegram is unreachable, because a
-    # fallback that always fires is just a second buzz.
+    # reply to it.
     body = [f"_{now:%A %-d %B}_", "", digest.strip()]
     if questions:
         body += ["", "**Want me to?**"] + [f"• {q}" for q in questions]

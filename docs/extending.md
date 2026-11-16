@@ -228,9 +228,8 @@ shape there.
 
 ## Adding a surface
 
-`notify.tell(title, body)` reaches the user once: Telegram first, ntfy only if
-Telegram is unreachable. Do not call `notify.push` directly unless the point is
-specifically to route around Telegram.
+`notify.tell(title, body)` reaches the user once, on Telegram, and returns
+`"nowhere"` if that failed. `notify.push` does the same and returns a bool.
 
 ## Things that will bite
 
