@@ -38,7 +38,13 @@ VOLUME /home/herald
 # The setup page, and the port Google redirects to at the end of its sign-in.
 EXPOSE 8799 8765
 
-HEALTHCHECK --interval=60s --timeout=10s --start-period=10m --retries=3 \
+# `herald health`: the supervisor's heartbeat, a crash-looping bridge or brain,
+# the database, whether any source has been read in three hours, disk space
+# and the engine login (checked every 15 minutes, cached between). Idle before
+# setup counts as healthy. `docker inspect --format '{{json .State.Health}}'
+# herald` shows the last run's lines. The timeout allows for the login check,
+# which runs the vendor CLI.
+HEALTHCHECK --interval=60s --timeout=30s --start-period=10m --retries=3 \
   CMD /home/herald/herald/venv/bin/python /home/herald/herald/bin/herald-supervisor --healthy
 
 ENTRYPOINT ["/opt/herald/entrypoint.sh"]

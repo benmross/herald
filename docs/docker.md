@@ -84,6 +84,27 @@ all. Run `herald doctor` after downtime if the selected provider needs a new log
 
 On a Linux server, Docker starts at boot and nothing more is needed.
 
+### Health
+
+`docker ps` shows the container as healthy or unhealthy. The check is
+`herald health`, run every minute. It fails when:
+
+- the supervisor has stopped ticking
+- the Telegram bridge or the brain keeps crashing (four restarts in ten minutes)
+- the database will not open or is missing tables
+- no source has been read successfully in three hours
+- less than 500 MB of disk is free
+- your provider's subscription login has lapsed (checked every 15 minutes)
+
+A missing Google token or a single failing source is a warning, not a
+failure. Before setup's last step the container is idle and counts as
+healthy. To see why it is unhealthy:
+
+```bash
+docker exec herald herald health
+docker inspect --format '{{json .State.Health}}' herald
+```
+
 ## Where everything is
 
 One volume, `herald-home`, mounted at `/home/herald`. It holds the program

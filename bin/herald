@@ -265,6 +265,23 @@ def cmd_doctor(args) -> int:
     return 1 if problems else 0
 
 
+def cmd_health(args) -> int:
+    """Fast, machine-readable counterpart to doctor. Exit 1 if unhealthy."""
+    from dataclasses import asdict  # noqa: PLC0415
+    from herald import health  # noqa: PLC0415
+    checks = health.run(use_cache=not args.fresh)
+    if args.json:
+        print(json.dumps({"healthy": health.healthy(checks),
+                          "checks": [asdict(c) for c in checks]}, indent=2))
+    else:
+        for c in checks:
+            mark = _c("ok  ", OK) if c.ok else (_c("FAIL", BAD) if c.fatal else _c("warn", WARN))
+            print(f"  {mark}  {c.name}{('  ' + _c(c.detail, DIM)) if c.detail else ''}")
+        print()
+        print(_c("healthy", OK) if health.healthy(checks) else _c("unhealthy", BAD))
+    return 0 if health.healthy(checks) else 1
+
+
 # --------------------------------------------------------------------------- think
 
 def cmd_check(args) -> int:
@@ -2596,6 +2613,10 @@ def main() -> int:
 
     sub.add_parser("status", help="what's running and what it cost").set_defaults(fn=cmd_status)
     sub.add_parser("doctor", help="check the things that silently break").set_defaults(fn=cmd_doctor)
+    hp = sub.add_parser("health", help="is it working right now? (what Docker's healthcheck runs)")
+    hp.add_argument("--json", action="store_true")
+    hp.add_argument("--fresh", action="store_true", help="re-check engine logins instead of using the 15-minute cache")
+    hp.set_defaults(fn=cmd_health)
     quota = sub.add_parser("usage", help="subscription quotas and reset times (no model turn)")
     quota.add_argument("engine", nargs="?", choices=config.ENGINE_NAMES)
     mode = quota.add_mutually_exclusive_group()

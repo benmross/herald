@@ -73,6 +73,9 @@ class Supervisor:
         self.procs: dict[str, subprocess.Popen] = {}
         self.last_start: dict[str, float] = {}
         self.last_exit: dict[str, int] = {}
+        # Recent start times per job, so a health check can tell a job that
+        # is up from one that dies and is restarted every fifteen seconds.
+        self.starts: dict[str, list[float]] = {}
         self.fired: set[str] = set()
         self.stopping = False
         self.waiting_said = False
@@ -97,6 +100,7 @@ class Supervisor:
         else:
             self.log(f"started {label} (pid {self.procs[label].pid})")
         self.last_start[label] = time.time()
+        self.starts[label] = (self.starts.get(label, []) + [self.last_start[label]])[-10:]
 
     def reap(self) -> None:
         for label, proc in list(self.procs.items()):
@@ -117,6 +121,7 @@ class Supervisor:
                 "pid": proc.pid if proc else None,
                 "last_start": self.last_start.get(label),
                 "last_exit": self.last_exit.get(label),
+                "starts": self.starts.get(label, []),
             }
         state = {"pid": os.getpid(), "ts": time.time(), "enabled": enabled,
                  "jobs": rows if enabled else {}}
@@ -178,12 +183,17 @@ class Supervisor:
 
 
 def healthy() -> int:
-    """For the image's HEALTHCHECK: is a supervisor ticking?"""
+    """For the image's HEALTHCHECK: the supervisor's heartbeat, its kept-alive
+    jobs, the database, the collectors and the engine login. Docker keeps the
+    printed lines in `docker inspect`, so they say what is wrong."""
+    from herald import health  # noqa: PLC0415
     try:
-        state = json.loads(services.supervisor_state_path().read_text())
-    except (OSError, ValueError):
+        checks = health.run(container=True)
+    except Exception as exc:  # noqa: BLE001 -- a broken check is unhealthy, not a crash
+        print(f"FAIL  health check itself  {type(exc).__name__}: {exc}")
         return 1
-    return 0 if time.time() - state.get("ts", 0) < STALE_AFTER else 1
+    print(health.report(checks))
+    return 0 if health.healthy(checks) else 1
 
 
 if __name__ == "__main__":

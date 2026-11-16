@@ -4,7 +4,8 @@
 
 ```bash
 herald status          # engines, spend by label, collector health, ledger
-herald doctor          # the things that break silently
+herald doctor          # the things that break silently, and how to fix each
+herald health          # quick pass/fail, what Docker's healthcheck runs
 herald brain status    # optional Claude Remote Control
 herald attach          # terminal conversation on your chosen provider
 herald db --schema     # what is in the ledger and how to query it
