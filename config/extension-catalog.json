@@ -1,17 +1,40 @@
 {
   "_comment": "Published extensions offered at the end of setup and by `herald ext available`. Each is someone's own repository; add yours with a pull request. Tag the repository herald-extension so it also appears at https://github.com/topics/herald-extension.",
   "extensions": [
-    {"name": "canvas", "url": "https://github.com/benmross/herald-canvas",
-     "title": "Canvas LMS", "for": "students",
-     "summary": "Courses, grades, submissions and announcements from Canvas, with courses you can limit to dates and grades only."},
-    {"name": "umd", "url": "https://github.com/benmross/herald-umd",
-     "title": "UMD campus events", "for": "UMD students",
-     "summary": "Campus events on a Google calendar of their own, each judged once against criteria you write."},
-    {"name": "transit", "url": "https://github.com/benmross/herald-transit",
-     "title": "DC-area transit", "for": "the Washington, D.C. region",
-     "summary": "Live Metrobus, Metrorail and Ride On arrivals, alerts and trip planning, from where you are."},
-    {"name": "shop", "url": "https://github.com/benmross/herald-shop",
-     "title": "Clothes shopping", "for": "the US",
-     "summary": "Clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's, with a contact sheet of photos."}
+    {
+      "name": "canvas",
+      "url": "https://github.com/benmross/herald-canvas",
+      "title": "Canvas LMS",
+      "for": "students",
+      "summary": "Courses, grades, submissions and announcements from Canvas, with courses you can limit to dates and grades only."
+    },
+    {
+      "name": "umd",
+      "url": "https://github.com/benmross/herald-umd",
+      "title": "UMD campus events",
+      "for": "UMD students",
+      "summary": "Campus events on a Google calendar of their own, each judged once against criteria you write."
+    },
+    {
+      "name": "transit",
+      "url": "https://github.com/benmross/herald-transit",
+      "title": "DC-area transit",
+      "for": "the Washington, D.C. region",
+      "summary": "Live Metrobus, Metrorail and Ride On arrivals, alerts and trip planning, from where you are."
+    },
+    {
+      "name": "shop",
+      "url": "https://github.com/benmross/herald-shop",
+      "title": "Clothes shopping",
+      "for": "the US",
+      "summary": "Clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's, with a contact sheet of photos."
+    },
+    {
+      "name": "discord",
+      "url": "https://github.com/benmross/herald-discord",
+      "title": "Discord",
+      "for": "anyone on Discord",
+      "summary": "Messages from the servers and DMs your own client sees, forwarded by a Vencord plugin, with chosen club channels read for events and opportunities."
+    }
   ]
 }

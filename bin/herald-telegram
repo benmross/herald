@@ -53,7 +53,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
@@ -180,9 +179,13 @@ version briefly and run `herald update` to install it. This command is the user'
 request to update; use the standard updater rather than editing the checkout
 or installing from main. It handles dependencies, migrations, regenerating
 CLAUDE.md, syncing skills, checks and a deferred restart after active turns end.
-If already current, say so. Fork and maintainer installs do not take updates;
-report their mode and any available release, without switching modes or cutting
-a release. If local changes, connectivity, permissions or checks block the
+`herald update` also fast-forwards every installed extension that is its own
+repository, in every install mode; report which updated, which were current,
+and any it left alone because they were edited here. If the program is already
+current, say so and still run `herald update` for the extensions. Fork and
+maintainer installs do not take program updates; report their mode and any
+available release, without switching modes or cutting a release, and still run
+`herald update` so the extensions update. If local changes, connectivity, permissions or checks block the
 update, report the exact problem and preserve the checkout and personal data.
 Never reset, discard edits, force a merge or bypass a failed check to update.
 Verify the installed version after success, record the outcome in the ledger,
@@ -237,10 +240,17 @@ def unknown_command(text: str) -> str:
 
 
 PREAMBLE = """\
-This message arrived from the user over Telegram. The user is probably on their phone, and
-possibly walking, so answer like a person texting back: short, direct, no
-headers, no bullet lists unless the user asked for one. If the answer is genuinely
-long, lead with the answer and offer the detail.
+This message arrived over Telegram, which is where the user talks to Herald
+nearly all the time, from their phone and their computer alike. It is the main
+conversation, not a side channel: do the work it asks for, end to end, and
+report back here.
+
+Reply like a person messaging back: lead with the answer, in plain sentences,
+with no headers. Keep routine answers short. After substantial work, say what
+was done and what is left; send long material as a file (`herald notify
+"title" "caption" --file <path>`) rather than a wall of text. Anything you say
+between tool calls reaches the user too, so write it to be read. To tell the
+user something, say it in this chat; that is the notification.
 
 You have the full ledger and every skill. If you learn something durable about
 them, or do something the user will want a record of, write it to the ledger before you
@@ -250,7 +260,7 @@ The same rules apply here as anywhere: read freely, write deliberately, and
 nothing that another person sees goes out without them asking for it in this
 conversation.
 
-The line below "---" gives when the user actually sent this (America/New_York) --
+The line below "---" gives when the user actually sent this, in their timezone --
 use it. "Sent 11:58 PM" means everything is closed right now even if the user is
 asking in general terms; a question at 7am reads differently than the same
 one at midnight.
@@ -260,15 +270,22 @@ one at midnight.
 # tells a session to write what it learns to the ledger, which is the one thing
 # a private session must not attempt.
 PRIVATE_PREAMBLE = """\
-This message arrived from the user over Telegram. The user is probably on their phone, and
-possibly walking, so answer like a person texting back: short, direct, no
-headers, no bullet lists unless the user asked for one. If the answer is genuinely
-long, lead with the answer and offer the detail.
+This message arrived over Telegram, which is where the user talks to Herald
+nearly all the time, from their phone and their computer alike. It is the main
+conversation, not a side channel: do the work it asks for, end to end, and
+report back here.
+
+Reply like a person messaging back: lead with the answer, in plain sentences,
+with no headers. Keep routine answers short. After substantial work, say what
+was done and what is left; send long material as a file (`herald notify
+"title" "caption" --file <path>`) rather than a wall of text. Anything you say
+between tool calls reaches the user too, so write it to be read. To tell the
+user something, say it in this chat; that is the notification.
 
 This is a private session. Read whatever helps. Save nothing and change
 nothing: no ledger, no journal, no memory, nothing on any other service.
 
-The line below "---" gives when the user actually sent this (America/New_York) --
+The line below "---" gives when the user actually sent this, in their timezone --
 use it.
 """
 
@@ -324,9 +341,6 @@ def _handle_private(chat_id: int, thread_id: int | None, key: str,
     print(f"[{key}] private session started")
 
 
-EASTERN = ZoneInfo("America/New_York")
-
-
 def sent_at_line(msg: dict) -> str:
     """Telegram stamps every message with a Unix send time; a session otherwise
     has no way to tell 11:58pm-everything's-closed from 7am-just-opened, or a
@@ -334,7 +348,7 @@ def sent_at_line(msg: dict) -> str:
     ts = msg.get("date")
     if not ts:
         return ""
-    when = datetime.fromtimestamp(ts, tz=EASTERN)
+    when = datetime.fromtimestamp(ts, tz=config.tz())
     return f"Sent {when.strftime('%A, %B %-d, %Y, %-I:%M %p %Z')}.\n\n"
 
 
@@ -1411,7 +1425,7 @@ def handle(update: dict, state: dict) -> None:
     notices: list[int] = []
     target = None if pv else _reply_target(msg, key, ts)
     if target:
-        when = datetime.fromtimestamp(target["last_ts"] or 0, tz=EASTERN)
+        when = datetime.fromtimestamp(target["last_ts"] or 0, tz=config.tz())
         ts["session_id"] = target["session_id"]
         ts["turns"] = target["turns"] or 0
         ts["engine"] = target["engine"] or config.default_engine()
@@ -1486,7 +1500,7 @@ def handle(update: dict, state: dict) -> None:
             move = routing.before_turn(con, engine)
         if move:
             engine, until = move
-            lifted = config.clock(datetime.fromtimestamp(until, tz=EASTERN))
+            lifted = config.clock(datetime.fromtimestamp(until, tz=config.tz()))
             notices += send(chat_id, f"{ts['engine'].capitalize()} is at its limit until "
                                      f"{lifted}, so I'm continuing on {engine.capitalize()}.", thread_id)
             _move_to(ts, engine, key, "at limit before the turn")

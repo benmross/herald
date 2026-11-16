@@ -781,15 +781,44 @@ def cmd_mode(args) -> int:
     return 0
 
 
+def _update_extensions() -> int:
+    """Fast-forward every installed extension that is its own repository.
+
+    Part of `herald update` (and so of Telegram's /update) because an
+    extension is code the person installed in the same way as Herald, and one
+    left behind breaks quietly when the program it plugs into moves on. A
+    clone edited here is reported and left alone, exactly as `herald ext
+    update` does. Returns 1 if any could not be updated."""
+    names = [e.name for e in extensions.all_extensions() if e.own_repo()]
+    if not names:
+        return 0
+    print(_c("\n  extensions", BOLD))
+    rc = 0
+    for name in names:
+        r = extensions.update(name)
+        colour = {"updated": OK, "current": DIM}.get(r["status"], WARN)
+        print(f"  {r['name']:14} {_c(r['status'], colour)}  {r['detail']}")
+        for line in r.get("log", [])[:8]:
+            print(_c(f"      {line}", DIM))
+        if r["status"] in ("changed", "failed"):
+            rc = 1
+        elif r["status"] == "updated":
+            _print_needed(extensions.find(name))
+    return rc
+
+
 def cmd_update(args) -> int:
-    """Fast-forward to the newest upstream release and reconcile."""
+    """Fast-forward to the newest upstream release and reconcile, then the
+    extensions. `--check` changes nothing."""
     current = upstream.mode()
     if current != "tracking" and not args.check:
-        print(_c(f"  this install is a {current}, so it does not take updates.",
-                 WARN))
+        print(_c(f"  this install is a {current}, so the program does not take "
+                 "updates.", WARN))
         print(_c("  `herald update --check` still shows what upstream has done.",
                  DIM))
-        return 1
+        if args.no_extensions:
+            return 0
+        return _update_extensions()
 
     ok, err = upstream.fetch()
     if not ok:
@@ -800,7 +829,7 @@ def cmd_update(args) -> int:
     if not release:
         here = upstream.current_release() or upstream.current_commit()
         print(f"  up to date ({here})")
-        return 0
+        return 0 if args.check or args.no_extensions else _update_extensions()
 
     print(f"  {_c(release['tag'], BOLD)} is available "
           f"(you are on {release['from'] or 'an untagged commit'})")
@@ -838,10 +867,11 @@ def cmd_update(args) -> int:
                  WARN))
         return 1
     print(_c(f"  {result['restart']}", DIM))
+    ext_rc = 0 if args.no_extensions else _update_extensions()
     notify.tell(f"Herald updated to {release['tag']}",
                 (release["notes"] or "\n".join(release["commits"][:8]))[:1500],
                 priority="low", tags="arrow_up")
-    return 0
+    return ext_rc
 
 
 def cmd_release(args) -> int:
@@ -3072,7 +3102,7 @@ def main() -> int:
     x.add_argument("--links", action="store_true", help="also write <id>.links.tsv (label<TAB>href) per page")
     bw.set_defaults(fn=cmd_browse)
 
-    n = sub.add_parser("notify", help="push to the user's phone")
+    n = sub.add_parser("notify", help="tell the user on Telegram (ntfy only if Telegram is unreachable)")
     n.add_argument("title")
     n.add_argument("body", nargs="?", default="")
     n.add_argument("--file", help="send this file to Telegram as a document; "
@@ -3106,9 +3136,11 @@ def main() -> int:
     md.add_argument("mode", nargs="?", choices=list(upstream.MODES))
     md.set_defaults(fn=cmd_mode)
 
-    up = sub.add_parser("update", help="fast-forward to the newest release")
+    up = sub.add_parser("update", help="fast-forward to the newest release, then the extensions")
     up.add_argument("--check", action="store_true",
                     help="say what is available and stop")
+    up.add_argument("--no-extensions", action="store_true",
+                    help="update the program only")
     up.set_defaults(fn=cmd_update)
 
     rl = sub.add_parser("release", help="cut a release other installs will take")

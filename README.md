@@ -16,7 +16,8 @@
 ---
 
 Herald reads your accounts, writes what it learns into a ledger on your disk,
-and works for you around the clock. You talk to it on Telegram or in a terminal.
+and works for you around the clock. You talk to it on Telegram, from your phone
+or your computer, and that is where it tells you things.
 
 - Reads Gmail, Calendar, Tasks, Contacts, GitHub, any `.ics` feed, job postings, and iMessage on a Mac.
 - Remembers every conclusion in plain files you own, so a quiet morning costs almost nothing.
@@ -55,30 +56,36 @@ your sources and your login. See [`docs/docker.md`](docs/docker.md).
 
 ## Using it
 
-| Command | |
-|---|---|
-| `herald attach` | talk to it in this terminal |
-| `herald status` | what it has read, what it cost, what is failing |
-| `herald doctor` | find what is broken and how to fix it |
-| `herald health` | quick pass or fail |
-| `herald update` | install the newest release |
-| `herald setup` | re-run any setup step |
+Message your bot on Telegram for everything: questions, errands, changes to
+how Herald works ("read this feed too", "send the digest at seven"). Each forum
+topic is its own conversation, and replying to an old message picks that
+thread back up. Install Telegram on your computer too; it is the same
+conversation.
 
-**On Telegram,** each forum topic is its own conversation. Reply to an old
-message to pick that thread back up.
-
-| Command | |
+| Telegram command | What it does |
 |---|---|
 | `/new` | start the topic over |
 | `/stop` | cancel the running turn |
 | `/private` | read-only and unrecorded until `/private off` |
 | `/models`, `/effort` | pick a model and thinking level |
 | `/claude`, `/codex` | pick a provider for this topic |
+| `/update` | update Herald and its extensions |
 | `/obligations` | what you owe people |
+
+The terminal is for setup and repairs:
+
+| Terminal command | What it does |
+|---|---|
+| `herald status` | what it has read, what it cost, what is failing |
+| `herald doctor` | find what is broken and how to fix it |
+| `herald health` | quick pass or fail |
+| `herald update` | update Herald and its extensions |
+| `herald setup` | re-run any setup step |
+| `herald attach` | a conversation in the terminal, if Telegram is down |
 
 ## What it does on its own
 
-| | |
+| Kind of action | What happens |
 |---|---|
 | **Just does it** | Reading, searching, writing its notes, drafting. |
 | **Does it, then tells you** | Reversible things only you see: a calendar event, a mail label, a task. Listed in the next digest. |
@@ -93,12 +100,13 @@ text from mail and web pages is kept from acting as instructions.
 Send your Herald a repository URL and ask it to install it. It shows you what
 the extension runs and leaves it off until you say so.
 
-| Extension | |
+| Extension | What it does |
 |---|---|
 | [canvas](https://github.com/benmross/herald-canvas) | Canvas LMS: courses, grades, submissions, announcements |
 | [umd](https://github.com/benmross/herald-umd) | UMD campus events, filtered against criteria you write |
 | [transit](https://github.com/benmross/herald-transit) | DC buses and Metro: live arrivals, alerts, trip planning |
 | [shop](https://github.com/benmross/herald-shop) | clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's |
+| [discord](https://github.com/benmross/herald-discord) | messages from your own Discord client, with club channels read for events |
 
 Setup offers these at the end, and `herald ext available` lists them any time.
 Find more under the [`herald-extension`](https://github.com/topics/herald-extension)
@@ -115,7 +123,7 @@ Run it on something that stays on. An old laptop or a Raspberry Pi works well;
 
 ## Docs
 
-| | |
+| Doc | Covers |
 |---|---|
 | [install](docs/install.md) | step-by-step setup |
 | [docker](docs/docker.md) | running in a container |

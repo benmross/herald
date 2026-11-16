@@ -92,8 +92,9 @@ def prompt(state: State) -> Prompt:
         agent = config.get("agent.name", "Herald")
         return Prompt(
             title="Telegram (recommended)",
-            blurb="How your agent reaches you when you are away from this "
-                  "computer, and how you reply.\n\n"
+            blurb="This is where you will talk to your agent, from your phone "
+                  "and your computer alike, and where it tells you things. "
+                  "Everything else is a fallback.\n\n"
                   + BOTFATHER.format(agent=agent,
                                      suggestion=f"{agent.lower()}_{suffix}_bot"),
             fields=[Field(key="token", label="The bot token", type="secret",

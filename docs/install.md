@@ -122,9 +122,10 @@ offering the next, so you find out about a problem on the screen that caused it.
    called out on the page: you must add yourself as a **test user**, and Google
    will say that the app is **unverified**. It is, because you made it four
    minutes ago and nobody else will ever use it.
-7. Telegram is optional, and worth it. This is how your agent reaches you
-   when you are not at the machine, and how you answer. You make a bot by
-   messaging Telegram's own bot; the wizard walks through it.
+7. Telegram is where you will talk to your agent, from your phone and your
+   computer alike, and where it tells you things. It is technically optional,
+   but without it you only have the terminal. You make a bot by messaging
+   Telegram's own bot; the wizard walks through it.
 8. What else should it read? offers GitHub activity, job postings, calendar
    feeds, and on a Mac your Messages database. All optional.
 9. Tell it who you are is the hour. Write about yourself: what you are
@@ -143,9 +144,12 @@ offering the next, so you find out about a problem on the screen that caused it.
 
 ## After that
 
-Nothing more is required. Tomorrow at 06:30 you get your first digest.
+Nothing more is required. Tomorrow at 06:30 you get your first digest in
+Telegram. From then on, message your bot for anything: questions, changes to
+how it works, new sources to read. Install Telegram on your computer too, so the
+same conversation is there when you are at your desk.
 
-Four commands to know:
+For the rare time you need the terminal:
 
 ```bash
 herald status      # what it has read, what it cost, what is failing

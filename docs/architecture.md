@@ -8,8 +8,9 @@ fresh agent session with no memory of how any of it came to be.
 An always-on personal agent that runs on one person's own machine. It ingests
 whatever they connect (mail, calendars, tasks, contacts, feeds, and whatever
 their extensions add), keeps a durable record of what it concludes, briefs them
-each morning, and answers them on Telegram or in a terminal using their chosen
-provider. An optional Claude Remote Control surface supports the Claude app.
+each morning, and works with them on Telegram, the primary surface on phone and
+computer alike, using their chosen provider. A terminal (`herald attach`) and an
+optional Claude Remote Control surface are secondary.
 
 ## Two directories
 
@@ -52,7 +53,7 @@ onto metered billing while appearing to work perfectly.
 ## The layers
 
 ```
-L4  surfaces     Telegram (herald-telegram) · optional Claude app/web
+L4  surfaces     Telegram (herald-telegram), the primary one · optional Claude app/web
                  (herald-brain, Remote Control) · a terminal
                  (herald attach) · ntfy, only when Telegram is unreachable
 

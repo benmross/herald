@@ -1,7 +1,12 @@
-"""Push to the user's phone.
+"""Reach the user.
 
-ntfy for now. The routing policy (which channel, what priority, given where the user
-is and what device is awake) will grow here rather than in callers.
+Telegram is the channel: it is where the user reads and replies. ntfy is a
+fallback for when Telegram is unreachable or not set up, never a second buzz.
+`push()` and `tell()` both follow that order; `ntfy()` is the raw fallback.
+Until 16 Nov 2026 `push()` *was* ntfy, so `herald notify` without a file and
+every cycle-failure alert skipped Telegram, while `herald notify --file` used
+it: which channel a session's message took depended on whether it attached
+something.
 """
 
 from __future__ import annotations
@@ -39,7 +44,18 @@ def _header_safe(text: str) -> str:
 def push(title: str, message: str, *, priority: str = "default",
          tags: str | None = None, click: str | None = None,
          actions: list[dict] | None = None, record: bool = True) -> bool:
-    """Send one notification. Returns whether it landed.
+    """Reach the user once: Telegram, else ntfy. Returns whether it landed."""
+    text = f"**{title}**\n\n{message}" if title else message
+    if telegram(text):
+        return True
+    return ntfy(title or "Herald", message, priority=priority, tags=tags,
+                click=click, actions=actions, record=record)
+
+
+def ntfy(title: str, message: str, *, priority: str = "default",
+         tags: str | None = None, click: str | None = None,
+         actions: list[dict] | None = None, record: bool = True) -> bool:
+    """Send one ntfy notification, the fallback channel. Returns whether it landed.
 
     `actions` are ntfy action buttons, e.g.
         [{"action": "http", "label": "Yes", "url": "...", "method": "POST"}]
@@ -506,6 +522,6 @@ def tell(title: str, body: str, *, priority: str = "default",
     message = f"**{title}**\n\n{body}" if title else body
     if telegram(message, thread_id=thread_id):
         return "telegram"
-    if push(title or "Herald", body, priority=priority, tags=tags, click=click):
+    if ntfy(title or "Herald", body, priority=priority, tags=tags, click=click):
         return "ntfy (telegram unreachable)"
     return "nowhere"
