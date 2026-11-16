@@ -134,7 +134,10 @@ def profile_dir(workspace=None) -> pathlib.Path:
 
 def cdp_port(workspace=None) -> int:
     from . import browser_workspaces as bw
+    from . import browser_remote
     workspace = bw.name(workspace)
+    if browser_remote.is_remote(workspace):
+        return browser_remote.local_port(workspace)
     return int(config.get("browser.cdp_port", 9333)) if workspace == "default" else bw.ports(workspace)['cdp']
 
 
@@ -210,8 +213,12 @@ def alive(workspace=None) -> bool:
 def ensure(workspace=None) -> None:
     """Make sure the profile browser is up, starting a headless one if not."""
     from . import browser_workspaces as bw
+    from . import browser_remote
     workspace = bw.name(workspace)
     if alive(workspace):
+        return
+    if browser_remote.is_remote(workspace):
+        browser_remote.ensure(workspace)
         return
     if workspace != "default":
         bw.start(workspace)
@@ -268,7 +275,11 @@ class Session:
             self._pw = playwright or sync_playwright().start()
             self.browser = self._pw.chromium.connect_over_cdp(cdp_url(self.workspace))
             self.ctx = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-            if self.workspace != 'default' and not self.ctx.cookies():
+            from . import browser_remote
+            self.remote = browser_remote.is_remote(self.workspace)
+            if self.remote:
+                browser_remote.quiet(self.browser, self.ctx)
+            elif self.workspace != 'default' and not self.ctx.cookies():
                 auth = home() / 'profile' / 'herald-auth.json'
                 if auth.exists():
                     # Authentication stays in the protected browser profile,
@@ -283,7 +294,7 @@ class Session:
     def close(self) -> None:
         # Over CDP, close() disconnects; the browser and its tabs stay.
         try:
-            if not self.human:
+            if not self.human and not getattr(self, 'remote', False):
                 from .application_checkpoints import atomic_json
                 atomic_json(home() / 'profile' / 'herald-auth.json', self.ctx.cookies())
         except Exception:

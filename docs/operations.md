@@ -374,6 +374,27 @@ later block the unprivileged user namespaces it needs unless an AppArmor
 profile allows them. Installing such a profile for the Chromium binary and
 setting `browser.sandbox` to true turns it back on.
 
+## Filling on a laptop's browser
+
+A remote workspace fills applications in a dedicated Chrome profile on
+another machine, so the person reviews and submits in a native window instead
+of the live screen. Configure it under `browser.remote`, keyed by workspace
+name (`lib/herald/browser_remote.py` documents the fields):
+
+```bash
+herald config set browser.remote '{"macbook": {"ssh": "macbook", "remote_port": 9333, "local_port": 9390}}'
+herald apply fill <url> --workspace macbook
+```
+
+The first use starts Chrome on that machine over SSH with `open -g` (macOS),
+remote debugging bound to its loopback, and a separate profile under
+`~/Library/Application Support/Herald Chrome`, then forwards the port with
+`ssh -L` and minimizes the window. Tabs open in the background and are never
+raised, so filling does not take focus. A remote workspace is never chosen
+automatically, never counts toward `max_workspaces` and sends no review group:
+the forms wait in that browser. Cookies stay on that machine. The machine must
+be awake; an unreachable one fails the fill without changing anything.
+
 ## Application browser recovery
 
 Managed workers and group review currently require Linux with systemd.

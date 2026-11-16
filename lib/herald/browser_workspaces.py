@@ -20,6 +20,7 @@ import uuid
 from urllib.parse import urlsplit
 
 from . import config, db
+from . import browser_remote as remote
 
 
 class Busy(RuntimeError):
@@ -46,6 +47,11 @@ def get(workspace='default'):
     with db.session() as c:
         if workspace == 'default':
             c.execute("INSERT OR IGNORE INTO browser_workspaces(id,slot,state,created_at) VALUES ('default',0,'agent',?)", (db.now(),))
+        elif remote.is_remote(workspace) and not c.execute('SELECT 1 FROM browser_workspaces WHERE id=?', (workspace,)).fetchone():
+            # Remote workspaces take negative slots: they are not local workers,
+            # never count toward max_workspaces and are never auto-chosen.
+            slot = c.execute('SELECT MIN(0,COALESCE(MIN(slot),0))-1 FROM browser_workspaces').fetchone()[0]
+            c.execute("INSERT INTO browser_workspaces(id,slot,state,created_at) VALUES (?,?,'agent',?)", (workspace, slot, db.now()))
         r = c.execute('SELECT * FROM browser_workspaces WHERE id=?', (workspace,)).fetchone()
         return dict(r) if r else None
 
@@ -88,7 +94,7 @@ def admit(workspace=None):
     free = available_memory_mb()
     if free is not None and free < int(setting('minimum_available_mb', 2048)):
         raise Capacity('Browser work paused to preserve memory and existing drafts; finish a review group before opening more work.')
-    if workspace and workspace != 'default':
+    if workspace and workspace != 'default' and not remote.is_remote(workspace):
         # Use the worker's cgroup, not only machine-wide free memory. The old
         # fixed cap killed Chromium despite available RAM elsewhere.
         r=subprocess.run(['systemctl','--user','show','herald-browser-worker@'+name(workspace)+'.service','-p','MemoryCurrent','-p','MemoryMax'],capture_output=True,text=True,timeout=3)
@@ -126,6 +132,10 @@ def bind(app_id, workspace, tab, generation=None):
 
 def choose(app_id, url):
     old = binding(app_id)
+    if old and remote.is_remote(old['workspace']):
+        # A draft filled on a remote device stays there; refill it in place.
+        assert_agent(old['workspace'], url)
+        return old['workspace']
     if not managed_workers():
         if old and old['workspace']!='default':
             raise Busy('This draft belongs to a managed worker unavailable on this platform; its checkpoints are preserved.')
@@ -135,7 +145,7 @@ def choose(app_id, url):
         assert_agent(old['workspace'], url)
         return old['workspace']
     for r in all_workspaces():
-        if r['slot'] == 0 or r['state'] != 'agent':
+        if r['slot'] <= 0 or r['state'] != 'agent':
             continue
         with db.session() as c:
             count = c.execute("SELECT count(*) FROM application_browser b JOIN applications a ON a.id=b.app_id WHERE b.workspace=? AND a.status NOT IN ('submitted','rejected','closed','withdrawn')", (r['id'],)).fetchone()[0]
@@ -245,7 +255,7 @@ def note_browser(workspace, browser_id):
 
 
 def start(workspace):
-    if workspace == 'default':
+    if workspace == 'default' or remote.is_remote(workspace):
         return
     if not managed_workers():
         raise Busy('Independent browser workers require Linux systemd services.')
@@ -256,7 +266,8 @@ def start(workspace):
 
 
 def ready_group(workspace, *, partial=False, app_ids=None):
-    if not managed_workers():return None
+    # A remote device's browser is already where the person reviews.
+    if not managed_workers() or remote.is_remote(workspace):return None
     # A different session may still be filling this workspace. Never take a
     # partly active desktop away or publish a group behind its writer's back.
     if not get(workspace) or get(workspace)['state'] != 'agent':

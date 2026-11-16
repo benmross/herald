@@ -422,16 +422,24 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
             kind = ats.detect(page.url, page.content()[:20000])
         adapter = ats.adapter_for(kind)(page, bank, company, answers, resume=resume_path(bank))
         adapter.application_url = url
-        bound = bw.get(workspace)
+        before = bw.binding(app_id)
         bw.bind(app_id, workspace, s.tab_id(page))
         checkpoint = Recorder(app_id, workspace, page, adapter)
         adapter.checkpoint = checkpoint
         if checkpoint.recovering:
             resume = next((x for x in checkpoint.artifacts if x['name'] == pathlib.Path(adapter.resume).name), None)
-            if resume:
+            current = pathlib.Path(adapter.resume)
+            if resume and current.exists() and hashlib.sha256(current.read_bytes()).hexdigest() != resume.get('sha256'):
+                # The bank's resume was replaced after this draft was
+                # checkpointed. Restoring the artifact re-attached the
+                # superseded file under the same name (15 Nov 2026), so the
+                # bank's current file wins.
+                checkpoint.artifacts.remove(resume)
+            elif resume:
                 adapter.resume = artifact_path(resume)
         prior_checkpoint = latest(app_id)
-        already_ready = bool(duplicate and duplicate['status']=='filled' and prior_checkpoint and prior_checkpoint['verified'] and not checkpoint.recovering and not retry)
+        already_ready = bool(duplicate and duplicate['status']=='filled' and prior_checkpoint and prior_checkpoint['verified'] and not checkpoint.recovering and not retry
+                             and before and before['workspace'] == workspace)  # moved to another browser: fill it there
         checkpoint.snapshot('opened')
         try:
             result = ({'done':True,'filled':[],'pending':[],'failed':[]} if already_ready else adapter.fill())

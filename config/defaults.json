@@ -168,6 +168,8 @@
   },
   "browser": {
     "_comment": "`herald browse`: the profile browser lives in $HERALD_HOME/browser. executable null means Playwright's Chromium. headed runs it inside Xvfb when installed, which sign-in pages trust more. sandbox stays off until an AppArmor profile allows Chromium's user namespaces (Ubuntu 23.10+).",
+    "_remote_comment": "remote: browser workspaces on another machine over SSH, keyed by workspace name, e.g. {\"macbook\": {\"ssh\": \"macbook\", \"remote_port\": 9333, \"local_port\": 9390}}. `herald apply fill --workspace macbook` fills there. See lib/herald/browser_remote.py.",
+    "remote": {},
     "executable": null,
     "cdp_port": 9333,
     "headed": true,

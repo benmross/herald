@@ -66,6 +66,14 @@ herald apply list                      # status of everything
    "Open in browser to fix" lets them do a sign-in or CAPTCHA themselves.
    Herald never submits.
 
+## Filling on the person's laptop
+
+`herald apply fill <url> --workspace <name>` with a workspace configured in
+`browser.remote` fills in a background Chrome profile on that machine over SSH
+(`docs/operations.md`, "Filling on a laptop's browser"). The forms wait there
+for the person to review and submit; no review group or desk link is needed.
+Check the machine is reachable first (`ssh <host> true`).
+
 ## Checkpoints and ownership
 
 `herald browse workspaces` shows ownership. Use `herald browse --workspace
