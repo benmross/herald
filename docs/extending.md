@@ -108,7 +108,8 @@ can track a lead for the person without publishing its contents.
 
 ## Cloudflare
 
-`herald cf <arguments>` runs Cloudflare's `cf` CLI with the API token stored at
+The bundled `cloudflare` extension (off by default; `herald ext enable
+cloudflare`) adds `herald cf <arguments>`, which runs Cloudflare's `cf` CLI with the API token stored at
 `secrets.json` `cloudflare.api_token` (override with `cloudflare.token_secret`;
 pin an account with `cloudflare.account_id`; pick the executable with
 `cloudflare.cli`). The token travels only in the child's environment as

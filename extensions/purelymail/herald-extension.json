@@ -1,6 +1,6 @@
 {
   "name": "purelymail",
-  "description": "Direct mailbox reading and drafts over TLS IMAP.",
+  "description": "Mail from any IMAP mailbox over TLS (built for Purelymail): read without changing flags, save drafts.",
   "version": "0.1.0",
   "bundled": true,
   "enabled": false,
@@ -17,5 +17,14 @@
       ],
       "setup_hint": "docs/purelymail.md"
     }
-  ]
+  ],
+  "sources": {
+    "purelymail": {
+      "role": "mail",
+      "search": {
+        "message": "mail"
+      },
+      "images": "purelymail:images"
+    }
+  }
 }

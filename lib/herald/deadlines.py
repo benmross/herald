@@ -347,8 +347,10 @@ def disputes(con, rows, days: int = 7) -> dict:
     the row: it stops a session stating the old date without saying why to check.
     """
     since = (dt.datetime.now(config.tz()) - dt.timedelta(days=days)).isoformat(timespec="seconds")
+    from herald import extensions  # noqa: PLC0415
     subjects = [r["title"] for r in con.execute(
-        "SELECT title FROM facts WHERE source IN ('gmail','purelymail') AND kind='message' AND ts>=?",
+        f"SELECT title FROM facts WHERE source IN {extensions.sql_list(extensions.mail_sources())}"
+        " AND kind='message' AND ts>=?",
         (since,)) if r["title"] and _CHANGE.search(r["title"])]
     found = {}
     for row in rows:

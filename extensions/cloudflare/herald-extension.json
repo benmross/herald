@@ -1,0 +1,24 @@
+{
+  "name": "cloudflare",
+  "description": "`herald cf`: Cloudflare's cf CLI run with your stored API token, so deploys never wait on a browser login.",
+  "version": "0.1.0",
+  "bundled": true,
+  "enabled": false,
+  "commands": {
+    "cf": "cloudflare:main"
+  },
+  "provides_capabilities": [
+    {
+      "key": "cloudflare",
+      "title": "Cloudflare",
+      "summary": "Deploy and manage Cloudflare resources with a stored API token.",
+      "secrets": [
+        "cloudflare.api_token"
+      ],
+      "settings": [
+        "cloudflare.account_id"
+      ],
+      "setup_hint": "docs/extending.md#cloudflare"
+    }
+  ]
+}

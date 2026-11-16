@@ -100,6 +100,7 @@ the extension runs and leaves it off until you say so.
 | [transit](https://github.com/benmross/herald-transit) | DC buses and Metro: live arrivals, alerts, trip planning |
 | [shop](https://github.com/benmross/herald-shop) | clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's |
 
+Setup offers these at the end, and `herald ext available` lists them any time.
 Find more under the [`herald-extension`](https://github.com/topics/herald-extension)
 topic, or write your own with [`docs/extensions.md`](docs/extensions.md).
 

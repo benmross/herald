@@ -23,7 +23,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import formatdate, getaddresses, make_msgid, parsedate_to_datetime
 
-from . import collector, config, db, mailtext
+from herald import collector, config, db, mailtext
 
 
 def check(status, operation):
@@ -37,7 +37,9 @@ def mailbox():
     password = config.secret('purelymail.password')
     if not address or not password:
         raise RuntimeError('Set purelymail.address and request purelymail.password (an app password).')
-    client = imaplib.IMAP4_SSL('imap.purelymail.com', 993,
+    # Reading and drafts are plain IMAP, so another provider works by setting
+    # purelymail.imap_host. Catch-all routing and Sieve stay Purelymail-only.
+    client = imaplib.IMAP4_SSL(config.get('purelymail.imap_host') or 'imap.purelymail.com', 993,
                               ssl_context=ssl.create_default_context(), timeout=45)
     try:
         # Never include the server response in a login error: credentials stay private.
@@ -84,7 +86,7 @@ def mime_payload(msg):
 
 
 def images(message_id, destination, seen, settings, remaining):
-    from . import mailimages
+    from herald import mailimages
     path = config.RAW / 'purelymail' / f'{message_id}.eml'
     if not path.exists():
         return [], {'failed': 1}
@@ -226,7 +228,7 @@ def routing_rules():
 
 def create_local_route(*, user, domain, address):
     """Only the tapped extension performer may add a local-delivery rule."""
-    from . import red
+    from herald import red
     if red.acting() is None:
         raise PermissionError('Routing changes require a tapped approval')
     request = urllib.request.Request('https://purelymail.com/api/v0/createRoutingRule',

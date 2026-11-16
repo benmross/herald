@@ -3,7 +3,9 @@
 import pathlib
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "lib"))
-from herald import collector, purelymail
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
+from herald import collector
+import purelymail
 NAME = "purelymail"
 REQUIRES = ("purelymail",)
 CADENCE_MINUTES = 30

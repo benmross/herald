@@ -6,8 +6,9 @@ import sys
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'lib'))
+sys.path.insert(0, str(ROOT / 'extensions/purelymail/lib'))
 spec = importlib.util.spec_from_file_location('purelymail_actions', ROOT / 'extensions/purelymail/red.py')
 actions = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(actions)

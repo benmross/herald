@@ -141,9 +141,10 @@ def _leads(con) -> list[dict]:
 
 
 def collect(con) -> dict:
-    rows = con.execute("""
+    from herald import extensions  # noqa: PLC0415
+    rows = con.execute(f"""
         SELECT id, source, ts, title, body, data FROM facts
-        WHERE source IN ('gmail', 'purelymail') AND kind = 'message'
+        WHERE source IN {extensions.sql_list(extensions.mail_sources())} AND kind = 'message'
           AND ts >= date('now', '-45 days')
         ORDER BY CASE source WHEN 'gmail' THEN 0 ELSE 1 END, id
     """).fetchall()

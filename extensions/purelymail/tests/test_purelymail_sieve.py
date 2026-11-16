@@ -5,8 +5,10 @@ import sys
 import unittest
 from unittest.mock import Mock, patch
 
+sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[3]/'lib'))
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'lib'))
-from herald import purelymail, purelymail_sieve as sieve
+import purelymail
+import purelymail_sieve as sieve
 
 
 class Sieve(unittest.TestCase):

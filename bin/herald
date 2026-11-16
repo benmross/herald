@@ -1069,6 +1069,18 @@ def cmd_ext(args) -> int:
                 print(f"      {_c(', '.join(parts), DIM)}")
         return 0
 
+    if args.action == "available":
+        listed = extensions.catalog()
+        if args.json:
+            print(json.dumps(listed, indent=2))
+            return 0
+        for item in listed:
+            mark = _c("installed", OK) if item["installed"] else _c("available", DIM)
+            print(f"  {item['name']:<10} {mark:<20} {item['title']} ({item['for']})")
+            print(f"  {'':<10} {_c(item['url'], DIM)}")
+        print(_c("\n  herald ext install <url> to add one, or ask your agent.", DIM))
+        print(_c("  More: https://github.com/topics/herald-extension", DIM))
+        return 0
     if args.action == "install":
         if not args.name:
             print("usage: herald ext install <git-url> [--enable]", file=sys.stderr)
@@ -2562,7 +2574,7 @@ PRIVATE_READS = {"status", "db", "fact", "find", "latency", "session", "check", 
 PRIVATE_READ_OPS = {"obligation": ("op", {"list"}), "deadline": ("op", {"list"}),
                     "safety": ("op", {"status", "test"}), "root": ("op", {"status"}),
                     "secret": ("op", {"has", "status"}),
-                    "config": ("action", {"get", "path"}), "ext": ("action", {"list", "check"})}
+                    "config": ("action", {"get", "path"}), "ext": ("action", {"list", "available", "check"})}
 
 
 def _reads_only(args) -> bool:
@@ -2573,11 +2585,6 @@ def _reads_only(args) -> bool:
 
 
 def main() -> int:
-    # `cf` takes arbitrary flags of its own (`--help`, `--json`), which argparse
-    # would claim, so it is dispatched before parsing.
-    if len(sys.argv) > 1 and sys.argv[1] == "cf":
-        from herald import cloudflare
-        return cloudflare.main(sys.argv[2:])
     p = argparse.ArgumentParser(
         prog="herald", formatter_class=argparse.RawDescriptionHelpFormatter,
         description=textwrap.dedent(__doc__ or ""))
@@ -2999,9 +3006,6 @@ def main() -> int:
     x.add_argument("--characters", type=int, default=6000, help="maximum characters per page")
     ex.set_defaults(fn=cmd_exa)
 
-    cfp = sub.add_parser("cf", help="Cloudflare's cf CLI, authenticated with the stored API token")
-    cfp.add_argument("arguments", nargs=argparse.REMAINDER)
-
     bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
     bw.add_argument("--workspace", help="independent browser workspace")
     bw_sub = bw.add_subparsers(dest="op", required=True)
@@ -3148,7 +3152,7 @@ def main() -> int:
 
     e = sub.add_parser("ext", help="extensions: personal collectors, cycles and skills")
     e.add_argument("action", nargs="?", default="list",
-                   choices=["list", "new", "enable", "disable", "sync",
+                   choices=["list", "available", "new", "enable", "disable", "sync",
                             "install", "update", "check", "setup"])
     e.add_argument("name", nargs="?",
                    help="an extension's name; for install, its git URL")
@@ -3161,6 +3165,17 @@ def main() -> int:
     y = sub.add_parser("cycle", help="run one cycle")
     y.add_argument("name")
     y.set_defaults(fn=cmd_cycle)
+
+    # An extension's own subcommand (`herald cf` from the cloudflare
+    # extension). Dispatched before parsing because it takes flags of its own,
+    # and only for names Herald does not use, so it can never shadow one.
+    if len(sys.argv) > 1 and sys.argv[1] not in sub.choices and not sys.argv[1].startswith("-"):
+        if extensions.commands().get(sys.argv[1]):
+            if private_mod.active():
+                print(f"`herald {sys.argv[1]}` comes from an extension and is not "
+                      f"available in a private session.", file=sys.stderr)
+                return 1
+            return extensions.run_command(sys.argv[1], sys.argv[2:])
 
     args = p.parse_args()
     if private_mod.active() and not _reads_only(args):

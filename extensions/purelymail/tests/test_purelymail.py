@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / 'lib'))
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'lib'))
-from herald import purelymail
+import purelymail
 
 RAW = (b'From: Person <person@example.org>\r\nTo: me@example.org\r\n'
        b'Subject: Hello\r\nMessage-ID: <one@example.org>\r\n'

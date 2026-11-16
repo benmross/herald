@@ -340,6 +340,9 @@ main() {
   printf '    %sherald setup --web%s   a page in your browser (easier)\n' "$A" "$E"
   printf '    %sherald setup%s         the same steps in this terminal\n' "$A" "$E"
   echo
+  dim "Setup ends by offering extensions: Canvas, campus events, transit and more."
+  dim "\`herald ext available\` lists them any time."
+  echo
 }
 
 main "$@"

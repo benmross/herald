@@ -4,6 +4,10 @@ Enable direct mailbox reading and drafts without Gmail forwarding. Purelymail's
 administration API manages users and domains; it does not expose mailbox content.
 This integration uses TLS IMAP at `imap.purelymail.com:993` with an app password.
 
+Reading and drafts are plain IMAP, so another provider's mailbox works too:
+set `purelymail.imap_host` to its IMAP server (port 993, TLS). Catch-all
+routing and Sieve forwarding use Purelymail's own API and stay Purelymail-only.
+
 Create an app password in the Purelymail account portal under your user, then:
 
 ```sh

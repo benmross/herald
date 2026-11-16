@@ -203,8 +203,8 @@ def steps() -> list[Step]:
     cannot stop `herald setup` from starting up and reporting that it is
     broken.
     """
-    from . import (basics, done, google, home, install, interview,  # noqa: PLC0415
-                   preflight, providers, rules, sources, telegram, updates)
+    from . import (basics, catalog, done, google, home, install,  # noqa: PLC0415
+                   interview, preflight, providers, rules, sources, telegram, updates)
     return [
         providers.STEP,
         preflight.STEP,
@@ -220,6 +220,8 @@ def steps() -> list[Step]:
         interview.STEP,
         rules.STEP,
         install.STEP,
+        # Last before the summary: optional, specific, and safe to skip.
+        catalog.STEP,
         done.STEP,
     ]
 

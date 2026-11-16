@@ -292,6 +292,119 @@ def lib_paths() -> list[str]:
     return [str(ext.path / "lib") for ext in enabled() if (ext.path / "lib").is_dir()]
 
 
+# --------------------------------------------------------------------------
+# Sources: what an extension's facts are, so core never names an extension.
+#
+# A manifest may declare the fact sources it writes and what role each plays:
+#
+#     "sources": {"purelymail": {"role": "mail",
+#                                "search": {"message": "mail"},
+#                                "images": "purelymail:images"}}
+#
+# `role: mail` puts its messages beside Gmail's in the digest, scout and the
+# deadline checks. `search` maps a fact kind to a search label. `images` is a
+# "module:function" in the extension's lib/ that fetches a message's images.
+# Before this, core code listed 'purelymail', 'canvas', 'textview' and
+# 'discord' by name, so a new mail extension had to edit core to be seen.
+
+#: Manifests written before the `sources` field existed, keyed by extension
+#: name, so an install that has not run `herald ext update` keeps working.
+#: Remove an entry once that extension's published manifest declares it.
+_LEGACY_SOURCES = {
+    "canvas": {"canvas": {"search": {"announcement": "course", "assignment": "course"}}},
+    "textview": {"textview": {"search": {"message": "message"}}},
+    "discord": {"discord": {"search": {"message": "chat"}}},
+}
+
+
+def sources() -> dict[str, dict]:
+    """source name -> its declaration, from every enabled extension."""
+    out: dict[str, dict] = {}
+    for ext in enabled():
+        declared = ext.manifest.get("sources") or _LEGACY_SOURCES.get(ext.name) or {}
+        for name, spec in declared.items():
+            out.setdefault(name, dict(spec, extension=ext.name))
+    return out
+
+
+def mail_sources() -> tuple[str, ...]:
+    """Gmail first, then every enabled extension source with role mail."""
+    return ("gmail",) + tuple(sorted(n for n, s in sources().items() if s.get("role") == "mail"))
+
+
+def sql_list(names) -> str:
+    """`('a', 'b')` for an IN clause. Source names come from manifests, so
+    anything that is not a plain identifier is dropped rather than quoted."""
+    safe = [n for n in names if n.replace("_", "").replace("-", "").isalnum()]
+    return "(" + ", ".join(f"'{n}'" for n in safe) + ")" if safe else "('')"
+
+
+def search_labels() -> dict[tuple[str, str], str]:
+    """(source, kind) -> search label, for every enabled extension source."""
+    return {(name, kind): label
+            for name, spec in sources().items()
+            for kind, label in (spec.get("search") or {}).items()}
+
+
+def source_function(source: str, key: str):
+    """The callable an extension names for `key` on `source`, or None."""
+    import importlib  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    spec = sources().get(source) or {}
+    target = spec.get(key)
+    ext = find(spec.get("extension", ""))
+    if not target or not ext or ":" not in target:
+        return None
+    lib = str(ext.path / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    module, func = target.split(":", 1)
+    return getattr(importlib.import_module(module), func)
+
+
+CATALOG_PATH = config.ROOT / "config" / "extension-catalog.json"
+
+
+def catalog() -> list[dict]:
+    """Published extensions Herald knows about, each marked with whether it
+    is already installed here. Offered at the end of setup."""
+    try:
+        listed = json.loads(CATALOG_PATH.read_text()).get("extensions", [])
+    except (OSError, ValueError):
+        return []
+    have = {e.name for e in all_extensions()}
+    return [dict(item, installed=item.get("name") in have) for item in listed]
+
+
+def commands() -> dict[str, tuple["Extension", str]]:
+    """`herald <name>` subcommands enabled extensions add, as
+    {"cf": (ext, "cloudflare:main")}. The function takes the remaining argv
+    and returns an exit code. A name two extensions claim goes to neither."""
+    out: dict[str, tuple[Extension, str]] = {}
+    clashes: set[str] = set()
+    for ext in enabled():
+        for name, target in (ext.manifest.get("commands") or {}).items():
+            if name in out:
+                clashes.add(name)
+            out[name] = (ext, target)
+    return {k: v for k, v in out.items() if k not in clashes}
+
+
+def run_command(name: str, argv: list[str]) -> int | None:
+    """Run an extension's subcommand, or None if no enabled extension has it."""
+    import importlib  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    found = commands().get(name)
+    if not found or ":" not in found[1]:
+        return None
+    ext, target = found
+    lib = str(ext.path / "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    module, func = target.split(":", 1)
+    return int(getattr(importlib.import_module(module), func)(argv) or 0)
+
+
 def test_paths() -> list[pathlib.Path]:
     """Test directories to run.
 

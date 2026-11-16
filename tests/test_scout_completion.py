@@ -193,7 +193,8 @@ class MailImages(unittest.TestCase):
                 with self.subTest(source=source, error=error), tempfile.TemporaryDirectory() as tmp:
                     with mock.patch.object(scout.config, "RAW", pathlib.Path(tmp)), \
                             mock.patch.object(scout._MailReader, "images", side_effect=error), \
-                            mock.patch("herald.purelymail.images", side_effect=error), \
+                            mock.patch.object(scout.extensions, "source_function",
+                                              return_value=mock.Mock(side_effect=error)), \
                             contextlib.redirect_stderr(io.StringIO()):
                         reader = scout._MailReader(None, scout.dt.datetime.now(scout.config.tz()))
                         lines = reader.render({"source": source, "external_id": "message",

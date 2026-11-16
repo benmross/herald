@@ -28,7 +28,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "lib"))
 
 from herald import mailreadings  # noqa: E402
-from herald import amber, capabilities, config, db, mailimages, mailtext, notify, think  # noqa: E402
+from herald import amber, capabilities, config, db, extensions, mailimages, mailtext, notify, think  # noqa: E402
 
 CYCLE = "scout"
 LABEL = f"cycle:{CYCLE}"
@@ -424,7 +424,7 @@ class _MailReader:
 
     def message(self, candidate_id: str):
         """The stored gmail fact behind an `opportunities/candidate` row."""
-        if not candidate_id.startswith(("gmail:", "purelymail:")):
+        if not candidate_id.startswith(tuple(s + ":" for s in extensions.mail_sources())):
             return None
         return self.con.execute(
             "SELECT * FROM facts WHERE id = ? AND source = ? AND kind='message'",
@@ -469,13 +469,16 @@ class _MailReader:
             out.append(f"- attachments: {', '.join(files[:12])}")
         if images:
             try:
-                if fact["source"] == "purelymail":
-                    from herald import purelymail
-                    saved, skipped = purelymail.images(mid, self.dir / mid, self.seen,
-                                                       self.settings, self.left)
+                fetch = (extensions.source_function(fact["source"], "images")
+                         if fact["source"] != "gmail" else None)
+                if fetch:
+                    saved, skipped = fetch(mid, self.dir / mid, self.seen,
+                                           self.settings, self.left)
                     self.left -= len(saved)
-                else:
+                elif fact["source"] == "gmail":
                     saved, skipped = self.images(mid)
+                else:
+                    saved, skipped = [], {}
             except Exception as e:  # noqa: BLE001
                 # Images are optional enrichment. A MIME/charset error or a
                 # failed cache write must not prevent reading the stored text.
@@ -576,6 +579,7 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
             out.append(f"- #{d.get('opportunity')} {c['kind']} **{c['title']}** {d.get('url')}")
             out.append(f"    <<<{(c['body'] or '')[:600]}>>>")
 
+    near_home = "%" + (config.get("jobs.home_region_label") or "near home").replace("%", "") + "%"
     postings = con.execute("""
         SELECT * FROM facts WHERE source='internships' AND kind='posting'
         ORDER BY
@@ -586,11 +590,11 @@ def build_snapshot(con, fresh: set[str]) -> tuple[str, set[str]]:
                     ('AI/ML/Data','Software','Software Engineering',
                      'Data Science, AI & Machine Learning') THEN 0 ELSE 1 END,
           CASE WHEN json_extract(data,'$.why') LIKE '%early-career%' THEN 0
-               WHEN json_extract(data,'$.why') LIKE '%DMV%'          THEN 1
+               WHEN json_extract(data,'$.why') LIKE ?                THEN 1
                WHEN json_extract(data,'$.why') LIKE '%watched%'      THEN 2
                ELSE 3 END,
           ts DESC
-    """).fetchall()
+    """, (near_home,)).fetchall()
     new_postings = [r for r in postings if r["external_id"] in fresh]
     shown = new_postings[:MAX_NEW_POSTINGS]
     shown_ids |= {r["external_id"] for r in shown}

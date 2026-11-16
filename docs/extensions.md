@@ -11,6 +11,25 @@ students there. Anything that
 specific now lives outside the program, in the same private directory as the
 ledger, and the program stays general.
 
+## Core, extension, or setting?
+
+| Layer | Use it when | Where it lives |
+|---|---|---|
+| Core | Most installs want it on day one, or other features build on it | the checkout |
+| Bundled extension | General, but optional or tied to one platform (iMessage, Cloudflare) | `extensions/` in the checkout, off by default |
+| Published extension | Tied to one service, region or institution (Canvas, a city's buses) | its own `herald-<name>` repository |
+| Personal extension | Only your accounts could use it | `$HERALD_HOME/extensions/`, unpublished |
+| Setting | A preference or a value, not code | `config.json` or `identity/constitution.md` |
+
+Two questions settle most cases. Would a stranger in another country, at
+another school or job, want it on day one? Then it is core. Could a stranger
+use it after filling in settings? Then publish it; until its values live in
+config rather than in its files, it stays personal.
+
+Core never names an extension. If core needs to treat an extension's facts
+specially (as mail, or with a search label), the extension declares that in
+its manifest under `sources`, below.
+
 ## The shape
 
 ```
@@ -107,6 +126,31 @@ asked you for.
 The manifest is read, never imported. Asking an extension what it provides must
 never mean running its code.
 
+### Sources and commands
+
+Two optional fields let an extension join core features without core knowing
+its name:
+
+```json
+"sources": {
+  "fastmail": {"role": "mail", "search": {"message": "mail"},
+               "images": "fastmail:images"}
+},
+"commands": {"tides": "tides:main"}
+```
+
+`sources` names the fact sources the extension writes. `role: "mail"` puts its
+messages beside Gmail's in the digest, scout and deadline checks. `search` maps
+a fact kind to a search label (`mail`, `message`, `chat`, `course`, `event`,
+`task`, `person`). `images` is a `module:function` in the extension's `lib/`
+that saves a message's images for scout.
+
+`commands` adds `herald <name>` subcommands. The value is a `module:function`
+in `lib/` that takes the remaining arguments as a list and returns an exit
+code. A name Herald already uses is never handed to an extension, and a name
+two extensions claim goes to neither. The bundled cloudflare extension's
+`herald cf` works this way.
+
 ## A collector
 
 It has the same contract as a built-in one, plus a four-line bootstrap so it
@@ -200,6 +244,10 @@ def section(con, ctx) -> str | None:
 A section that raises is left out, and the rest of the brief is still built.
 
 ## Sharing one
+
+`herald ext available` lists published extensions from
+`config/extension-catalog.json`, and setup offers them at the end. To list
+yours there, open a pull request adding it to the catalog.
 
 An extension is a directory, so it can be a git repository of its own, and
 that is how one is shared. Somebody else installs it with

@@ -52,20 +52,36 @@ CATEGORIES = {"Software", "AI/ML/Data", "Hardware", "Quant", "Product",
               "Hardware Engineering"}
 
 # Somewhere close enough to live at home needs no housing problem solved;
-# anywhere else does, which is a real filter for a student. The region is a
-# config setting -- `jobs.home_region` -- and the pattern below is its default.
-# Bare city names are a trap. "Columbia" caught Columbia, South Carolina;
-# "Washington" catches Washington State; "Hanover" is in New Hampshire and
-# Pennsylvania too. Anchor on the state, or on a city distinctive enough to
-# stand alone.
-DMV = re.compile(
-    r"\b(MD|Maryland|DC|Virginia)\b"   # the default; jobs.home_region replaces it
+# anywhere else does, which is a real filter for a student. The region is the
+# `jobs.home_region` setting, a regular expression over a posting's locations,
+# with `jobs.home_region_label` as what a match is called ("near home" unless
+# set). Unset, nothing counts as near home: shipping one region as everyone's
+# default made every new install filter for Washington, D.C.
+#
+# Writing a pattern: bare city names are a trap. "Columbia" caught Columbia,
+# South Carolina; "Washington" catches Washington State; "Hanover" is in New
+# Hampshire and Pennsylvania too. Anchor on the state, or on a city distinctive
+# enough to stand alone. DMV_PATTERN is a worked example, and what migration
+# 0012 gave installs that had been relying on the old default.
+DMV_PATTERN = (
+    r"\b(MD|Maryland|DC|Virginia)\b"
     r"|\bVA\b(?!\s*\w)"
     r"|\bWashington,?\s*D\.?C\.?"
     r"|\b(College Park|Bethesda|Rockville|Silver Spring|Greenbelt|Towson|"
     r"Annapolis|Gaithersburg|Germantown|Fort Meade|Aberdeen|"
-    r"Arlington|Alexandria|Reston|McLean|Tysons|Herndon|Chantilly|Quantico)\b",
-    re.I)
+    r"Arlington|Alexandria|Reston|McLean|Tysons|Herndon|Chantilly|Quantico)\b")
+
+
+def home_region() -> tuple[re.Pattern | None, str]:
+    """The configured home-region pattern and its label, or (None, label)."""
+    from herald import config  # noqa: PLC0415
+    pattern = config.get("jobs.home_region")
+    label = config.get("jobs.home_region_label") or "near home"
+    try:
+        return (re.compile(pattern, re.I) if pattern else None), label
+    except re.error as exc:
+        print(f"  jobs.home_region is not a valid pattern: {exc}", file=sys.stderr)
+        return None, label
 REMOTE = re.compile(r"remote|anywhere|us-based", re.I)
 
 # The named early-career programmes. None of them are labelled as such in the
@@ -104,7 +120,8 @@ def _watched(company: str, watch: set[str]) -> bool:
     return False
 
 
-def _relevant(row: dict, watch: set[str]) -> tuple[bool, list[str]]:
+def _relevant(row: dict, watch: set[str],
+              home: tuple[re.Pattern | None, str] = (None, "near home")) -> tuple[bool, list[str]]:
     if not (row.get("active") and row.get("is_visible", True)):
         return False, []
     if row.get("category") and row["category"] not in CATEGORIES:
@@ -121,15 +138,15 @@ def _relevant(row: dict, watch: set[str]) -> tuple[bool, list[str]]:
 
     early = bool(EARLY_CAREER.search(title))
     watched = _watched(company, watch)
-    dmv = bool(DMV.search(locations))
+    near = bool(home[0] and home[0].search(locations))
     remote = bool(REMOTE.search(locations))
 
     if early:
         why.append("named early-career programme")
     if watched:
         why.append("watched employer")
-    if dmv:
-        why.append("DMV")
+    if near:
+        why.append(home[1])
     if remote:
         why.append("remote")
 
@@ -153,6 +170,7 @@ def collect(con) -> dict:
     from herald import config
 
     watch = {w.lower() for w in (config.get("opportunities.watch_employers", []) or [])}
+    home = home_region()
     counts = {"fetched": 0, "relevant": 0, "sources": 0}
     seen_ids: set[str] = set()
 
@@ -170,7 +188,7 @@ def collect(con) -> dict:
         (snapshot / f"{source}.json").write_text(json.dumps(rows)[:0] or "")
 
         for row in rows:
-            ok, why = _relevant(row, watch)
+            ok, why = _relevant(row, watch, home)
             if not ok:
                 continue
             ext = f"{source}:{row.get('id') or row.get('url')}"

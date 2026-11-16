@@ -44,14 +44,19 @@ CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, stamp TEXT NOT NULL);
 
 # (source, kind) -> what a result is called. Health readings, scraped listings
 # and scored candidates are left out: a keyword match in those is noise.
+# Extension sources add theirs through their manifest (`facts_labels()`).
 FACTS = {
-    ("gmail", "message"): "mail", ("purelymail", "message"): "mail",
+    ("gmail", "message"): "mail",
     ("mail_reading", "message"): "reading",
-    ("textview", "message"): "message", ("discord", "message"): "chat",
-    ("canvas", "announcement"): "course", ("canvas", "assignment"): "course",
     ("contacts", "person"): "person", ("gtasks", "task"): "task",
     ("gcal", "event"): "event",
 }
+
+
+def facts_labels() -> dict[tuple[str, str], str]:
+    """Core's labels plus every enabled extension's declared ones."""
+    from herald import extensions  # noqa: PLC0415
+    return {**extensions.search_labels(), **FACTS}
 WEIGHT = {"note": 1.5, "reading": 1.4, "journal": 1.3, "conversation": 1.2, "person": 1.2,
           "course": 1.1, "event": 1.0, "mail": 1.0, "task": 1.0, "message": 0.8, "chat": 0.5}
 KINDS = sorted(WEIGHT)
@@ -180,7 +185,7 @@ def _index_files(con, clean) -> int:
 def _index_facts(con, ledger, clean) -> int:
     known = {r["key"]: r["digest"] for r in con.execute("SELECT key,digest FROM docs WHERE key LIKE 'fact:%'")}
     seen, changed = set(), 0
-    for (source, kind), label in FACTS.items():
+    for (source, kind), label in facts_labels().items():
         for r in ledger.execute("SELECT id,external_id,ts,title,body,data FROM facts "
                                 "WHERE source=? AND kind=?", (source, kind)):
             if label == 'reading':

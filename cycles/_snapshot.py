@@ -39,6 +39,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import changes, config, db, deadlines, extensions, mailreadings, mailtext  # noqa: E402
 
+
+def _mail_in() -> str:
+    """The IN list of mail sources: Gmail plus any extension declaring role mail."""
+    return extensions.sql_list(extensions.mail_sources())
+
+
 # Near-term detail, then everything else in brief. Nothing is hidden merely for
 # being distant: an exam eight weeks out still belongs in the picture, it just
 # does not need a line of its own every morning.
@@ -551,16 +557,16 @@ def build(con, cycle: str) -> tuple[str, set[str]]:
 
     head("New mail since the last cycle")
     if since:
-        fresh = _rows(con, """
+        fresh = _rows(con, f"""
             SELECT * FROM facts
-            WHERE source IN ('gmail', 'purelymail') AND kind='message' AND ts > ?
+            WHERE source IN {_mail_in()} AND kind='message' AND ts > ?
               AND json_extract(data,'$.from_me') = 0
             ORDER BY ts DESC LIMIT ?
         """, (since, NEW_MAIL_LIMIT))
     else:
-        fresh = _rows(con, """
+        fresh = _rows(con, f"""
             SELECT * FROM facts
-            WHERE source IN ('gmail', 'purelymail') AND kind='message'
+            WHERE source IN {_mail_in()} AND kind='message'
               AND json_extract(data,'$.from_me') = 0
             ORDER BY ts DESC LIMIT ?
         """, (NEW_MAIL_LIMIT,))
@@ -810,7 +816,7 @@ def delta(con, prev: dict | None) -> tuple[str | None, dict]:
                 location = _clip(data.get("location"), 45)
                 records.append(f"- Your event {op}: {title}; {when}"
                                + (f"; {location}" if location else "") + ".")
-            elif source in ("gmail", "purelymail") and kind == "message":
+            elif source in extensions.mail_sources() and kind == "message":
                 if data.get("bulk") and not MAIL_SIGNAL.search(value.get("title") or ""):
                     quiet_mail += 1
                     continue

@@ -3,5 +3,6 @@
 import pathlib
 import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3] / "lib"))
-from herald.purelymail import main
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
+from purelymail import main
 raise SystemExit(main())

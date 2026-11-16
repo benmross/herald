@@ -2,7 +2,9 @@
 import json
 import urllib.request
 
-from herald import config, purelymail, purelymail_sieve, red
+import purelymail
+import purelymail_sieve
+from herald import config, red
 
 
 def _render(payload):

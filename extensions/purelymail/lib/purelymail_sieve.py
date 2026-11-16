@@ -9,7 +9,7 @@ import socket
 import ssl
 from contextlib import contextmanager
 
-from . import config, red
+from herald import config, red
 
 
 class Sieve:
