@@ -56,6 +56,9 @@ BRAND = HERE.parents[1] / "docs" / "brand"
 BRAND_FILES = {"plate.jpg": "image/jpeg", "logo-256.png": "image/png",
                "favicon.png": "image/png", "archivo.woff2": "font/woff2"}
 TOKEN = secrets.token_urlsafe(18)
+#: `herald setup --web --preview`: every page as a new user sees it, and no
+#: step's apply ever runs. Buttons say what would have happened and move on.
+PREVIEW = False
 
 #: job id -> {"state": running|done, "outcome": {...}, "url": str|None}
 JOBS: dict[str, dict] = {}
@@ -78,6 +81,14 @@ def _run_step(job_id: str, step_key: str, answers: dict) -> None:
     if step is None:
         _set_job(job_id, state="done",
                  outcome={"ok": False, "message": f"no such step: {step_key}"})
+        return
+    if PREVIEW:
+        keys = [s.key for s in engine.steps()]
+        later = keys[keys.index(step_key) + 1:]
+        _set_job(job_id, state="done", outcome={
+            "ok": True, "message": "Preview: nothing was saved or changed.",
+            "detail": "", "warnings": [], "more": False,
+            "next": later[0] if later else step_key})
         return
     if step_key == "google":
         answers = dict(answers)
@@ -103,7 +114,7 @@ def _overview_payload(step_key: str | None = None) -> dict:
     status, detail = step.status(state)
     return {"steps": rows, "current": step.key, "title": step.title,
             "status": status, "detail": detail, "prompt": prompt,
-            "agent": config.get("agent.name", "Herald")}
+            "agent": config.get("agent.name", "Herald"), "preview": PREVIEW}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -193,6 +204,9 @@ class Handler(BaseHTTPRequestHandler):
             # The interview is an hour of typing; losing it to a closed tab is
             # not acceptable, so drafts are written as they are typed.
             text = payload.get("piece") or ""
+            if PREVIEW:
+                self._json({"saved": 0})
+                return
             path = config.IDENTITY / "interview"
             path.mkdir(parents=True, exist_ok=True)
             (path / "draft.md").write_text(text)
@@ -212,7 +226,9 @@ def _forward_command(port: int) -> str:
             f"-L 127.0.0.1:{google_port}:127.0.0.1:{google_port} $USER@{host}")
 
 
-def serve(port: int = 8799) -> int:
+def serve(port: int = 8799, preview: bool = False) -> int:
+    global PREVIEW
+    PREVIEW = preview
     config.ensure_dirs()
     try:
         httpd = ThreadingHTTPServer((engine.listen_host(), port), Handler)
@@ -222,6 +238,8 @@ def serve(port: int = 8799) -> int:
         return 1
     url = f"http://127.0.0.1:{port}/?token={TOKEN}"
     print()
+    if preview:
+        print(f"\n  Preview: nothing is saved. Home for this run: {config.HOME}")
     print("  Open this in your browser:\n")
     print(f"      {url}\n")
     if engine.over_ssh():

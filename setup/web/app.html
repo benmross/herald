@@ -196,6 +196,7 @@
     <ol class="steps" id="steps"></ol>
   </aside>
   <main>
+    <div id="preview" class="note" style="display:none;margin:0 0 22px">Preview. Nothing you enter is saved, and no button changes anything.</div>
     <h2 id="title">…</h2>
     <div class="prose" id="blurb"></div>
     <form id="form"></form>
@@ -506,6 +507,7 @@ async function load(step) {
   const data = await r.json();
   current = data.current;
   document.getElementById("agent").textContent = data.agent || "Herald";
+  document.getElementById("preview").style.display = data.preview ? "" : "none";
   document.getElementById("title").textContent = data.prompt.title;
   document.getElementById("blurb").innerHTML = md(data.prompt.blurb || "");
   document.getElementById("go").textContent = data.prompt.action || "Continue";
@@ -570,7 +572,7 @@ async function go() {
         next.style.marginTop = "16px";
         /* `more` means this step has another screen; otherwise let the
            server pick the next step that is not done. */
-        next.onclick = () => load(o.more ? current : null);
+        next.onclick = () => load(o.more ? current : (o.next || null));
         result.appendChild(next);
       }
       return;

@@ -261,13 +261,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="store_true", help="what is done so far")
     parser.add_argument("--web", action="store_true", help="use the browser wizard")
     parser.add_argument("--port", type=int, default=8799)
+    parser.add_argument("--preview", action="store_true",
+                        help="with --web: walk through every step as a new user "
+                             "sees it, changing nothing")
     args = parser.parse_args(argv)
+
+    if args.preview:
+        if not args.web:
+            print("--preview needs --web", file=sys.stderr)
+            return 2
+        # A fresh, empty home, so the pages look as they do on a new install
+        # and nothing they read or draft touches the real one. The home is
+        # fixed when herald.config is imported, so set it and start again.
+        if os.environ.get("HERALD_SETUP_PREVIEW") != "1":
+            os.environ["HERALD_HOME"] = tempfile.mkdtemp(prefix="herald-preview-")
+            os.environ["HERALD_SETUP_PREVIEW"] = "1"
+            os.execv(sys.executable, [sys.executable, *sys.argv])
 
     state = State()
 
     if args.web:
         from .web.server import serve  # noqa: PLC0415
-        return serve(port=args.port)
+        return serve(port=args.port, preview=args.preview)
 
     if args.list:
         return show_list(state)

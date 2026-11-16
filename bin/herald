@@ -999,6 +999,8 @@ def cmd_setup(args) -> int:
         argv += ["--list"]
     if args.web:
         argv += ["--web", "--port", str(args.port)]
+    if args.preview:
+        argv += ["--preview"]
     return setup_cli.main(argv)
 
 
@@ -3165,6 +3167,8 @@ def main() -> int:
     su.add_argument("--list", action="store_true", help="what is set up so far")
     su.add_argument("--web", action="store_true", help="use the browser wizard")
     su.add_argument("--port", type=int, default=8799)
+    su.add_argument("--preview", action="store_true",
+                    help="with --web: see every page as a new user does, changing nothing")
     su.set_defaults(fn=cmd_setup)
 
     cn = sub.add_parser("constitution",
