@@ -2,6 +2,31 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.4.8: 16 November 2026
+
+- Help tracking installs report upstream problems instead of leaving them to ask elsewhere
+- Allow draft revisions through the logged Google write path without creating duplicates
+- Let paused tasks wait for a cheaper model on the same provider
+- Close every page after a model choice so unused pickers cannot switch the topic
+- Type pattern answers as words and pick the right dropdown's options
+- Show each topic's engine without relying on restricted Telegram icons
+- Upload the resume chosen for each application, not always the main one
+- Fill applications in a background Chrome on the user's laptop
+- Keep Kiro Telegram turns from failing on Claude tool names
+- Join Kiro observatory captures to sessions and keep tests out of live traces
+- Make Kiro skill guard tests independent of installed setup
+- Keep Kiro effort selection and interrupted credit accounting accurate
+- Add native Kiro capacity without weakening model choice or tool guards
+- Fix the Telegram bridge crashing on every start since the outbox change
+- Preserve completed Telegram replies through outages instead of dropping them
+- Show stalled Telegram turns as stalled, and stop repeat notifications
+- Add `herald cf`: Cloudflare's cf CLI with the stored API token
+- Allow catch-all mail to reach an existing local mailbox after approval
+- Make browse snapshots shorter, start the server reliably, wait out collectors
+- Give herald browse element refs and batched steps over a held connection
+- Continue the same session when a limit card goes unanswered
+- Drop a reply the prose hook sends back instead of delivering it too
+
 ## v0.4.7: 11 November 2026
 
 - Give both engines free public-web retrieval for opportunity discovery
