@@ -2174,7 +2174,7 @@ def cmd_apply(args) -> int:
     if args.op == "fill":
         for url in args.urls:
             try:
-                r=ap.run(url, opportunity=args.opp, company=args.company,workspace=args.workspace,retry=args.retry)
+                r=ap.run(url, opportunity=args.opp, company=args.company,workspace=args.workspace,retry=args.retry,resume=args.resume)
                 show(r);handoff(r)
             except SystemExit:
                 raise
@@ -2920,6 +2920,7 @@ def main() -> int:
     x.add_argument("urls", nargs="+"); x.add_argument("--opp", type=int, help="opportunities.id")
     x.add_argument("--company")
     x.add_argument("--workspace"); x.add_argument("--retry", action="store_true")
+    x.add_argument("--resume", help="this application's resume (ledger-relative or absolute); uploaded under the main resume's file name")
     x = ay_sub.add_parser("refill", help="fill again (after new answers, or a lost tab)")
     x.add_argument("ids", nargs="*", type=int)
     x.add_argument("--workspace"); x.add_argument("--retry", action="store_true")

@@ -344,12 +344,52 @@ def company_from_url(url: str) -> str | None:
     return u.netloc.split(".")[-2] if "." in u.netloc else None
 
 
-def resume_path(bank: dict) -> str:
+RESUME_KEY = "@resume"
+
+
+def resume_path(bank: dict, answers: dict | None = None) -> str:
+    """The resume to upload: the application's own (answers["@resume"], set
+    with `herald apply fill --resume`) or the bank's profile.resume.
+
+    A tailored resume is uploaded under the main resume's file name, staged
+    by content hash, so an employer never sees a file called "(Lowe's)" or
+    "(Robotics)". Until 15 Nov 2026 every application got profile.resume,
+    and the per-company variants chosen for an apply list went unused."""
     p = bank.get("profile", {}).get("resume")
     if not p:
         raise SystemExit("no resume: set profile.resume in the answer bank")
-    path = pathlib.Path(p)
-    return str(path if path.is_absolute() else config.LEDGER / path)
+    main = pathlib.Path(p)
+    main = main if main.is_absolute() else config.LEDGER / main
+    own = (answers or {}).get(RESUME_KEY)
+    if not own:
+        return str(main)
+    src = pathlib.Path(own)
+    src = src if src.is_absolute() else config.LEDGER / src
+    if not src.exists():
+        raise SystemExit(f"this application's resume is missing: {src}")
+    import hashlib, shutil
+    data = src.read_bytes()
+    staged = config.HOME / "run" / "resumes" / hashlib.sha256(data).hexdigest()[:16] / main.name
+    if not staged.exists():
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, staged)
+    return str(staged)
+
+
+def set_resume(con, app_id: int, path: str) -> str:
+    src = pathlib.Path(path).expanduser()
+    if not src.is_absolute() and not src.exists():
+        src = config.LEDGER / path
+    if not src.exists():
+        raise SystemExit(f"no such resume: {path}")
+    try:
+        stored = str(src.resolve().relative_to(config.LEDGER.resolve()))
+    except ValueError:
+        stored = str(src.resolve())
+    ans = app_answers(get(con, app_id))
+    ans[RESUME_KEY] = stored
+    con.execute("UPDATE applications SET answers = ? WHERE id = ?", (json.dumps(ans, ensure_ascii=False), app_id))
+    return stored
 
 
 def canonical_key(url):
@@ -369,7 +409,7 @@ def canonical_key(url):
 
 
 def run(url: str, *, opportunity: int | None = None, company: str | None = None,
-        title: str | None = None, workspace=None, retry=False) -> dict:
+        title: str | None = None, workspace=None, retry=False, resume: str | None = None) -> dict:
     """Open (or reuse) the application's tab, fill everything the bank answers,
     record what is left. Never submits."""
     from . import ats, browse, browser_workspaces as bw
@@ -391,6 +431,8 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
         company = company or (known["company"] if known else None) or company_from_url(url)
         kind = ats.detect(url)
         app_id = record(con, url=url, company=company, title=title, ats=kind, opportunity=opportunity)
+        if resume:
+            set_resume(con, app_id, resume)
         answers = app_answers(get(con, app_id))
         fingerprint = hashlib.sha256(json.dumps([bank, answers, url], sort_keys=True).encode()).hexdigest()
         previous = con.execute('SELECT * FROM application_attempts WHERE app_id=?', (app_id,)).fetchone()
@@ -420,7 +462,7 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
         page.bring_to_front()
         if kind == "generic":
             kind = ats.detect(page.url, page.content()[:20000])
-        adapter = ats.adapter_for(kind)(page, bank, company, answers, resume=resume_path(bank))
+        adapter = ats.adapter_for(kind)(page, bank, company, answers, resume=resume_path(bank, answers))
         adapter.application_url = url
         before = bw.binding(app_id)
         bw.bind(app_id, workspace, s.tab_id(page))
@@ -508,7 +550,7 @@ def snapshot(con, app_id: int) -> int:
         page = next((p for p in s.pages() if (bound and s.tab_id(p)==bound['tab']) or p.url.split('?')[0].startswith(base)), None)
         if page is None:
             return 0
-        adapter = ats.adapter_for(row['ats'])(page, load_bank(), row['company'], app_answers(row), resume=resume_path(load_bank()))
+        adapter = ats.adapter_for(row['ats'])(page, load_bank(), row['company'], app_answers(row), resume=resume_path(load_bank(), app_answers(row)))
         bw.bind(app_id, workspace, s.tab_id(page))
         recorder = Recorder(app_id, workspace, page, adapter)
         recorder.snapshot('captured')

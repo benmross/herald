@@ -74,6 +74,12 @@ herald apply list                      # status of everything
 for the person to review and submit; no review group or desk link is needed.
 Check the machine is reachable first (`ssh <host> true`).
 
+When an apply list names a resume per posting, pass it: `--resume
+<path>` stores it on the application and uploads it under the main resume's
+file name. Without it every application gets `profile.resume`. A tab that
+already shows that file name is not re-uploaded, so close the tab first when
+swapping resumes on a filled form.
+
 ## Checkpoints and ownership
 
 `herald browse workspaces` shows ownership. Use `herald browse --workspace

@@ -328,7 +328,7 @@ class Session:
         with db.session() as c:
             row=c.execute('SELECT a.* FROM applications a JOIN application_browser b ON b.app_id=a.id WHERE b.workspace=? AND b.tab=?',(self.workspace,self.tab_id(page))).fetchone()
         if row is None or row['status'] in apply.DONE:return
-        adapter=ats.adapter_for(row['ats'])(page,apply.load_bank(),row['company'],apply.app_answers(row),resume=apply.resume_path(apply.load_bank()))
+        adapter=ats.adapter_for(row['ats'])(page,apply.load_bank(),row['company'],apply.app_answers(row),resume=apply.resume_path(apply.load_bank(),apply.app_answers(row)))
         Recorder(row['id'],self.workspace,page,adapter).snapshot(stage)
 
     def __enter__(self):

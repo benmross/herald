@@ -53,5 +53,22 @@ class Remote(unittest.TestCase):
         self.assertIn('Herald Chrome', cmd)
 
 
+
+class TailoredResume(unittest.TestCase):
+    def test_tailored_resume_is_staged_under_main_name(self):
+        from herald import apply
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / 'ledger').mkdir()
+            (root / 'ledger' / 'main.pdf').write_bytes(b'main')
+            (root / 'ledger' / 'Resume (Robotics).pdf').write_bytes(b'robotics')
+            with mock.patch.object(config, 'HOME', root), mock.patch.object(config, 'LEDGER', root / 'ledger'):
+                bank = {'profile': {'resume': 'main.pdf'}}
+                self.assertEqual(apply.resume_path(bank), str(root / 'ledger' / 'main.pdf'))
+                staged = pathlib.Path(apply.resume_path(bank, {'@resume': 'Resume (Robotics).pdf'}))
+                self.assertEqual(staged.name, 'main.pdf')
+                self.assertEqual(staged.read_bytes(), b'robotics')
+
+
 if __name__ == '__main__':
     unittest.main()
