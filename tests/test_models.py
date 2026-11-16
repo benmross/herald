@@ -177,6 +177,26 @@ class TelegramModels(unittest.TestCase):
             rows, errors=self.catalog_helper()
         self.assertEqual(rows,ROWS[:2]); self.assertEqual(len(errors),1)
 
+    def test_old_kiro_menu_refreshes_efforts_and_preserves_configured_default(self):
+        choice = {'engine': 'kiro', 'model': 'opus', 'name': 'Opus', 'efforts': ['high', 'max'],
+                  'capabilities_version': 1}
+        def setting(key, default=None):
+            return 'high' if key == 'engines.kiro.effort' else default
+        with patch.object(self.tg.think, 'available_models', return_value=[choice]), \
+                patch.object(self.tg.config, 'enabled_engines', return_value=('kiro',)), \
+                patch.object(self.tg.config, 'get', side_effect=setting):
+            self.tg._choose_model(self.state, self.key, self.msg,
+                {**choice, 'efforts': [], 'capabilities_version': 0})
+        ts = self.state['threads'][self.key]
+        self.assertEqual(ts['effort_caps']['efforts'], ['high', 'max'])
+        self.assertIsNone(ts.get('effort'))
+        self.assertTrue(self.state.get('effort_menus'))
+        ts['effort'] = 'ultra'
+        with patch.object(self.tg.config, 'enabled_engines', return_value=('kiro',)), \
+                patch.object(self.tg.config, 'get', side_effect=setting):
+            self.tg._choose_model(self.state, self.key, self.msg, choice)
+        self.assertIsNone(ts.get('effort'))
+
     def effort_menu(self, index=2):
         update=self.menu()
         update['callback_query']['data']=update['callback_query']['data'].rsplit(':',1)[0]+f':{index}'

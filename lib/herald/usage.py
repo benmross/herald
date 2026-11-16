@@ -225,6 +225,8 @@ def refresh(con, engine: str) -> dict:
             if any(w["resets_at"] is not None and w["resets_at"] <= now for w in windows):
                 raise UsageError(f"{engine} returned expired quota windows; no fresh reading saved")
             snapshot = {"engine": engine, "sampled_at": now, "windows": windows}
+            if engine == "kiro":
+                reconcile_kiro(con, snapshot)
             _save(con, "snapshot", engine, snapshot)
             _save(con, "status", engine, {"ok": True, "checked_at": now})
             if (_saved(con, "alert", f"{engine}:logged_out") or {}).get("active"):
@@ -240,6 +242,30 @@ def refresh(con, engine: str) -> dict:
             if isinstance(exc, UsageLoggedOut):
                 raise UsageLoggedOut(message) from None
             raise UsageError(message) from None
+
+
+def reconcile_kiro(con, snapshot):
+    """Account balance covers every charge, including missing/cancelled receipts.
+
+    Do not attribute the remainder to a particular run: this account can also
+    be used directly in Kiro, and native balance updates may be delayed.
+    """
+    window = snapshot["windows"][0]
+    reset = dt.datetime.fromtimestamp(window["resets_at"], config.tz())
+    start = (reset - dt.timedelta(days=1)).replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    known = con.execute("SELECT coalesce(sum(json_extract(data,'$.credits')),0) FROM facts "
+        "WHERE source=? AND kind='consumption' AND ts>=? AND ts<=? "
+        "AND json_extract(data,'$.engine')='kiro'", (SOURCE, start, db.now())).fetchone()[0]
+    missing = con.execute("SELECT count(*) FROM facts WHERE source=? AND kind='attempt' AND ts>=? "
+        "AND json_extract(data,'$.engine')='kiro' AND json_extract(data,'$.receipt_status')='missing'",
+        (SOURCE, start)).fetchone()[0]
+    total = window["credits_used"]
+    summary = {"engine": "kiro", "sampled_at": snapshot["sampled_at"],
+               "account_credits": total, "receipted_credits": known, "missing_receipts": missing,
+               "unattributed_credits": max(0, total - known),
+               "receipts_ahead_of_balance": max(0, known - total),
+               "note": "Remainder may include other Kiro use, earlier runs or delayed billing; not assigned to individual runs."}
+    _save(con, "reconciliation", "kiro", summary)
 
 
 def _due(value: str) -> dt.datetime | None:
@@ -396,5 +422,10 @@ def report(con, engines=None, *, force: bool = False, cached_only: bool = False)
             lines.append(f"  {window['label']}: {window['used_percent']:g}% used; "
                          f"resets {reset.strftime('%a %d %b')} {config.clock(reset)}")
         failed = failed or stale
+        if engine == "kiro":
+            accounting = _saved(con, "reconciliation", "kiro")
+            if accounting and accounting.get("missing_receipts"):
+                lines.append(f"  {accounting['missing_receipts']} run(s) without native credit receipts; "
+                             "their spend remains included in the account balance")
     plan = anchors.describe(con)
     return "\n".join([*lines, *([plan] if plan else [])]), failed

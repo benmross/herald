@@ -6,6 +6,8 @@ import shlex
 import re
 import os
 import tempfile
+import math
+import uuid
 
 from . import config
 
@@ -63,7 +65,7 @@ def verify_workspace(name, cwd):
 
 
 def record(result, prompt, label):
-    """Keep conversation continuity and native credit receipts, without tools."""
+    """Keep successful conversation text; credit accounting covers all outcomes."""
     from . import db
     if not result.session_id or not re.fullmatch(r"[\w-]+", result.session_id):
         return
@@ -74,12 +76,26 @@ def record(result, prompt, label):
             for role, text in (("user", prompt), ("assistant", result.text)):
                 stream.write(json.dumps({"type": role, "timestamp": db.now(),
                     "message": {"content": text}}) + "\n")
-        if result.credits_used is not None:
-            with db.session() as con:
-                db.put_fact(con, "subscription_usage", "consumption", ts=db.now(),
-                    data={"engine": "kiro", "session_id": result.session_id,
-                          "credits": result.credits_used, "model": result.model, "label": label})
-                con.commit()
     except Exception:
         # Bookkeeping cannot lose the answer of a completed model run.
+        pass
+
+
+def record_attempt(*, label, model, session_id, credits, turn_ids, outcome):
+    """Record every outcome; missing native metering is unknown, never zero."""
+    from . import db
+    try:
+        if isinstance(credits, bool) or not isinstance(credits, (int, float)) or not math.isfinite(credits) or credits < 0:
+            credits = None
+        value = {"engine": "kiro", "session_id": session_id, "credits": credits,
+                 "model": model, "label": label, "outcome": outcome,
+                 "turn_ids": turn_ids, "receipt_status": "measured" if credits is not None else "missing"}
+        key = uuid.uuid4().hex
+        with db.session() as con:
+            db.put_fact(con, "subscription_usage", "attempt", external_id=key, ts=db.now(), data=value)
+            if credits is not None:
+                db.put_fact(con, "subscription_usage", "consumption", external_id=key, ts=db.now(), data=value)
+            con.commit()
+    except Exception:
+        # An accounting failure must not swallow a completed answer or cancellation.
         pass

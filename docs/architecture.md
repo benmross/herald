@@ -775,11 +775,22 @@ specs, sub-agents and background shell calls are excluded. Private sessions
 are refused until Kiro's native persistence can be isolated correctly.
 
 The native session ID supports resume. Conversation text is mirrored in
-`ledger/raw/kiro-sessions/` for the normal transcript reader. Native per-turn
-credit receipts are saved as `subscription_usage` consumption facts, separate
-from dollar cost and token counts. `/usage kiro` reads the monthly credit pane
+`ledger/raw/kiro-sessions/` for the normal transcript reader. Every Kiro outcome is saved as a `subscription_usage` attempt, including
+failed, timed-out and cancelled calls. Native credit receipts are saved as
+consumption facts independently of success, separate from dollar cost and
+token counts. Missing receipts stay unknown rather than zero; monthly usage
+reconciles receipted totals against the account balance without assigning
+unexplained account-wide charges to a particular run. `/usage kiro` reads the monthly credit pane
 in a disposable tmux server without inference. Its reset date is the CLI's
 estimate. Auto requires a fresh nonempty credit balance before choosing Kiro;
 five-hour quota anchors do not apply. Structured JSON uses a prompt instruction
 and JSON parsing, without a native schema guarantee. Mid-turn steering and
 extension-specific Claude/Codex hooks are not translated by this adapter.
+
+Kiro's model picker reads effort capabilities from a native ACP metadata
+session without sending a prompt. Supported levels and native defaults come
+from model configuration metadata; missing metadata is shown as unavailable,
+not as proof that a model has no effort control. Old saved Kiro menus refresh
+their capability metadata. A model selection preserves the install's configured
+effort when no topic override exists. Ordinary inference launches read only
+the lightweight model list, avoiding an extra metadata session per turn.

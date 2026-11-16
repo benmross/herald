@@ -130,7 +130,7 @@ def _catalog_process(cmd: list[str], timeout: int = 20):
         reader.start()
         deadline = time.monotonic() + timeout
 
-        def ask(messages, matches):
+        def ask(messages, matches, observe=None):
             for message in messages:
                 proc.stdin.write(json.dumps(message) + "\n")
             proc.stdin.flush()
@@ -148,8 +148,11 @@ def _catalog_process(cmd: list[str], timeout: int = 20):
                     value = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(value, dict) and matches(value):
-                    return value
+                if isinstance(value, dict):
+                    if observe:
+                        observe(value)
+                    if matches(value):
+                        return value
 
         try:
             yield ask
@@ -263,7 +266,53 @@ def subscription_usage(engine: str, timeout: int = 45) -> dict | str:
         subprocess.run([*base, "kill-server"], env=env, capture_output=True, timeout=5)
 
 
-def available_models(engine: str) -> list[dict]:
+_kiro_caps_cache = {}
+
+
+def _kiro_model_capabilities():
+    """Live ACP configuration metadata, with no prompt or inference."""
+    cmd = config.engine_settings("kiro").get("cmd") or "kiro-cli"
+    cached = _kiro_caps_cache.get(cmd)
+    if cached and time.monotonic() - cached[0] < 60:
+        return cached[1]
+    options = []
+
+    def observe(event):
+        params = event.get("params") or {}
+        update = params.get("update") or {}
+        options.extend(update.get("configOptions") or [])
+
+    with tempfile.TemporaryDirectory(prefix="herald-kiro-catalog-") as folder:
+        with _catalog_process([cmd, "acp", "--agent-engine", "v3"]) as ask:
+            init = ask([{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": 1, "clientCapabilities": {},
+                "clientInfo": {"name": "herald", "version": "1"}}}], lambda v: v.get("id") == 1)
+            if "error" in init:
+                raise RuntimeError("Kiro could not initialize model capabilities")
+            result = ask([{"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {
+                "cwd": folder, "mcpServers": []}}], lambda v: v.get("id") == 2, observe=observe)
+            if "error" in result:
+                raise RuntimeError("Kiro could not read model capabilities")
+            options.extend((result.get("result") or {}).get("configOptions") or [])
+            if not any(o.get("id") == "model" for o in options):
+                ask([], lambda v: any(o.get("id") == "model" for o in
+                    ((v.get("params") or {}).get("update") or {}).get("configOptions", [])), observe=observe)
+    models = next((o.get("options", []) for o in reversed(options) if o.get("id") == "model"), [])
+    caps = {}
+    for model in models:
+        meta = (model.get("_meta") or {}).get("kiro") or {}
+        if meta.get("hasEffort") is True and isinstance(meta.get("effortLevels"), list):
+            caps[model["value"]] = {"efforts": [e for e in meta["effortLevels"] if e in EFFORTS or e == "none"],
+                                    "default_effort": meta.get("defaultEffortLevel")}
+        elif meta.get("hasEffort") is False:
+            caps[model["value"]] = {"efforts": []}
+    if not caps:
+        raise RuntimeError("Kiro returned no model capability metadata")
+    _kiro_caps_cache[cmd] = (time.monotonic(), caps)
+    return caps
+
+
+def available_models(engine: str, *, include_efforts: bool = True) -> list[dict]:
     """Ask the installed CLI for its complete catalog; never run inference.
 
     Claude's initialization control response contains the picker models.
@@ -278,8 +327,13 @@ def available_models(engine: str) -> list[dict]:
         if value.returncode:
             raise RuntimeError("Kiro could not list models; check its login")
         rows = json.loads(value.stdout).get("models", [])
+        try:
+            caps = _kiro_model_capabilities() if include_efforts else {}
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            caps = {}  # Missing metadata is unknown, never "no adjustable effort".
         result = [{"engine": engine, "model": r["model_id"], "name": r["model_name"],
-                   "efforts": [], "context_window": r.get("context_window_tokens"),
+                   **caps.get(r["model_id"], {}), "capabilities_version": 1 if r["model_id"] in caps else 0,
+                   "context_window": r.get("context_window_tokens"),
                    "rate_multiplier": r.get("rate_multiplier")} for r in rows]
     elif engine == "claude":
         cmd = [config.engine_settings("claude").get("cmd") or "claude", "-p", "--input-format", "stream-json", "--output-format",
@@ -408,7 +462,9 @@ def cancel(key: str) -> bool:
     if entry.get("protocol_cancel"):
         return True  # The app-server loop sends turn/interrupt, with a kill backstop.
     try:
-        if entry.get("process_group"):
+        if entry.get("interrupt_signal"):
+            entry["proc"].send_signal(entry["interrupt_signal"])
+        elif entry.get("process_group"):
             os.killpg(entry["proc"].pid, signal.SIGTERM)
         else:
             entry["proc"].terminate()
@@ -867,16 +923,23 @@ def _handle_kiro_line(line, state, on_progress, cancel_key=None):
             if option.get("id") in ("model", "effortLevel"):
                 state["kiro_" + option["id"]] = option.get("currentValue")
     meta = (update.get("_meta") or {}).get("kiro") or {}
-    if meta.get("kind") == "turn_completion":
+    if meta.get("kind") == "turn_completion" and not meta.get("replay"):
         credits = [r["usage"] for r in meta.get("promptTurnSummaries", [])
                    if r.get("unit") == "credit" and isinstance(r.get("usage"), (int, float))]
         if credits:
-            state["credits_used"] = sum(credits)
+            key = meta.get("executionId") or meta.get("turnId") or state.get("kiro_turn_id") or "turn"
+            state.setdefault("credit_receipts", {})[key] = sum(credits)
+            state["credits_used"] = sum(state["credit_receipts"].values())
     if meta.get("kind") == "context_usage":
         percentage = (meta.get("contextUsage") or {}).get("usagePercentage")
         if isinstance(percentage, (int, float)):
             state["context_percent"] = percentage
     if kind == "session_info_update" and ((update.get("_meta") or {}).get("kiro") or {}).get("turnStart"):
+        if not state.get("kiro_live_started"):
+            state.pop("credit_receipts", None)
+            state.pop("credits_used", None)
+            state["kiro_live_started"] = True
+        state["kiro_turn_id"] = meta.get("executionId") or meta.get("turnId")
         state["round_trips"] = state.get("round_trips", 0) + 1
         for key, expected in (("model", state.get("expected_model")),
                               ("effortLevel", state.get("expected_effort"))):
@@ -938,11 +1001,13 @@ def _run_kiro(prompt, *, model, effort, cwd, timeout, idle_timeout, resume,
     if allowed_tools and any(tool not in tool_map for tool in allowed_tools):
         raise ValueError("Unsupported tool restriction for Kiro")
     native_tools = [native for tool in allowed_tools for native in tool_map[tool]] if allowed_tools is not None else None
-    if effort and effort not in ("low", "medium", "high", "xhigh", "max"):
+    if effort and effort not in ("none", "low", "medium", "high", "xhigh", "max"):
         raise ValueError("Kiro does not support effort " + effort)
     name = kiro.profile(lean=lean, read_only=permission_mode == "plan", no_tools=allowed_tools == [], allowed_tools=native_tools)
     kiro.verify_workspace(name, cwd)
-    catalog = available_models("kiro")
+    # A normal turn needs availability/context only. Do not add an ACP
+    # metadata session to the critical path just to populate the UI picker.
+    catalog = available_models("kiro", include_efforts=False)
     selected = next((row for row in catalog if row["model"] == model), None)
     if model and selected is None:
         raise RuntimeError("Requested Kiro model is unavailable; no run started")
@@ -965,8 +1030,12 @@ def _run_kiro(prompt, *, model, effort, cwd, timeout, idle_timeout, resume,
         proc.stdin.write(text)
         proc.stdin.close()
 
+    observed = {}
+
     def finish(state):
         payload = state.get("payload")
+        if payload:
+            payload["credits_used"] = state.get("credits_used")
         if payload and json_schema and not payload.get("is_error"):
             try:
                 payload["structured_output"] = json.loads(payload["result"])
@@ -980,10 +1049,16 @@ def _run_kiro(prompt, *, model, effort, cwd, timeout, idle_timeout, resume,
     def handle(line, state, progress, key):
         state["expected_model"], state["expected_effort"] = model, effort
         _handle_kiro_line(line, state, progress, key)
+        observed.update(session_id=state.get("session_id"), credits=state.get("credits_used"),
+                        turn_ids=list(state.get("credit_receipts", {})))
 
-    return _run_process("kiro", cmd, prompt, write=write, steerable=False,
-        handler=handle, finish=finish, cwd=cwd, timeout=timeout,
-        idle_timeout=idle_timeout, on_progress=on_progress, cancel_key=cancel_key, timing=timing)
+    try:
+        return _run_process("kiro", cmd, prompt, write=write, steerable=False,
+            handler=handle, finish=finish, cwd=cwd, timeout=timeout,
+            idle_timeout=idle_timeout, on_progress=on_progress, cancel_key=cancel_key, timing=timing)
+    finally:
+        if timing is not None:
+            timing["kiro_usage"] = observed
 
 
 def _toml_string(text: str) -> str:
@@ -1646,7 +1721,8 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                 _active[cancel_key] = {"proc": proc, "cancelled": cancelled,
                                         "steer_queue": steer_queue,
                                         "accepting_steers": steerable, "progress": "",
-                                        "process_group": _private_scratch() is not None or engine == "kiro"}
+                                        "process_group": _private_scratch() is not None or engine == "kiro",
+                                        "interrupt_signal": signal.SIGINT if engine == "kiro" else None}
 
         _write_user_message(prompt)
 
@@ -1674,8 +1750,15 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
         # cut off at an arbitrary hour.
         hard_deadline = time.monotonic() + timeout if timeout else float("inf")
         idle_deadline = time.monotonic() + idle_timeout
+        cancel_deadline = None
         while True:
             now = time.monotonic()
+            if engine == "kiro" and cancelled.is_set():
+                cancel_deadline = cancel_deadline or now + 5
+                if now >= cancel_deadline:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    break
             if now >= hard_deadline:
                 timeout_reason = f"hit its {timeout}s ceiling"
                 raise subprocess.TimeoutExpired(cmd, timeout)
@@ -2184,6 +2267,20 @@ def think(prompt: str, *, label: str,
     timing: dict = {}
     code, payload, context_tokens, out, stderr, cancelled = _launch(prompt, resume, timing)
     elapsed = int((time.monotonic() - started) * 1000)
+    kiro_credits = None
+    if engine == "kiro":
+        from . import kiro
+        receipt = timing.get("kiro_usage") or {}
+        kiro_credits = receipt.get("credits")
+        if kiro_credits is None:
+            kiro_credits = (payload or {}).get("credits_used")
+        if payload is not None:
+            payload["credits_used"] = kiro_credits
+        kiro.record_attempt(label=label, model=model,
+            session_id=receipt.get("session_id") or (payload or {}).get("session_id") or _session_from_stream(out) or resume,
+            credits=kiro_credits, turn_ids=receipt.get("turn_ids", []),
+            outcome="cancelled" if cancelled else "timeout" if code == 124 else
+                    "success" if code == 0 and payload and not payload.get("is_error") else "failed")
 
     if cancelled:
         # A deliberate interruption, not a failure, and worth telling apart
@@ -2194,6 +2291,7 @@ def think(prompt: str, *, label: str,
                 error="cancelled by user")
         return Result(ok=False, engine=engine, model=model, duration_ms=elapsed,
                       error="cancelled by user", cancelled=True,
+                      credits_used=kiro_credits,
                       session_id=_session_from_stream(out))
 
     # The empty-result anomaly is a claude-code CLI bug (see _is_anomalous);
@@ -2307,6 +2405,7 @@ def think(prompt: str, *, label: str,
     # there, and this is what lets the next turn resume into it instead
     # of starting over on top of half-finished files.
     return Result(ok=False, engine=engine, model=model, duration_ms=elapsed,
+                  credits_used=kiro_credits,
                   session_id=(payload or {}).get("session_id") or _session_from_stream(out) or resume,
                   rate_limited=limited, error=engine_error)
 

@@ -1289,6 +1289,12 @@ def handle(update: dict, state: dict) -> None:
         caps = ts.get("effort_caps") or {}
         if caps.get("engine") != (ts.get("engine") or config.default_engine()) or caps.get("model") != ts.get("model"):
             caps = {}
+        if caps.get("engine") == "kiro" and caps.get("capabilities_version") != 1:
+            try:
+                caps = next((r for r in think.available_models("kiro") if r["model"] == caps.get("model")), {})
+                ts["effort_caps"] = caps
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+                caps = {}
         if not level:
             if caps:
                 _show_effort_picker(state, key, msg, caps)
@@ -1299,7 +1305,7 @@ def handle(update: dict, state: dict) -> None:
                           f"its own command. Use /models to pick from this model's supported levels.", thread_id)
             return
         level = level.strip().lower()
-        if caps and level != "auto" and level not in caps["efforts"]:
+        if caps and "efforts" in caps and level != "auto" and level not in caps["efforts"]:
             send(chat_id, "That model doesn't support this level. Use /effort to see its choices.", thread_id)
             return
         try:
@@ -1632,7 +1638,7 @@ def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict,
                         *, selection_note: str | None = None) -> None:
     chat_id = (msg.get("chat") or {})["id"]
     thread_id = msg.get("message_thread_id")
-    if "efforts" not in choice:
+    if "efforts" not in choice or (choice["engine"] == "kiro" and choice.get("capabilities_version") != 1):
         text = "Thinking levels unavailable. Run /models again for a fresh list."
         if selection_note is not None:
             _replace_picker(msg, selection_note + "\n\n" + text)
@@ -1676,7 +1682,7 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
     config.reload()
     # Old persisted menus predate effort metadata. Refresh the selected engine
     # without invalidating their stable model identifiers.
-    if "efforts" not in choice:
+    if "efforts" not in choice or (choice["engine"] == "kiro" and choice.get("capabilities_version") != 1):
         try:
             choice = next((r for r in think.available_models(choice["engine"])
                            if r["model"] == choice["model"]), choice)
@@ -1693,7 +1699,11 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
     note = _select_model(ts, choice["engine"], choice["model"])
     if "efforts" in choice:
         ts["effort_caps"] = choice
-        if ts.get("effort") not in choice["efforts"]:
+        configured = config.get(f"engines.{choice['engine']}.effort")
+        if (choice["engine"] == "kiro" and configured in choice["efforts"]
+                and ts.get("effort") != "auto" and ts.get("effort") not in choice["efforts"]):
+            ts.pop("effort", None)  # Use the configured effort, not an accidental CLI default.
+        elif ts.get("effort") not in choice["efforts"]:
             ts["effort"] = "auto"
     else:
         ts.pop("effort_caps", None)
