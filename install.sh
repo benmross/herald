@@ -21,17 +21,30 @@ REPO="${HERALD_REPO:-https://github.com/benmross/herald.git}"
 DEST="${HERALD_DIR:-$HOME/herald}"
 MIN_PY_MINOR=11
 
-bold() { printf '\033[1m%s\033[0m\n' "$*"; }
-dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
-warn() { printf '\033[33m%s\033[0m\n' "$*"; }
-die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+# Herald's one colour is blue (#5b8cff, docs/brand). Truecolor where the
+# terminal says it has it, plain blue otherwise, nothing under NO_COLOR or
+# when the output is not a terminal.
+if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then
+  B="" E="" D="" Y="" R="" A=""
+else
+  B=$'\033[1m' E=$'\033[0m' D=$'\033[2m' Y=$'\033[33m' R=$'\033[31m'
+  case "${COLORTERM:-}" in
+    truecolor|24bit) A=$'\033[38;2;91;140;255m' ;;
+    *) A=$'\033[34m' ;;
+  esac
+fi
+bold() { printf '%s%s%s\n' "$B" "$*" "$E"; }
+step() { printf '\n%s▸%s %s%s%s\n' "$A" "$E" "$B" "$*" "$E"; }
+dim()  { printf '%s  %s%s\n' "$D" "$*" "$E"; }
+warn() { printf '%s! %s%s\n' "$Y" "$*" "$E"; }
+die()  { printf '%s✗ %s%s\n' "$R" "$*" "$E" >&2; exit 1; }
 
 ask() {
   # ask "question" -> 0 for yes. Defaults to yes; non-interactive answers yes,
   # because a piped installer that stops to ask has nobody to answer it.
   local prompt="$1"
   if [ ! -t 0 ]; then return 0; fi
-  printf '\033[1m%s\033[0m [Y/n] ' "$prompt"
+  printf '%s%s%s [Y/n] ' "$B" "$prompt" "$E"
   read -r reply </dev/tty || return 0
   case "$reply" in [nN]*) return 1 ;; *) return 0 ;; esac
 }
@@ -126,7 +139,7 @@ install_macos_deps() {
   have git || wanted+=(git)
   python_ok python3 || wanted+=(python@3.13)
   if [ ${#wanted[@]} -gt 0 ]; then
-    bold "Installing: ${wanted[*]}"
+    step "Installing: ${wanted[*]}"
     brew install "${wanted[@]}"
   fi
 }
@@ -143,7 +156,7 @@ install_linux_deps() {
   [ ${#wanted[@]} -eq 0 ] && return 0
 
   if have apt-get; then
-    bold "Installing: ${wanted[*]}"
+    step "Installing: ${wanted[*]}"
     dim "This needs your password once."
     run_sudo apt-get update -qq
     run_sudo apt-get install -y "${wanted[@]}"
@@ -158,7 +171,7 @@ install_linux_deps() {
 
 install_claude() {
   have_native claude && return 0
-  bold "Installing the Claude Code CLI"
+  step "Installing the Claude Code CLI"
   dim  "Herald runs it for you, on your own Claude subscription. There is"
   dim  "nothing extra to pay."
   curl -fsSL https://claude.ai/install.sh | bash
@@ -168,7 +181,7 @@ install_claude() {
 
 install_codex() {
   have_native codex && return 0
-  bold "Installing the Codex CLI"
+  step "Installing the Codex CLI"
   dim "Herald runs it on your ChatGPT subscription."
   curl -fsSL https://chatgpt.com/codex/install.sh | sh
   export PATH="$HOME/.local/bin:$PATH"
@@ -181,7 +194,9 @@ choose_providers() {
   local selected="${HERALD_ENGINES:-}" reply
   if [ -z "$selected" ] && [ "${HERALD_CONTAINER:-}" != 1 ] \
       && [ -c /dev/tty ] && ( : </dev/tty ) 2>/dev/null; then
-    printf 'Model providers: [1] Claude only, [2] Codex only, [3] Both, [Enter] choose in setup: ' >/dev/tty
+    step "Which model subscription will Herald use?" >/dev/tty
+    printf '    %s1%s Claude   %s2%s ChatGPT (Codex)   %s3%s both   %sEnter%s decide during setup\n    > ' \
+      "$A" "$E" "$A" "$E" "$A" "$E" "$D" "$E" >/dev/tty
     read -r reply </dev/tty || reply=""
     case "$reply" in 1) selected=claude ;; 2) selected=codex ;; 3) selected=both ;; "") ;; *) die "Choose 1, 2, 3 or press Enter." ;; esac
   fi
@@ -211,10 +226,8 @@ PROVIDERS
 
 main() {
   echo
-  bold "Herald"
-  dim  "A personal agent that reads what you connect, keeps track of what it"
-  dim  "concludes, and tells you each morning what actually matters."
-  echo
+  printf '  %s█▌%s %sHerald%s\n' "$A" "$E" "$B" "$E"
+  printf '  %sA second you that never sleeps.%s\n' "$D" "$E"
 
   local os; os="$(detect_os)"
   [ "$os" = other ] && die "This installer works on macOS and Linux. On Windows, install WSL first and run it there."
@@ -237,7 +250,7 @@ main() {
     DEST="$(cd "$(dirname "$0")" && pwd)"
     dim "Using this checkout: $DEST"
   elif [ -d "$DEST/.git" ]; then
-    bold "Updating $DEST"
+    step "Updating $DEST"
     # Only ever forwards. `herald update` is the real path once installed;
     # this is for a checkout whose setup never finished.
     git -C "$DEST" fetch --tags --quiet origin || warn "could not reach $REPO; leaving it alone"
@@ -247,7 +260,7 @@ main() {
     fi
   else
     have git || die "git is needed and could not be installed. Install it, then run this again."
-    bold "Cloning into $DEST"
+    step "Cloning into $DEST"
     git clone --quiet "$REPO" "$DEST"
     # Start at the newest release, not at whatever main is this minute. main
     # is where the maintainer works; a tag is where a change is meant for
@@ -274,10 +287,10 @@ main() {
   # because trusting it is how the second run failed on "./venv/bin/pip: No
   # such file".
   if [ ! -x venv/bin/python ] || [ ! -x venv/bin/pip ]; then
-    bold "Creating the virtualenv"
+    step "Creating the virtualenv"
     "$py" -m venv --clear venv
   fi
-  bold "Installing Python dependencies"
+  step "Installing Python dependencies"
   ./venv/bin/pip install --quiet --upgrade pip
   ./venv/bin/pip install --quiet -r requirements.txt
 
@@ -294,8 +307,7 @@ main() {
   esac
 
   echo
-  bold "Installed."
-  echo
+  printf '%s✓%s %sInstalled.%s\n\n' "$A" "$E" "$B" "$E"
 
   if [ -n "$need_path" ]; then
     warn "This terminal window was opened before \`herald\` existed, so it"
@@ -324,12 +336,10 @@ main() {
   # command there is typed on the host with `docker exec` in front of it.
   [ "${HERALD_CONTAINER:-}" = 1 ] && exit 0
 
-  dim "Setup checks the CLI and subscription login for the providers you choose."
+  bold "Next: set it up (about half an hour, most of it writing about yourself)."
   echo
-  dim "Now set Herald up. Either of these does the same thing:"
-  echo
-  echo "    herald setup --web      a page in your browser (easier)"
-  echo "    herald setup            in this terminal"
+  printf '    %sherald setup --web%s   a page in your browser (easier)\n' "$A" "$E"
+  printf '    %sherald setup%s         the same steps in this terminal\n' "$A" "$E"
   echo
 }
 

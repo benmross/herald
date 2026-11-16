@@ -50,6 +50,11 @@ from herald import config  # noqa: E402
 from setup import engine  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
+# The page's look. Served without the token: these are the same images
+# the public README shows, and nothing else in docs/ is reachable.
+BRAND = HERE.parents[1] / "docs" / "brand"
+BRAND_FILES = {"plate.jpg": "image/jpeg", "logo-256.png": "image/png",
+               "favicon.png": "image/png", "archivo.woff2": "font/woff2"}
 TOKEN = secrets.token_urlsafe(18)
 
 #: job id -> {"state": running|done, "outcome": {...}, "url": str|None}
@@ -131,6 +136,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         path = parsed.path
+
+        if path.startswith("/brand/") and path[7:] in BRAND_FILES:
+            name = path[7:]
+            self._send(200, (BRAND / name).read_bytes(), BRAND_FILES[name])
+            return
 
         if path in ("/", "/index.html"):
             if not self._authorised(query):

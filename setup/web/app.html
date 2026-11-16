@@ -4,42 +4,47 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Herald setup</title>
+<link rel="icon" href="/brand/favicon.png">
 <style>
-  :root {
-    --bg: #fbfaf8; --panel: #ffffff; --ink: #1b1a18; --muted: #6b6862;
-    --line: #e6e2db; --accent: #7a5c2e; --accent-ink: #ffffff;
-    --ok: #2f6f4f; --warn: #8a6d1f; --bad: #9b3a2f;
+  /* Herald's look: an emulsion plate, Archivo, one blue. docs/brand/README.md. */
+  @font-face {
+    font-family: Archivo; src: url(/brand/archivo.woff2) format("woff2-variations");
+    font-weight: 100 900; font-stretch: 62% 125%; font-display: swap;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #171614; --panel: #1e1d1a; --ink: #ece8e1; --muted: #9a958c;
-      --line: #302e2a; --accent: #c9a45e; --accent-ink: #1b1a18;
-      --ok: #7fb894; --warn: #d6b45c; --bad: #e08a7c;
-    }
+  :root {
+    color-scheme: dark;
+    --bg: #0a0c12; --panel: #11141c; --ink: #ecebe4; --muted: #9a9ca6;
+    --line: #232837; --accent: #5b8cff; --accent-ink: #0a0c12;
+    --ok: #7fc8a0; --warn: #e3c06a; --bad: #f08a80;
+    --sans: Archivo, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--ink);
-    font: 16px/1.6 ui-serif, Georgia, "Iowan Old Style", Palatino, serif;
-  }
-  .wrap { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--sans); }
+  .wrap { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
   @media (max-width: 820px) { .wrap { grid-template-columns: 1fr; } aside { position: static !important; height: auto !important; } }
 
   aside {
-    border-right: 1px solid var(--line); padding: 28px 20px;
-    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--line); padding: 0 16px 28px;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--bg);
   }
+  .brand {
+    display: flex; align-items: flex-end; gap: 12px; margin: 0 -16px 18px;
+    padding: 56px 20px 18px; min-height: 130px;
+    background: linear-gradient(to bottom, transparent 40%, var(--bg)), url(/brand/plate.jpg) 35% 50% / cover;
+  }
+  .brand img { width: 40px; height: 40px; border-radius: 10px; }
   aside h1 {
-    font-size: 17px; letter-spacing: .02em; margin: 0 0 4px;
+    font: 800 26px/1 var(--sans); font-stretch: 125%; letter-spacing: -.03em; margin: 0;
   }
-  aside p.sub { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
-  ol.steps { list-style: none; margin: 0; padding: 0; }
+  aside p.sub { color: var(--muted); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; margin: 4px 0 0; }
+  ol.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
   ol.steps li {
-    display: flex; gap: 10px; align-items: baseline; padding: 7px 8px;
-    border-radius: 7px; cursor: pointer; font-size: 14px;
+    display: flex; gap: 10px; align-items: baseline; padding: 8px 10px;
+    border-radius: 8px; cursor: pointer; font-size: 14px; border: 1px solid transparent;
   }
-  ol.steps li:hover { background: color-mix(in oklab, var(--line) 55%, transparent); }
-  ol.steps li.current { background: color-mix(in oklab, var(--accent) 16%, transparent); }
+  ol.steps li:hover { background: var(--panel); }
+  ol.steps li.current { background: color-mix(in oklab, var(--accent) 14%, transparent); border-color: color-mix(in oklab, var(--accent) 40%, transparent); }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--line); }
   .dot.done { background: var(--ok); }
   .dot.partial { background: var(--warn); }
@@ -47,69 +52,68 @@
   .stepname { flex: 1; }
   .stepdetail { display: block; color: var(--muted); font-size: 12px; line-height: 1.35; }
 
-  main { padding: 48px 44px 96px; max-width: 780px; }
-  h2 { font-size: 30px; line-height: 1.2; margin: 0 0 18px; letter-spacing: -.01em; }
+  main { padding: 56px 48px 96px; max-width: 760px; }
+  h2 { font: 800 34px/1.1 var(--sans); font-stretch: 112%; letter-spacing: -.02em; margin: 0 0 20px; }
+  .prose h3, .prose h4 { font-weight: 700; margin: 22px 0 8px; }
   .prose p { margin: 0 0 14px; }
   .prose ul { margin: 0 0 14px; padding-left: 22px; }
   .prose li { margin: 0 0 6px; }
   .prose code {
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: color-mix(in oklab, var(--line) 60%, transparent);
+    font: 13px/1.5 var(--mono); background: var(--panel); border: 1px solid var(--line);
     padding: 1px 5px; border-radius: 4px;
   }
   .prose pre {
-    background: color-mix(in oklab, var(--line) 45%, transparent);
-    padding: 12px 14px; border-radius: 8px; overflow-x: auto;
-    font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--panel); border: 1px solid var(--line);
+    padding: 12px 14px; border-radius: 8px; overflow-x: auto; font: 13px/1.5 var(--mono);
   }
-  .prose a { color: var(--accent); }
+  .prose a, .note a { color: var(--accent); }
   .prose strong { font-weight: 700; }
 
-  .field { margin: 22px 0; }
-  .field label { display: block; font-weight: 600; margin-bottom: 5px; }
+  .field { margin: 24px 0; }
+  .field label { display: block; font-weight: 650; margin-bottom: 5px; }
   .field .help { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
   input[type=text], input[type=password], textarea, select {
-    width: 100%; padding: 10px 12px; border: 1px solid var(--line);
-    border-radius: 8px; background: var(--panel); color: var(--ink);
-    font: 15px/1.55 ui-sans-serif, system-ui, sans-serif;
+    width: 100%; padding: 11px 13px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel); color: var(--ink); font: 15px/1.55 var(--sans);
   }
-  textarea { font: 15px/1.7 ui-serif, Georgia, serif; resize: vertical; }
-  input:focus, textarea:focus, select:focus {
-    outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
-    outline-offset: 1px;
-  }
+  textarea { line-height: 1.7; resize: vertical; }
+  input:focus, textarea:focus, select:focus { outline: 2px solid color-mix(in oklab, var(--accent) 70%, transparent); outline-offset: 1px; }
   .checkline { display: flex; gap: 10px; align-items: flex-start; }
-  .checkline input { margin-top: 5px; width: 17px; height: 17px; flex: 0 0 17px; }
-  .checkline label { font-weight: 600; margin: 0; }
+  .checkline input { margin-top: 5px; width: 17px; height: 17px; flex: 0 0 17px; accent-color: var(--accent); }
+  .checkline label { font-weight: 650; margin: 0; }
 
-  .rowbtns { display: flex; gap: 10px; align-items: center; margin-top: 28px; }
+  .rowbtns { display: flex; gap: 10px; align-items: center; margin-top: 30px; }
   button {
-    font: 15px/1 ui-sans-serif, system-ui, sans-serif; padding: 11px 18px;
-    border-radius: 8px; border: 1px solid var(--accent); cursor: pointer;
-    background: var(--accent); color: var(--accent-ink); font-weight: 600;
+    font: 650 15px/1 var(--sans); padding: 12px 20px; border-radius: 8px;
+    border: 1px solid var(--accent); cursor: pointer; background: var(--accent); color: var(--accent-ink);
   }
+  button:hover { filter: brightness(1.08); }
   button.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
-  button[disabled] { opacity: .55; cursor: default; }
-  .dictate { font-size: 13px; padding: 6px 11px; }
+  button.ghost:hover { border-color: var(--muted); filter: none; }
+  button[disabled] { opacity: .5; cursor: default; }
+  .dictate { font-size: 13px; padding: 6px 11px; margin-top: 8px; }
   .dictate.on { background: var(--bad); border-color: var(--bad); color: #fff; }
 
-  .note { margin-top: 26px; padding: 14px 16px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel); }
-  .note.ok { border-color: color-mix(in oklab, var(--ok) 50%, var(--line)); }
+  .note { margin-top: 26px; padding: 14px 16px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); }
+  .note.ok { border-color: color-mix(in oklab, var(--ok) 45%, var(--line)); }
   .note.bad { border-color: color-mix(in oklab, var(--bad) 55%, var(--line)); }
   .note h4 { margin: 0 0 6px; font-size: 15px; }
-  .note pre { white-space: pre-wrap; font: 12.5px/1.5 ui-monospace, Menlo, monospace; color: var(--muted); margin: 8px 0 0; }
+  .note pre { white-space: pre-wrap; font: 12.5px/1.5 var(--mono); color: var(--muted); margin: 8px 0 0; }
   .warn { color: var(--warn); font-size: 14px; margin-top: 6px; }
-  .signin { display: block; margin-top: 12px; word-break: break-all; font: 13px/1.5 ui-monospace, Menlo, monospace; }
+  .signin { display: block; margin-top: 12px; word-break: break-all; font: 13px/1.5 var(--mono); }
   .counter { color: var(--muted); font-size: 13px; text-align: right; margin-top: 4px; }
   .spin { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: s .8s linear infinite; vertical-align: -2px; margin-right: 7px; }
   @keyframes s { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <aside>
-    <h1 id="agent">Herald</h1>
-    <p class="sub">setup</p>
+    <div class="brand">
+      <img src="/brand/logo-256.png" alt="">
+      <div><h1 id="agent">Herald</h1><p class="sub">setup</p></div>
+    </div>
     <ol class="steps" id="steps"></ol>
   </aside>
   <main>
