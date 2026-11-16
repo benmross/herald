@@ -310,10 +310,9 @@ main() {
   printf '%s✓%s %sInstalled.%s\n\n' "$A" "$E" "$B" "$E"
 
   if [ -n "$need_path" ]; then
-    warn "This terminal window was opened before \`herald\` existed, so it"
-    warn "cannot find it yet. Close this window and open a new one before"
-    warn "running the commands below. (Or paste this line first:"
-    warn "  export PATH=\"\$HOME/.local/bin:\$PATH\" )"
+    warn "Open a new terminal window before running the commands below."
+    dim  "This one was opened before \`herald\` existed, so it cannot find it yet."
+    dim  "Or paste this first:  export PATH=\"\$HOME/.local/bin:\$PATH\""
     echo
   fi
 

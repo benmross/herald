@@ -4,6 +4,7 @@
 |---|---|
 | `banner.jpg` | README header, 2560 × 640 |
 | `logo.png` | avatar and social preview, 1024 × 1024 (`logo-256.png`, `favicon.png` smaller) |
+| `social.jpg` | GitHub social preview, 1280 × 640 (under 1 MB, as GitHub requires) |
 | `plate.jpg` | background texture for the setup page |
 | `archivo.woff2` | Archivo variable font, SIL Open Font License 1.1 |
 
