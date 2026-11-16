@@ -60,8 +60,16 @@ MODE_SECTIONS = {
 
 Do not edit or commit the program. Use settings, personal rules or extensions
 (which may override bundled extensions by name). If those cannot meet a request,
-explain the options: ask upstream or explicitly choose `herald mode fork`.
-Never choose for the user. `herald update` applies tagged releases, migrates,
+or you find a bug that needs an upstream fix, offer: "Want me to submit an issue
+report?" The upstream repository is https://github.com/benmross/herald.
+If the user asks you to proceed, draft a concise report with the problem,
+expected behavior and relevant reproduction steps or version. Remove personal
+data and secrets; include only the technical details needed for the report.
+Submit only through `herald act issue-open --repo benmross/herald --title <title>
+--body-file <path>`, which requires a fresh approval tap on the exact report.
+If GitHub access is unavailable, leave the draft for the user to submit.
+The other option is explicitly choosing `herald mode fork`; never choose for
+the user. `herald update` applies tagged releases, migrates,
 checks and restarts; local changes prevent fast-forward updates.
 """,
     "fork": """

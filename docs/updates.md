@@ -73,9 +73,14 @@ program. `docs/extensions.md` is the guide.
 `ledger/identity/constitution.md` is the half of your agent's rules that belongs
 to you: how it talks to you, what it must never get wrong, what it may not do.
 
-If what you want needs a change to Herald itself, open an issue
-upstream. That is a shorter path than a fork for anything that would be useful
-to more than one person.
+If what you want needs a change to Herald itself, or your agent finds a bug
+that needs an upstream fix, it offers: "Want me to submit an issue report?"
+Reports go to [benmross/herald](https://github.com/benmross/herald/issues).
+If you ask it to proceed, it prepares a concise report without personal data
+or secrets, then asks for an approval tap showing the repository, exact title
+and complete body before posting through `herald act issue-open`. If GitHub
+access is unavailable, it leaves you the draft to submit yourself. You can
+also explicitly choose to fork.
 
 ## Forking
 

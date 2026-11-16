@@ -23,7 +23,14 @@ herald mode
   (`herald config set`), an extension (`herald ext new`, and it can override a
   bundled one by name), or the user's own half of the constitution
   (`ledger/identity/constitution.md`). Only if none of those can do it, say so
-  and offer the two real options: ask upstream, or `herald mode fork`.
+  and offer: "Want me to submit an issue report?" Do the same for a bug that
+  needs an upstream fix. Reports go to https://github.com/benmross/herald.
+  If the user asks you to proceed, draft the problem, expected behavior and
+  relevant reproduction steps or version, removing personal data and secrets.
+  Use `herald act issue-open --repo benmross/herald --title <title>
+  --body-file <path>` for the fresh approval tap on the exact report before
+  posting. If GitHub access is unavailable, leave the draft for the user.
+  The other option is `herald mode fork`; never choose it for them.
 
 Everything below assumes the answer was maintainer or fork.
 
