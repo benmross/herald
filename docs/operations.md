@@ -251,6 +251,13 @@ and queued continuations survive bridge restarts. Switching carries saved work
 and the previous transcript into a new native session. Approvals never carry
 over. Private sessions retain their existing read-only failure behavior.
 
+If a topic uses a model other than its provider's configured default, the card
+also offers continuing on that default after reset. This queues the model and
+effort shown on the card without starting inference. At the reset it starts a
+fresh native session on the same provider, with the saved work and previous
+transcript carried over. The ordinary wait button and unanswered cards still
+resume the original model. `/stop` and newer messages cancel either choice.
+
 The optional `limit_choice` topic field is additive; existing saved topic cursors
 and `limit_resume` records keep their meaning and need no conversion. Already
 queued continuations still run, including ones queued before this change.
@@ -261,6 +268,16 @@ continuation. It writes a one-shot request under `logs/limit-resume-requests/`;
 the bridge imports it within 30 seconds. A changed session, provider or last
 turn makes it stale. Do not edit the saved bridge cursor to queue work: the
 running bridge would overwrite that edit at its next checkpoint.
+
+For a paused task that should resume on a different model of the same provider,
+use `limitresume.request(topic, saved_topic_state, at, target={"model": "model-id",
+"effort": "high", "fresh": True})`. These requests use the separate
+`logs/limit-model-resume-requests/` inbox so an older bridge cannot silently
+consume them while ignoring the model. Import checks the original session,
+provider, last turn, model, effort and paused record. It can retarget an existing
+queue without adding another attempt; a cancelled or changed task wins.
+The optional target on a queued continuation is additive. Existing requests and
+continuations need no conversion and retain their previous behavior.
 
 `herald usage` and Telegram's `/usage` show subscription percentages and reset
 times for your enabled providers, without a model turn. Add `claude` or `codex`

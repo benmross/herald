@@ -1,6 +1,7 @@
 """A turn stopped by a usage limit is continued once, at the reset, and can be cancelled."""
 import unittest
 import tempfile
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,44 @@ from herald import limitresume
 
 
 class LimitResumeTests(unittest.TestCase):
+    def test_model_request_retargets_a_paused_task_without_changing_it_early(self):
+        for queued in (False, True):
+            with self.subTest(queued=queued), tempfile.TemporaryDirectory() as folder, \
+                    patch.object(limitresume.config, "LOGS", Path(folder)):
+                ts = {"session_id": "stopped", "engine": "claude", "last_ts": 10,
+                      "model": "custom", "effort": "max", "work": {"request": "build it"}}
+                if queued:
+                    limitresume.schedule(ts, 2000, "claude", 7, 3)
+                else:
+                    ts["limit_choice"] = {"token": "choice", "at": 2000}
+                target = {"model": "opus", "effort": "high", "fresh": True}
+                limitresume.request("7:3", ts, 2000, target=target)
+                self.assertEqual(list((Path(folder) / "limit-resume-requests").glob("*.json")), [])
+                self.assertTrue(limitresume.import_requests({"7:3": ts}))
+                self.assertFalse(limitresume.import_requests({"7:3": ts}))
+                self.assertEqual(ts[limitresume.KEY]["target"], target)
+                self.assertEqual(ts[limitresume.ATTEMPTS], 1)
+                self.assertNotIn("limit_choice", ts)
+                self.assertEqual((ts["session_id"], ts["model"]), ("stopped", "custom"))
+                self.assertEqual(ts["work"]["request"], "build it")
+
+    def test_model_request_cannot_revive_cancelled_or_changed_work(self):
+        for change in ("stop", "model", "effort", "session_id", "last_ts", "engine", "choice"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as folder, \
+                    patch.object(limitresume.config, "LOGS", Path(folder)):
+                ts = {"session_id": "stopped", "engine": "claude", "last_ts": 10,
+                      "model": "custom", "effort": "max", "limit_choice": {"token": "old"}}
+                limitresume.request("7:3", ts, 2000, target={"model": "opus"})
+                if change == "stop":
+                    limitresume.cancel(ts)
+                elif change == "choice":
+                    ts["limit_choice"] = {"token": "new"}
+                else:
+                    ts[change] = 11 if change == "last_ts" else "different"
+                before = json.loads(json.dumps(ts))
+                self.assertFalse(limitresume.import_requests({"7:3": ts}))
+                self.assertEqual(ts, before)
+
     def test_request_reaches_existing_topic_once(self):
         ts = {"session_id": "stopped", "engine": "claude", "last_ts": 10}
         threads = {"7:3": ts}

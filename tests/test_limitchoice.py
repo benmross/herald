@@ -53,6 +53,24 @@ class Capacity(unittest.TestCase):
                     self.assertIn("high", text)
 
 
+    def test_card_offers_same_engine_default_only_for_a_different_model(self):
+        settings = {"engines.claude.model": "opus", "engines.claude.effort": "high"}
+        with mock.patch.object(limitchoice.config, "enabled_engines", return_value=["claude"]), \
+                mock.patch.object(limitchoice.config, "get", side_effect=lambda k, d=None: settings.get(k, d)), \
+                mock.patch.object(limitchoice.limitresume, "reset_at", return_value=time.time() + 3600):
+            for model in ("custom", "opus", None):
+                with self.subTest(model=model):
+                    ts = {"engine": "claude", "model": model, "session_id": "stopped", "last_ts": 10}
+                    record, text, buttons = limitchoice.make(None, ts)
+                    self.assertEqual("default_target" in record, model == "custom")
+                    self.assertEqual(any("defaultwait" in b[0]["callback_data"] for b in buttons),
+                                     model == "custom")
+                    if model == "custom":
+                        self.assertEqual(record["default_target"],
+                                         {"model": "opus", "effort": "high", "fresh": True})
+                        self.assertIn("previous transcript carried over", text)
+
+
 class Choices(unittest.TestCase):
     setUpClass = classmethod(reply.ReplyResume.setUpClass.__func__)
     setUp = reply.ReplyResume.setUp
@@ -118,6 +136,41 @@ class Choices(unittest.TestCase):
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.calls[-1]["resume"], "stopped")
         self.assertEqual(self.calls[-1]["engine"], "claude")
+
+    def test_wait_on_default_carries_saved_work_to_a_fresh_same_engine_session(self):
+        ts = self.limited()
+        ts.update(model="custom", effort="max")
+        ts[limitchoice.KEY].update(model="custom", effort="max", default_target={
+            "model": "opus", "effort": "high", "fresh": True})
+        with mock.patch.object(self.tg.limitresume, "when", return_value=2000):
+            self.tap("defaultwait")
+        self.assertEqual(self.calls, [])
+        self.assertEqual(ts["model"], "custom")
+        self.state = json.loads(json.dumps(self.state))
+        ts = self.state["threads"][KEY]
+        record = ts[self.tg.limitresume.KEY]
+        with mock.patch.object(self.tg, "_checkpoint"), \
+                mock.patch.object(self.tg.think, "resolve_engine", side_effect=lambda e: e):
+            self.tg._run_limit_resume(self.state, KEY, record)
+            self.tg._run_limit_resume(self.state, KEY, record)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.calls[-1]["engine"], "claude")
+        self.assertEqual(self.calls[-1]["model"], "opus")
+        self.assertEqual(self.calls[-1]["effort"], "high")
+        self.assertIsNone(self.calls[-1]["resume"])
+        self.assertEqual(ts["previous_session"], "stopped")
+        self.assertEqual(ts["work"]["request"], "finish the exporter")
+        self.assertIn("approvals from before", self.prompts[-1])
+
+    def test_stop_cancels_wait_on_default(self):
+        ts = self.limited()
+        ts[limitchoice.KEY]["default_target"] = {"model": "opus", "fresh": True}
+        self.tap("defaultwait")
+        record = ts[self.tg.limitresume.KEY]
+        self.tg.limitresume.cancel(ts)
+        with mock.patch.object(self.tg, "handle") as run, mock.patch.object(self.tg, "_checkpoint"):
+            self.tg._run_limit_resume(self.state, KEY, record)
+        run.assert_not_called()
 
     def test_an_unanswered_card_continues_the_same_session_after_reset(self):
         ts = self.limited()

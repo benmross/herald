@@ -1613,7 +1613,7 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
         return
     msg = cq.get("message") or {}
     key = _topic_key({"message": msg})
-    match = re.fullmatch(r"limit:([0-9a-f]{16}):(switch|wait|stop)", cq.get("data") or "")
+    match = re.fullmatch(r"limit:([0-9a-f]{16}):(switch|wait|defaultwait|stop)", cq.get("data") or "")
     api("answerCallbackQuery", callback_query_id=cq["id"])
     if not key or not match:
         return
@@ -1628,6 +1628,8 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
             return
         chat_id, thread_id = record["chat_id"], record.get("thread_id")
         action = match[2]
+        if action == "defaultwait" and not record.get("default_target"):
+            return
         if action == "switch":
             other = record.get("other")
             with db.session() as con:
@@ -1642,7 +1644,7 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
                 _offer_limit_choice(ts, chat_id, thread_id, request=record.get("request", ""))
                 return
         at = None
-        if action == "wait":
+        if action in ("wait", "defaultwait"):
             with db.session() as con:
                 at = limitresume.when(con, record["engine"], time.time())
         # /stop can cancel without acquiring the lock while a quota read runs.
@@ -1654,11 +1656,16 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
         if action == "stop":
             ts["last_ts"] = time.time()
             _replace_picker(msg, (msg.get("text") or "") + "\n\nStopped. Nothing is scheduled.")
-        elif action == "wait":
-            limitresume.schedule(ts, at, record["engine"], chat_id, thread_id)
-            _replace_picker(msg, (msg.get("text") or "") +
-                            f"\n\nI'll continue on {record['engine'].capitalize()} "
-                            f"{limitchoice.clock(at)}. Send /stop to cancel.")
+        elif action in ("wait", "defaultwait"):
+            queued = limitresume.schedule(ts, at, record["engine"], chat_id, thread_id)
+            target = record.get("default_target") if action == "defaultwait" else None
+            if queued and target:
+                ts[limitresume.KEY]["target"] = dict(target)
+            shown = f" / {target['model']} in a new session" if target else ""
+            note = (f"I'll continue on {record['engine'].capitalize()}{shown} "
+                    f"{limitchoice.clock(at)}. Send /stop to cancel." if queued else
+                    "This task has stopped at the limit too many times. Nothing is scheduled.")
+            _replace_picker(msg, (msg.get("text") or "") + "\n\n" + note)
         else:
             _move_to(ts, other, key, "user chose to switch after a usage limit")
             ts["pinned"] = True
@@ -2609,6 +2616,14 @@ def _run_limit_resume(state: dict, key: str, record: dict) -> None:
             if ts.get(limitresume.KEY) is not record or key in _private:
                 return
             ts.pop(limitresume.KEY)
+            target = record.get("target")
+            if target:
+                if ts.get("engine") != record["engine"]:
+                    return
+                if target.get("fresh"):
+                    _hand_off(ts, ts.get("session_id"))
+                ts.update(model=target["model"], effort=target.get("effort"), pinned=True)
+                ts.pop("effort_caps", None)
             last_ts = ts.get("last_ts")
             _checkpoint(state)
             chat_id, thread_id = record["chat_id"], record.get("thread_id")

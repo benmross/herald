@@ -86,6 +86,15 @@ def make(con, ts: dict, progress: str = "", request: str = "") -> tuple[dict, st
                          "callback_data": f"limit:{token}:switch"}])
     elif other:
         lines.append(f"Switch unavailable: {other.capitalize()} has no confirmed remaining usage.")
+    default_model = config.get(f"engines.{engine}.model")
+    if default_model and ts.get("model") and ts["model"] != default_model:
+        effort = config.get(f"engines.{engine}.effort")
+        record["default_target"] = {"model": default_model, "effort": effort, "fresh": True}
+        lines.append(f"After reset, you can also continue on {engine.capitalize()} / "
+                     f"{default_model}, effort {effort or 'CLI default'}, in a new session "
+                     "with the saved work and previous transcript carried over.")
+        buttons.append([{"text": f"Continue on {default_model} after reset",
+                         "callback_data": f"limit:{token}:defaultwait"}])
     lines.append(f"If you don't choose, I'll continue on {engine.capitalize()} in this session "
                  "once the limit resets. Previous approvals do not carry over.")
     buttons += [[{"text": "Continue when limit resets", "callback_data": f"limit:{token}:wait"}],

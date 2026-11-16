@@ -374,8 +374,11 @@ runs one engine per call. Nothing is bought. Every move is a `route` fact.
 
 A quota failure during a Telegram turn instead pauses for an owner-only choice:
 switch to the opposite engine's configured default model and effort, continue
-on the same engine after reset, or stop. `limitchoice.py` builds the context card
-without inference and offers switching only with a successful fresh quota
+on the same engine after reset, or stop. For a nondefault model, it also offers
+the same provider's configured default after reset in a fresh session carrying
+the saved work and previous transcript. The original wait and unanswered-card
+paths keep the original model. `limitchoice.py` builds the card without
+inference and offers switching only with a successful fresh quota
 reading. The bridge rechecks that reading on a switch tap. `limitresume.py`
 queues an explicitly chosen continuation. New messages and `/stop` cancel it;
 old or repeated taps cannot revive newer work. Both the choice and the queue

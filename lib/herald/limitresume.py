@@ -88,23 +88,33 @@ def cancel(ts: dict) -> bool:
     return ts.pop(KEY, None) is not None or choice is not None
 
 
-def request(topic: str, ts: dict, at: float) -> str:
+def request(topic: str, ts: dict, at: float, *, target: dict | None = None) -> str:
     """Queue an existing stopped session without editing the bridge's live state.
 
     This also covers limits hit before auto-resume was loaded. The bridge
     imports the request into its normal, cancellable continuation state.
     A newer turn or a changed session makes the request obsolete.
+    An optional target selects a model and effort on the same provider at
+    continuation time; fresh=True carries work into a new native session.
     """
     if not ts.get("session_id") or not ts.get("engine"):
         raise ValueError("a continuation needs an existing session and engine")
-    folder = config.LOGS / "limit-resume-requests"
+    if target is not None:
+        if not target.get("model") or not (ts.get(KEY) or ts.get("limit_choice")):
+            raise ValueError("a model continuation needs a model and a paused task")
+    # Older bridges must not consume a request whose model they ignore.
+    folder = config.LOGS / ("limit-model-resume-requests" if target is not None
+                            else "limit-resume-requests")
     folder.mkdir(parents=True, exist_ok=True)
     request_id = uuid.uuid4().hex
     path = folder / (request_id + ".json")
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"topic": topic, "session_id": ts["session_id"],
-                                    "last_ts": ts.get("last_ts", 0),
-                                    "engine": ts["engine"], "at": at}))
+    record = {"topic": topic, "session_id": ts["session_id"],
+              "last_ts": ts.get("last_ts", 0), "engine": ts["engine"], "at": at}
+    if target is not None:
+        record.update(target=dict(target), model=ts.get("model"), effort=ts.get("effort"),
+                      paused=ts.get(KEY) or ts.get("limit_choice"))
+    temporary.write_text(json.dumps(record))
     temporary.replace(path)
     return request_id
 
@@ -112,17 +122,31 @@ def request(topic: str, ts: dict, at: float) -> str:
 def import_requests(threads: dict) -> bool:
     """Import one-shot requests, preserving any newer user activity."""
     imported = False
-    for path in sorted((config.LOGS / "limit-resume-requests").glob("*.json")):
+    paths = [*(config.LOGS / "limit-resume-requests").glob("*.json"),
+             *(config.LOGS / "limit-model-resume-requests").glob("*.json")]
+    for path in sorted(paths):
         record = json.loads(path.read_text())
         key = record["topic"]
         ts = threads.get(key, {})
+        target = record.get("target")
+        current_target = target is not None and all(
+            ts.get(k) == record.get(k) for k in ("model", "effort")) and (
+                ts.get(KEY) or ts.get("limit_choice")) == record.get("paused")
         if (ts.get("session_id") == record["session_id"]
                 and ts.get("engine") == record["engine"]
                 and ts.get("last_ts", 0) == record["last_ts"]
-                and KEY not in ts):
+                and (current_target if target is not None else KEY not in ts)):
             chat, thread = key.split(":", 1)
-            imported |= schedule(ts, record["at"], record["engine"], int(chat),
-                                 None if thread == "main" else int(thread))
+            if target is not None and KEY in ts:
+                ts[KEY] = {**ts[KEY], "at": record["at"], "target": target}
+                imported = True
+            elif schedule(ts, record["at"], record["engine"], int(chat),
+                          None if thread == "main" else int(thread)):
+                if target is not None:
+                    ts[KEY]["target"] = target
+                imported = True
+            if target is not None and KEY in ts:
+                ts.pop("limit_choice", None)
         path.unlink()
     return imported
 
