@@ -165,11 +165,23 @@ class KiroTests(unittest.TestCase):
                 kiro_hook.normalize({"tool_name": name, "tool_input": args})
 
     def test_native_skill_loader_uses_name_in_hook_and_id_in_stream(self):
-        event = kiro_hook.normalize({"tool_name": "disclose_context", "tool_input": {"name": "herald-self"}})
-        self.assertEqual(event["tool_name"], "Read")
-        self.assertTrue(event["tool_input"]["file_path"].endswith("herald-self/SKILL.md"))
-        with self.assertRaises(ValueError):
-            kiro_hook.normalize({"tool_name": "disclose_context", "tool_input": {"name": "../../secret"}})
+        # Installed skill links and optional personal skill paths are absent in
+        # a clean checkout. Exercise the hook against an explicit registration.
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            skill = root / ".agents/skills/herald-self/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\nname: herald-self\ndescription: Test skill\n---\n")
+            with mock.patch.object(kiro_hook.guard, "ROOT", root), \
+                    mock.patch.object(config, "get", return_value=[]):
+                for args in ({"name": "herald-self"}, {"id": "skill::herald-self"}):
+                    with self.subTest(args=args):
+                        event = kiro_hook.normalize({"tool_name": "disclose_context", "tool_input": args})
+                        self.assertEqual(event["tool_name"], "Read")
+                        self.assertEqual(event["tool_input"]["file_path"], str(skill))
+                for name in ("../../secret", "unregistered-skill"):
+                    with self.subTest(name=name), self.assertRaises(ValueError):
+                        kiro_hook.normalize({"tool_name": "disclose_context", "tool_input": {"name": name}})
 
     def test_profiles_are_guarded_in_every_working_directory_and_policy_is_distinct(self):
         with tempfile.TemporaryDirectory() as td, mock.patch.object(kiro.Path, "home", return_value=pathlib.Path(td)):
