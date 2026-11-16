@@ -204,3 +204,37 @@ def context_summary(ts: dict, con=None, *, now_ts: float, running: dict | None =
     if request:
         lines.append(f"Working on: {request}")
     return "\n".join(lines)
+
+
+def guide() -> str:
+    """The command guide: pinned in Telegram when setup pairs the bot, and sent
+    again by /help. Settings replies no longer explain the other commands, so
+    this is where a person learns them. Lists only engines that are enabled."""
+    agent = config.get("agent.name", "Herald")
+    engines = [e for e in ("claude", "codex", "kiro") if e in config.enabled_engines()]
+    lines = [
+        f"How to use {agent} here",
+        "",
+        "Message it like a person. Each topic is its own conversation, or the whole "
+        "chat if it has no topics. "
+        f"{agent} remembers you through its notes, so even a new conversation "
+        "knows your schedule, mail and preferences.",
+        "",
+        "/new  Start a new conversation in this topic. It forgets this conversation "
+        "and what the topic was working on; the model and thinking level stay. "
+        "Reply to an older message to go back to it.",
+        "/context  The model and thinking level in use, and how full this "
+        "conversation is.",
+        "/models  Choose a model and thinking level. On the same provider the "
+        "conversation continues.",
+    ]
+    if len(engines) > 1:
+        shown = ", ".join(f"/{e}" for e in engines)
+        lines.append(f"{shown}  Switch provider. A new conversation starts with "
+                     "a summary of what the topic was working on.")
+    lines += [
+        "/stop  Stop what it is doing.",
+        "/private  A conversation that saves nothing, until /private off.",
+        "/help  This guide again.",
+    ]
+    return "\n".join(lines)

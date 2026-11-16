@@ -89,6 +89,14 @@ class Wording(unittest.TestCase):
         self.assertEqual(topicstatus.thinking(ts), 'Default (low)')
 
 
+class Guide(unittest.TestCase):
+    def test_lists_only_enabled_providers(self):
+        with patch.object(config, 'enabled_engines', return_value=('claude',)):
+            self.assertNotIn('/codex', topicstatus.guide())
+        with patch.object(config, 'enabled_engines', return_value=('claude', 'codex')):
+            self.assertIn('/claude, /codex  Switch provider', topicstatus.guide())
+
+
 class Bridge(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -141,6 +149,16 @@ class Bridge(unittest.TestCase):
         self.assertIn('Same conversation', text)
         self.assertIn('Claude Sonnet · Thinking: max', text)
         self.assertEqual(self.state['threads'][self.key]['session_id'], 'kept')
+
+    def test_help_and_start_send_the_guide_without_a_turn(self):
+        for word in ('/help', '/start', '/help@somebot'):
+            self.sent.clear()
+            with patch.object(self.tg.think, 'think', side_effect=AssertionError('no model turn')):
+                self.tg._handle_help({'message': self.msg | {'text': word}})
+            self.assertIn('/new  Start a new conversation', self.sent[-1])
+        self.assertEqual(self.tg.command_word('/help'), '/help')
+        self.assertIn({'command': 'help', 'description': 'How to use these commands'},
+                      self.tg.command_menu('short', {}))
 
     def test_effort_reply_names_the_model(self):
         text = self.say('/low')

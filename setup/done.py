@@ -52,6 +52,10 @@ def prompt(state: State) -> Prompt:
         lines.append("- message the bot. That is a real conversation with the "
                      "same agent. It remembers through its notes, not through "
                      "the chat history.")
+        lines.append("- the guide pinned in that chat explains the commands. "
+                     "`/new` starts a new conversation, `/context` shows the "
+                     "model and how full the conversation is, and `/help` "
+                     "sends the guide again.")
     if config.remote_control_enabled():
         lines.append("- `herald brain url` opens the optional Claude Remote Control surface.")
     lines += [

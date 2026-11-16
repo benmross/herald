@@ -138,7 +138,8 @@ def interactive_tools(engine):
 # most people should need, so they are all the default menu offers;
 # telegram.command_menu "full" adds the rest for someone who uses them.
 MENU = (("new", "Forget this conversation, keep settings"), ("stop", "Stop what I'm doing"),
-        ("private", "Private conversation, nothing saved"))
+        ("private", "Private conversation, nothing saved"),
+        ("help", "How to use these commands"))
 FULL_MENU = (*MENU,
              ("update", "Update Herald to the latest release"),
              ("obligations", "What you owe and this week's deadlines"),
@@ -171,6 +172,8 @@ DEBUG_COMMANDS = ("/debug", "/session", "/context")
 # The open obligations and this week's deadlines, read straight from the
 # ledger. Asking what you owe should not cost a model turn.
 OBLIGATION_COMMANDS = ("/obligations",)
+# The command guide, also pinned when setup pairs the bot. Answered here.
+HELP_COMMANDS = ("/help", "/start")
 # Built-in commands the bridge answers itself. Extensions register query
 # commands separately; unknown slash words are refused before reaching a model.
 SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private")
@@ -198,7 +201,7 @@ and tell the user whether the deferred restart is still pending.
 """,
 }
 COMMANDS = (*SESSION_COMMANDS, *MODEL_COMMANDS, *ENGINE_COMMANDS,
-            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS,
+            *EFFORT_COMMANDS, *DEBUG_COMMANDS, *OBLIGATION_COMMANDS, *HELP_COMMANDS,
             *PROMPT_COMMANDS, "/models", "/usage")
 
 
@@ -2282,6 +2285,15 @@ def _handle_debug(update: dict, key: str, state: dict) -> None:
     send(chat_id, tgtext.code_block(text), msg.get("message_thread_id"), markup=False)
 
 
+def _handle_help(update: dict) -> None:
+    """/help, and Telegram's /start: the command guide, with no model turn."""
+    msg = update.get("message") or {}
+    chat_id = (msg.get("chat") or {}).get("id")
+    if not chat_id or (msg.get("from") or {}).get("id") != config.secret("telegram.user_id"):
+        return
+    send(chat_id, topicstatus.guide(), msg.get("message_thread_id"), markup=False)
+
+
 def _is_obligations_command(update: dict) -> bool:
     msg = update.get("message") or update.get("edited_message") or {}
     word = (msg.get("text") or "").strip().lower().split("@")[0]
@@ -2744,6 +2756,8 @@ def _dispatch(update: dict, state: dict) -> None:
             _handle_usage(update, key, state)
         elif _is_obligations_command(update):
             _handle_obligations(update)
+        elif command_word((update.get("message") or {}).get("text") or "") in HELP_COMMANDS:
+            _handle_help(update)
         elif command_word((update.get("message") or {}).get("text") or "") == "/models":
             _handle_models(update, state)
         elif _handle_extension_command(update, key):

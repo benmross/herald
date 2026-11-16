@@ -19,7 +19,7 @@ import string
 import urllib.error
 import urllib.request
 
-from herald import config
+from herald import config, topicstatus
 
 from .engine import DONE, TODO, Field, Outcome, Prompt, State, Step
 
@@ -170,10 +170,21 @@ def apply(state: State, answers: dict) -> Outcome:
     warnings = []
     if not sent.get("ok"):
         warnings.append(f"could not send a test message: {sent.get('description')}")
+    # The command guide, pinned, because this chat is where the commands are
+    # used and setup is read once, before any of them has been tried.
+    guide = _api(token, "sendMessage", chat_id=chat_id, text=topicstatus.guide())
+    if guide.get("ok"):
+        pinned = _api(token, "pinChatMessage", chat_id=chat_id,
+                      message_id=guide["result"]["message_id"], disable_notification=True)
+        if not pinned.get("ok"):
+            warnings.append("sent the command guide but could not pin it: "
+                            f"{pinned.get('description')}")
+    else:
+        warnings.append(f"could not send the command guide: {guide.get('description')}")
     return Outcome(
         ok=True,
-        message=f"Connected to {first or 'you'}. A test message has just been "
-                f"sent to that chat.",
+        message=f"Connected to {first or 'you'}. A test message and a pinned "
+                f"guide to the commands have just been sent to that chat.",
         warnings=warnings,
         detail="Only messages from your own Telegram account are answered. "
                "Anyone else who finds the bot gets no reply.")

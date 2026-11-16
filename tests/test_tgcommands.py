@@ -82,10 +82,11 @@ class Menu(unittest.TestCase):
         extension = {"/tasks": tgcommands.Command("tasks", str)}
         full = tg.command_menu("full", extension)
         names = {"/" + item["command"] for item in full}
-        self.assertEqual(names, {*tg.COMMANDS, *tg.ENGINE_COMMANDS_PASSED, "/tasks"})
+        # /start is what Telegram itself sends when a bot is first opened.
+        self.assertEqual(names, {*tg.COMMANDS, *tg.ENGINE_COMMANDS_PASSED, "/tasks"} - {"/start"})
         self.assertEqual(len(names), len(full))
         self.assertEqual([i["command"] for i in tg.command_menu("short", extension)],
-                         ["new", "stop", "private"])
+                         ["new", "stop", "private", "help"])
 
 
 class Dispatch(unittest.TestCase):

@@ -72,6 +72,7 @@ conversation.
 | `/context` | what this topic is using and how full its memory is (`/debug` for the technical report) |
 | `/update` | update Herald and its extensions |
 | `/obligations` | what you owe people |
+| `/help` | the command guide, also pinned when setup connects the bot |
 
 The terminal is for setup and repairs:
 
