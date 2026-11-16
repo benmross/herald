@@ -65,6 +65,19 @@ Regression tests are offline and do not send messages or invoke a model:
 venv/bin/python -m unittest discover -s tests -v
 ```
 
+Set `telegram.engine_topic_dots=true` to append 🟠 for Claude, 🔵 for Codex,
+or 🟣 for Kiro to forum topic names. The bot needs Manage Topics permission.
+Engine commands, model selections, automatic routing and resumed conversations
+update the suffix. Private sessions leave the ordinary topic's name alone.
+General is excluded. The option defaults to off.
+
+Telegram cannot list existing topic names through the Bot API. Herald learns
+names from creation and rename events, and from topic roots included in normal
+messages. Existing topics acquire dots as their names become known; renaming
+an older topic once also makes its current name available. Unknown names are
+left alone. Optional name metadata is added to existing topic records without
+changing their session pointers. Failed edits retry in the background.
+
 ```bash
 herald db "select label, count(*) runs, round(sum(cost_usd),2) usd from runs
            where ts >= datetime('now','-7 days') group by label order by usd desc"

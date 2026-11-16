@@ -58,7 +58,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, usage  # noqa: E402
+from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -318,7 +318,46 @@ def sent_at_line(msg: dict) -> str:
 
 
 def api(method: str, **params):
-    return tgapi.call(method, http_timeout=POLL_TIMEOUT + 15, **params)
+    response = tgapi.call(method, http_timeout=POLL_TIMEOUT + 15, **params)
+    # Telegram sometimes includes the topic's creation message in a reply.
+    # Learn that name from normal deliveries without sending discovery probes.
+    result = (response or {}).get("result")
+    if _live_state is not None and isinstance(result, dict) and result.get("message_thread_id"):
+        _observe_topic_name(_live_state, result)
+    return response
+
+
+_live_state: dict | None = None
+_topic_name_retry: dict[str, float] = {}
+
+
+def _observe_topic_name(state: dict, msg: dict) -> None:
+    key = _topic_key({"message": msg})
+    ts = state.get("threads", {}).get(key)
+    if ts is not None and key not in _private:
+        tgtopics.observe(ts, msg)
+
+
+def _sync_topic_name(ts: dict, key: str) -> None:
+    if (key in _private or not config.get("telegram.engine_topic_dots", False)
+            or not ts.get("topic_name")):
+        return
+    engine = ts.get("engine") or config.default_engine()
+    if engine not in tgtopics.DOTS or tgtopics.marked_name(ts["topic_name"], engine) == ts["topic_name"]:
+        return
+    if time.monotonic() < _topic_name_retry.get(key, 0):
+        return
+    try:
+        changed = tgtopics.sync(ts, key, api,
+                               enabled=config.get("telegram.engine_topic_dots", False),
+                               default_engine=config.default_engine())
+        if changed:
+            _topic_name_retry.pop(key, None)
+        else:
+            _topic_name_retry[key] = time.monotonic() + 60
+    except Exception as exc:  # noqa: BLE001 -- a decoration cannot fail a turn
+        _topic_name_retry[key] = time.monotonic() + 60
+        print(f"topic name update skipped ({type(exc).__name__})", file=sys.stderr)
 
 
 # The Unicode math-italic table that used to live here is gone. It existed to
@@ -1011,6 +1050,7 @@ def _move_to(ts: dict, engine: str, key: str, why: str) -> None:
     _hand_off(ts, ts.get("session_id"))
     ts.update(engine=engine, model=None, effort=None)
     ts.pop("effort_caps", None)
+    _sync_topic_name(ts, key)
     print(f"[{key}] moved to {engine}: {why}")
 
 
@@ -1161,6 +1201,8 @@ def handle(update: dict, state: dict) -> None:
     # only, and the topic's stored record is left exactly as it was.
     pv = _private.get(key)
     ts = topic_state(state, key)
+    if pv is None:
+        _observe_topic_name(state, msg)
     if not update.get("_limit_resume"):
         # Their own message decides what happens next, so a continuation that
         # was waiting for a limit to reset is dropped.
@@ -1228,6 +1270,8 @@ def handle(update: dict, state: dict) -> None:
     if command_word(text) == "/private":
         _handle_private(chat_id, thread_id, key,
                         (text.split(None, 1) + [""])[1].strip(), ts)
+        if key not in _private:
+            _sync_topic_name(thread_state(state, key), key)
         return
 
     if pv is not None and command_word(text) in ("/new", "/clear", "/reset"):
@@ -1289,6 +1333,7 @@ def handle(update: dict, state: dict) -> None:
             _hand_off(ts, ts.get("session_id"))
             ts["last_ts"] = time.time()
         shown = f"{engine}/{model}" if model else engine
+        _sync_topic_name(ts, key)
         send(chat_id, f"This topic runs on {shown} from here on, until you "
                       f"switch it again. "
                       + ("Fresh session: the other engine's transcript does not "
@@ -1420,6 +1465,7 @@ def handle(update: dict, state: dict) -> None:
             _move_to(ts, engine, key, "at limit before the turn")
             reason, resume = "moved provider", None
     if pv is None:
+        _sync_topic_name(ts, key)
         handoff.begin(ts, text or "(a file)")
     model = ts.get("model") or config.get(f"engines.{engine}.model")
     effort = ts.get("effort")
@@ -1710,6 +1756,7 @@ def _choose_model(state: dict, key: str, msg: dict, choice: dict, *, edit_picker
         return
     ts = topic_state(state, key)
     note = _select_model(ts, choice["engine"], choice["model"])
+    _sync_topic_name(ts, key)
     if "efforts" in choice:
         ts["effort_caps"] = choice
         configured = config.get(f"engines.{choice['engine']}.effort")
@@ -2565,6 +2612,9 @@ def _dispatch(update: dict, state: dict) -> None:
     key = _topic_key(update) or f"unkeyed:{update.get('update_id')}"
     handed_off = False
     try:
+        msg = update.get("message") or update.get("edited_message") or {}
+        if (msg.get("from") or {}).get("id") == config.secret("telegram.user_id"):
+            _observe_topic_name(state, msg)
         if update.get("callback_query"):
             if (update["callback_query"].get("data") or "").startswith("limit:"):
                 _handle_limit_callback(update, state)
@@ -2629,7 +2679,21 @@ def _retry_deliveries() -> None:
         time.sleep(5)
 
 
+def _refresh_topic_names(state: dict) -> None:
+    """Backfill known names and retry failed edits without blocking polling."""
+    while True:
+        for key, ts in list(state.get("threads", {}).items()):
+            lock = _lock_for(key)
+            if lock.acquire(blocking=False):
+                try:
+                    _sync_topic_name(ts, key)
+                finally:
+                    lock.release()
+        time.sleep(30)
+
+
 def main() -> int:
+    global _live_state
     if not config.secret("telegram.bot_token"):
         print("no telegram.bot_token in config/secrets.json", file=sys.stderr)
         return 1
@@ -2650,12 +2714,14 @@ def main() -> int:
         print(f"command menu not set ({type(exc).__name__}: {exc})")
 
     state = load_state()
+    _live_state = state
     threads = state.get("threads", {})
     print(f"herald-telegram up (offset {state['offset']}, "
           f"{len(threads)} conversation(s): {', '.join(threads) or 'none yet'})")
 
     threading.Thread(target=_resume_after_limits, args=(state,), daemon=True).start()
     threading.Thread(target=_retry_deliveries, daemon=True).start()
+    threading.Thread(target=_refresh_topic_names, args=(state,), daemon=True).start()
 
     while True:
         resp = api("getUpdates", offset=state["offset"], timeout=POLL_TIMEOUT,
