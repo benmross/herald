@@ -40,7 +40,7 @@ someone who has not used a terminal.
 
 ```bash
 git clone https://github.com/benmross/herald herald-docker && cd herald-docker
-docker compose -f docker/compose.yml up -d --build
+docker compose -p herald -f docker/compose.yml up -d --build
 docker exec -it herald herald setup --web
 ```
 
