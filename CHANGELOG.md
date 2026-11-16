@@ -2,6 +2,18 @@
 
 What each release changed, from the commit messages. `herald update` shows the entry for whatever it is about to install.
 
+## v0.5.0: 16 November 2026
+
+- Name the Compose project, and fix two things a container test found
+- Remove ntfy: Telegram is the only notification channel
+- Treat Telegram as the main surface, and route every notice through it
+- Draw the line between core and extensions, and offer extensions in setup
+- Add a social preview image and tighten the installer's PATH warning
+- Make the Docker healthcheck notice what actually breaks
+- Restyle setup and the installer to match the brand
+- Give Herald a brand and a README a newcomer can scan
+- Give Telegram update requests the explicit release workflow instead of rejecting the command
+
 ## v0.4.8: 16 November 2026
 
 - Help tracking installs report upstream problems instead of leaving them to ask elsewhere
