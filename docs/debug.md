@@ -50,6 +50,10 @@ engine retained internally. The provider transcript remains the source for its
 own recorded timestamps.
 Captures become visible while a run is in progress; refresh updates the catalog.
 A long-running surface must reload the updated code before its next run captures.
+Native Kiro session IDs join captures to their recorded runs and mirrored
+transcripts. Captures without a run row show their launch label, model, elapsed
+time and recorded completion status. They remain captures rather than counted
+turns, and a closed capture is not labeled as still in progress.
 
 Private runs bypass capture completely and remain unlisted. Credentials known
 to Herald, credential-shaped strings and structured credential fields are

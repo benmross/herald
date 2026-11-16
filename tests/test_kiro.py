@@ -99,6 +99,7 @@ class KiroTests(unittest.TestCase):
                 return code, payload, None, '', '', cancelled
             with self.subTest(outcome=outcome), mock.patch.object(config, 'enabled_engines', return_value=('kiro',)), \
                     mock.patch.object(think, '_run_kiro', side_effect=launch), mock.patch.object(think, '_record'), \
+                    mock.patch('herald.debugtrace.Trace'), \
                     mock.patch.object(kiro, 'record'), mock.patch.object(kiro, 'record_attempt') as record:
                 result = think.think('probe', label='test', engine='kiro', model='opus')
             self.assertEqual(record.call_args.kwargs['outcome'], outcome)

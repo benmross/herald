@@ -69,7 +69,17 @@ def records(path):
 
 
 def session_id(obj):
+    if obj.get("channel"):
+        data = obj.get("data")
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except ValueError:
+                return None
+        return session_id(data) if isinstance(data, dict) else None
     p = obj.get("payload") or {}
+    if not isinstance(p, dict):
+        p = {}
     data = obj.get("data") or {}
     if isinstance(data, str):
         try:
@@ -78,21 +88,48 @@ def session_id(obj):
             data = {}
     if not isinstance(data, dict):
         data = {}
-    result = data.get("result") or {}
-    params = data.get("params") or {}
-    return (obj.get("session_id") or obj.get("sessionId") or
+    result = obj.get("result") or data.get("result") or {}
+    params = obj.get("params") or data.get("params") or {}
+    if not isinstance(result, dict):
+        result = {}
+    if not isinstance(params, dict):
+        params = {}
+    return (obj.get("session_id") or obj.get("sessionId") or obj.get("thread_id") or
+            p.get("session_id") or p.get("sessionId") or
             (p.get("id") if obj.get("type") == "session_meta" else None) or
-            data.get("session_id") or data.get("thread_id") or params.get("threadId") or
+            data.get("session_id") or data.get("sessionId") or data.get("thread_id") or
+            params.get("threadId") or params.get("sessionId") or
             (result.get("thread") or {}).get("id") or
-            (data.get("payload") or {}).get("session_id") or data.get("resume"))
+            (data.get("payload") or {}).get("session_id") or obj.get("resume") or data.get("resume"))
 
 
 @functools.lru_cache(maxsize=512)
-def capture_identity(path, size, modified):
-    found = None
+def capture_metadata(path, size, modified):
+    info = {"session_id": None, "status": "in progress", "duration_ms": None}
     for obj in records(pathlib.Path(path)):
-        found = session_id(obj) or found
-    return found
+        info["session_id"] = session_id(obj) or info["session_id"]
+        data = obj.get("data") or {}
+        if not isinstance(data, dict):
+            continue
+        if obj.get("channel") == "launch":
+            info.update({k: data.get(k) for k in ("engine", "label", "model", "effort")})
+            info["start"] = obj.get("ts")
+        elif obj.get("channel") == "outcome":
+            code = data.get("exit_code")
+            info["status"] = ("cancelled" if data.get("cancelled") else "timeout" if code == 124 else
+                              "failed" if code not in (None, 0) or (data.get("payload") or {}).get("is_error") else
+                              "completed" if code == 0 else "finished")
+        elif obj.get("channel") == "finish" and info["status"] == "in progress":
+            info["status"] = "finished"
+        if obj.get("channel") in ("outcome", "finish"):
+            info["updated"] = obj.get("ts")
+            if obj.get("elapsed_ns") is not None:
+                info["duration_ms"] = obj["elapsed_ns"] / 1_000_000
+    return info
+
+
+def capture_identity(path, size, modified):
+    return capture_metadata(path, size, modified)["session_id"]
 
 
 @functools.lru_cache(maxsize=1024)
@@ -137,28 +174,33 @@ class Catalog:
                     # Claude paths are already scoped by transcripts.locate.
                     if path.name.startswith("rollout-") and cwd != str(config.ROOT):
                         continue
-                engine = "codex" if path.name.startswith("rollout-") else "claude"
+                engine = ("kiro" if path.parent == config.RAW / "kiro-sessions" else
+                          "codex" if path.name.startswith("rollout-") else "claude")
                 s = sessions.setdefault(sid, {"id": sid, "engine": engine, "runs": [], "sources": []})
                 s["sources"].append(("transcript", path))
                 # Claude stores delegated work under the parent session.
                 for child in sorted((path.parent / sid / "subagents").glob("*.jsonl")):
                     s["sources"].append(("subagent", child))
             for path in sorted((config.HOME / "debug-traces").glob("*.jsonl")):
-                first = next(records(path), {})
                 stat = path.stat()
-                found = capture_identity(str(path), stat.st_size, stat.st_mtime_ns)
+                metadata = capture_metadata(str(path), stat.st_size, stat.st_mtime_ns)
+                found = metadata["session_id"]
                 sid = found or ("trace-" + path.stem)
-                metadata = first.get("data") or {}
                 s = sessions.setdefault(sid, {"id": sid, "engine": metadata.get("engine"), "runs": [], "sources": []})
                 s["sources"].append(("capture", path))
+                s.setdefault("_captures", []).append(metadata)
             for s in sessions.values():
                 rr = s["runs"]
-                s.update(start=rr[0]["ts"] if rr else None,
-                         updated=rr[-1]["ts"] if rr else None,
-                         label=rr[-1]["label"] if rr else "terminal / in progress",
-                         model=rr[-1]["model"] if rr else None,
+                captures = sorted(s.pop("_captures", []), key=lambda c: c.get("start") or "")
+                latest = captures[-1] if captures else {}
+                s.update(start=rr[0]["ts"] if rr else (captures[0].get("start") if captures else None),
+                         updated=rr[-1]["ts"] if rr else latest.get("updated") or latest.get("start"),
+                         label=rr[-1]["label"] if rr else latest.get("label") or "terminal transcript",
+                         model=(rr[-1]["model"] if rr else None) or latest.get("model"),
+                         status=latest.get("status") or ("failed" if rr and rr[-1]["error"] else "completed" if rr else "transcript"),
                          turns=len(rr), errors=sum(bool(r["error"]) for r in rr),
-                         duration_ms=sum(r["duration_ms"] or 0 for r in rr),
+                         duration_ms=sum(r["duration_ms"] or 0 for r in rr) if rr else
+                             sum(c["duration_ms"] or 0 for c in captures) if any(c["duration_ms"] is not None for c in captures) else None,
                          context_tokens=rr[-1]["context_tokens"] if rr else None,
                          bytes=sum(p.stat().st_size for _, p in s["sources"] if p.exists()))
                 s["title"] = next((title for kind, path in s["sources"] if kind == "transcript" and (title := source_title(str(path)))), s["label"])

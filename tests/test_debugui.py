@@ -52,6 +52,54 @@ class Events(unittest.TestCase):
     def test_capture_session_identity(self):
         self.assertEqual(debugui.session_id({'channel':'stdout','data':{'result':{'thread':{'id':'session1'}}}}),'session1')
         self.assertEqual(debugui.session_id({'channel':'outcome','data':{'payload':{'session_id':'session2'}}}),'session2')
+        native = {'type':'sessionUpdate','data':{'sessionId':'sess_native','update':{'sessionUpdate':'agent_message_chunk'}}}
+        for data in (native, json.dumps(native)):
+            self.assertEqual(debugui.session_id({'channel':'stdout','data':data}), 'sess_native')
+        self.assertEqual(debugui.session_id({'type':'runFinished','data':{'sessionId':'sess_finished'}}), 'sess_finished')
+
+    def test_kiro_capture_joins_recorded_run_and_mirrored_transcript(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            path = home / 'debug-traces/native.jsonl'
+            path.parent.mkdir()
+            path.write_text('\n'.join(json.dumps(r) for r in [
+                {'channel':'launch','ts':'2026-01-01T12:00:00Z','data':{'engine':'kiro','model':'opus','label':'probe'}},
+                {'channel':'stdout','data':{'type':'sessionUpdate','data':{'sessionId':'sess_native'}}},
+                {'channel':'outcome','elapsed_ns':5000000000,'data':{'exit_code':124}},
+                {'channel':'finish','elapsed_ns':5001000000,'data':{}}]))
+            transcript = home / 'raw/kiro-sessions/sess_native.jsonl'
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(json.dumps({'type':'user','message':{'content':'Native task'}})+'\n')
+            run = dict(id=1, session_id='sess_native', engine='kiro', model='opus', label='probe',
+                       ts='2026-01-01T12:00:00Z', duration_ms=5000, error='timed out', context_tokens=100)
+            with patch.object(debugui.config, 'HOME', home), patch.object(debugui.config, 'RAW', home/'raw'), \
+                    patch.object(debugui.pathlib.Path, 'home', return_value=home), \
+                    patch.object(debugui, 'rows', return_value=[run]), \
+                    patch.object(debugui.transcripts, 'locate', return_value={'sess_native':transcript}):
+                sessions = debugui.Catalog().get()
+            self.assertEqual(list(sessions), ['sess_native'])
+            session = sessions['sess_native']
+            self.assertEqual((session['engine'],session['model'],session['turns'],session['status']),
+                             ('kiro','opus',1,'timeout'))
+            self.assertEqual({kind for kind,_ in session['sources']}, {'transcript','capture'})
+
+    def test_finished_capture_without_run_has_launch_metadata_and_duration(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            path = home/'debug-traces/orphan.jsonl'
+            path.parent.mkdir()
+            path.write_text('\n'.join(json.dumps(r) for r in [
+                {'channel':'launch','ts':'2026-01-01T12:00:00Z','data':{'engine':'kiro','model':'opus','label':'bounded task'}},
+                {'channel':'outcome','elapsed_ns':4000000000,'data':{'exit_code':0}},
+                {'channel':'finish','elapsed_ns':4001000000,'data':{}}]))
+            with patch.object(debugui.config, 'HOME', home), \
+                    patch.object(debugui.pathlib.Path, 'home', return_value=home), \
+                    patch.object(debugui, 'rows', return_value=[]), \
+                    patch.object(debugui.transcripts, 'locate', return_value={}):
+                session = debugui.Catalog().get()['trace-orphan']
+            self.assertEqual((session['label'],session['model'],session['status']), ('bounded task','opus','completed'))
+            self.assertEqual(session['turns'],0)  # Do not fabricate a recorded run.
+            self.assertAlmostEqual(session['duration_ms'],4001)
 
     @patch('herald.config.secrets', return_value={'key':'a-credential-known-only-to-herald'})
     def test_redaction_works_before_serialization(self, _):
