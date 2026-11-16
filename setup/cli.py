@@ -156,7 +156,7 @@ def ask(prompt) -> dict:
     answers = {}
     for field in prompt.fields:
         print()
-        if field.type == "note":
+        if field.type in ("note", "tutorial"):  # a terminal gets the tour as text
             if field.label:
                 print(f"  {_c(field.label, BOLD)}")
             print(_c(textwrap.fill(field.help, 76, initial_indent="  ",

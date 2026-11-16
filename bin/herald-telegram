@@ -2160,7 +2160,7 @@ def _handle_stop(update: dict, key: str, state: dict | None = None) -> None:
         # A queued request for the state before /stop must also become stale.
         thread_state(state, key)["last_ts"] = time.time()
     if think.cancel(key):
-        send(chat_id, "*Stopped — abandoning whatever that was.*", thread_id)
+        send(chat_id, "*Stopped. That task is abandoned.*", thread_id)
         print(f"[{key}] stopped on request")
     elif waiting:
         send(chat_id, "*Cancelled. I won't continue that when the limit resets.*", thread_id)

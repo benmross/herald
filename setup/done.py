@@ -85,7 +85,7 @@ def prompt(state: State) -> Prompt:
     if exts:
         lines += ["", f"Also running: {', '.join(exts)}."]
     return Prompt(title="Done", blurb="\n".join(lines), fields=[], immediate=True,
-                  action="Finish")
+                  action="Continue")
 
 
 def apply(state: State, answers: dict) -> Outcome:

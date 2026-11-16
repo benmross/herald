@@ -87,7 +87,7 @@ DONE, TODO, BLOCKED, PARTIAL = "done", "todo", "blocked", "partial"
 class Field:
     key: str
     label: str
-    #: text | secret | textarea | choice | multichoice | bool | note
+    #: text | secret | textarea | choice | multichoice | bool | note | tutorial
     type: str = "text"
     help: str = ""
     default: object = ""
@@ -97,6 +97,8 @@ class Field:
     rows: int = 4
     #: dictation makes sense for a long free-write and nowhere else
     dictate: bool = False
+    #: structured content for a display-only field, such as the tutorial's scenes
+    data: object = None
 
 
 @dataclass
@@ -204,7 +206,8 @@ def steps() -> list[Step]:
     broken.
     """
     from . import (basics, catalog, done, google, home, install,  # noqa: PLC0415
-                   interview, preflight, providers, rules, sources, telegram, updates)
+                   interview, preflight, providers, rules, sources, telegram,
+                   tutorial, updates)
     return [
         providers.STEP,
         preflight.STEP,
@@ -223,6 +226,8 @@ def steps() -> list[Step]:
         # Last before the summary: optional, specific, and safe to skip.
         catalog.STEP,
         done.STEP,
+        # After the summary: a tour of Telegram for someone about to use it.
+        tutorial.STEP,
     ]
 
 
