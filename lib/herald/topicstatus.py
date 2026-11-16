@@ -72,23 +72,28 @@ def resolved(ts: dict) -> tuple[str, str | None, str | None]:
     return engine, model, effort
 
 
-def effort_name(engine: str | None, effort: str | None) -> str:
-    return f"thinking {effort}" if effort else f"{engine_name(engine)}'s default thinking level"
-
-
-def adjustable(ts: dict) -> bool:
-    """False only when the model's own catalog says it has no levels."""
+def thinking(ts: dict) -> str:
+    """`high` when the topic chose it; `Default (high)` when it follows a
+    default whose value is known; `Default (Codex decides)` when only the
+    engine knows. "Default" alone would hide the one thing worth knowing."""
+    engine, model, effort = resolved(ts)
     caps = ts.get("effort_caps") or {}
-    engine = ts.get("engine") or config.default_engine()
-    return not (caps.get("engine") == engine and caps.get("model") == ts.get("model")
-                and caps.get("efforts") == [])
+    own = caps.get("engine") == engine and caps.get("model") == ts.get("model")
+    if own and caps.get("efforts") == []:
+        return "not adjustable on this model"
+    chosen = ts.get("effort")
+    if chosen and chosen != "auto":
+        return chosen
+    if effort:
+        return f"Default ({effort})"
+    native = caps.get("default_effort") if own else None
+    return f"Default ({native})" if native else f"Default ({engine_name(engine)} decides)"
 
 
 def now(ts: dict) -> str:
-    """`Now: Claude Opus 5.5 · thinking high`."""
-    engine, model, effort = resolved(ts)
-    level = effort_name(engine, effort) if adjustable(ts) else "no adjustable thinking level"
-    return f"Now: {model_name(engine, model)} · {level}"
+    """`Model: Claude Opus · Thinking: Default (high)`."""
+    engine, model, _ = resolved(ts)
+    return f"Model: {model_name(engine, model)} · Thinking: {thinking(ts)}"
 
 
 def has_conversation(ts: dict) -> bool:
@@ -141,45 +146,61 @@ def _ago(seconds: float) -> str:
     return f"{hours // 24} days ago"
 
 
+def _secs(ms) -> str:
+    s = (ms or 0) / 1000
+    return f"{s:.1f}s" if s < 90 else f"{int(s // 60)}m {int(s % 60)}s"
+
+
 def context_summary(ts: dict, con=None, *, now_ts: float, running: dict | None = None) -> str:
-    """/context: what this topic runs on and what it remembers, without jargon.
-    `con` reads when the conversation began from `runs`; it may be None."""
+    """/context: between the status line and /debug. What the topic runs on,
+    how much of the context window the conversation fills, what it has cost,
+    and what the last turn did, in words with the real numbers.
+    `con` reads the conversation's turns from `runs`; it may be None."""
+    import datetime as dt
     lines = [now(ts)]
     if running:
-        lines.append(f"Working on your message now ({int(running['seconds'])}s so far).")
+        lines.append(f"Working on your message now ({_secs(running['seconds'] * 1000)} so far; "
+                     f"its numbers appear when it finishes).")
     session = ts.get("session_id")
     if not session:
         lines.append("No conversation yet: your next message starts one"
                      + (", with a summary of what this topic was working on."
                         if ts.get("handoff_from") else "."))
     else:
-        started = None
+        runs = []
         if con is not None:
-            row = con.execute("SELECT MIN(ts) FROM runs WHERE session_id = ?", (session,)).fetchone()
-            started = row[0] if row else None
-        turns = ts.get("turns", 0)
-        began = ""
-        if started:
-            import datetime as dt
+            runs = con.execute("""
+                SELECT ts, duration_ms, cost_usd, input_tokens, output_tokens,
+                       cache_read, context_tokens, round_trips
+                FROM runs WHERE session_id = ? ORDER BY id""", (session,)).fetchall()
+        turns = len(runs) or ts.get("turns", 0)
+        parts = [f"{turns} message{'' if turns == 1 else 's'}"]
+        if runs and runs[0]["ts"]:
             try:
-                began = f", started {_ago(now_ts - dt.datetime.fromisoformat(started).timestamp())}"
+                parts.append(f"started {_ago(now_ts - dt.datetime.fromisoformat(runs[0]['ts']).timestamp())}")
             except ValueError:
-                began = ""
-        lines.append(f"Conversation: {turns} message{'' if turns == 1 else 's'}{began}.")
-        window, used = ts.get("context_window"), ts.get("context_tokens")
+                pass
+        cost = sum(r["cost_usd"] or 0 for r in runs)
+        if cost:
+            parts.append(f"${cost:.2f} so far")
+        lines.append("Conversation: " + ", ".join(parts))
+        window = ts.get("context_window")
+        used = ts.get("context_tokens") or (runs[-1]["context_tokens"] if runs else None)
         share = float(config.get("engines.renewal_context_share", 0.75))
         if window and used:
-            lines.append(f"Memory of this conversation is {used / window:.0%} full. At "
-                         f"{share:.0%} the next message starts a new conversation "
-                         f"that gets a summary of this one.")
+            lines.append(f"Context: {used:,} of {window:,} tokens ({used / window:.0%}). "
+                         f"At {int(window * share):,} ({share:.0%}) the next message "
+                         f"starts a new conversation with a summary of this one.")
         elif used:
-            lines.append(f"Memory of this conversation: {used:,} tokens.")
+            lines.append(f"Context: {used:,} tokens.")
+        if runs:
+            last = runs[-1]
+            lines.append(f"Last message: {_secs(last['duration_ms'])}, "
+                         f"{last['round_trips'] or '?'} steps; "
+                         f"{(last['input_tokens'] or 0):,} new tokens in, "
+                         f"{(last['cache_read'] or 0):,} reread from cache, "
+                         f"{(last['output_tokens'] or 0):,} out")
     request = (ts.get("work") or {}).get("request")
     if request:
         lines.append(f"Working on: {request}")
-    lines += ["",
-              "/new forgets this conversation and what the topic is working on.",
-              "Changing model on the same provider, or thinking level, keeps the conversation.",
-              "Switching provider starts a new conversation with a summary.",
-              "/debug has the technical details."]
     return "\n".join(lines)

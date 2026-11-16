@@ -45,9 +45,9 @@ class Wording(unittest.TestCase):
         p.start(); self.addCleanup(p.stop)
 
     def test_status_uses_configured_defaults_not_cli_jargon(self):
-        self.assertEqual(topicstatus.now({}), 'Now: Claude Opus · thinking high')
+        self.assertEqual(topicstatus.now({}), 'Model: Claude Opus · Thinking: Default (high)')
         self.assertEqual(topicstatus.now({'engine': 'codex', 'effort': 'auto'}),
-                         "Now: GPT-6.1 Sol · Codex's default thinking level")
+                         'Model: GPT-6.1 Sol · Thinking: Default (Codex decides)')
 
     def test_nothing_mentions_the_ledger(self):
         ts = {'engine': 'codex'}
@@ -64,11 +64,29 @@ class Wording(unittest.TestCase):
         ts = {'session_id': 's', 'turns': 3, 'context_tokens': 41_000,
               'context_window': 100_000, 'work': {'request': 'fix the website'}}
         text = topicstatus.context_summary(ts, None, now_ts=time.time())
-        self.assertIn('Now: Claude Opus · thinking high', text)
-        self.assertIn('41% full', text)
-        self.assertIn('At 75%', text)
+        self.assertIn('Model: Claude Opus · Thinking: Default (high)', text)
+        self.assertIn('41,000 of 100,000 tokens (41%)', text)
+        self.assertIn('At 75,000 (75%)', text)
         self.assertIn('Working on: fix the website', text)
-        self.assertIn('/new forgets', text)
+        self.assertNotIn('/new', text)
+
+    def test_context_summary_reads_turns_cost_and_last_turn(self):
+        import sqlite3
+        con = sqlite3.connect(':memory:'); con.row_factory = sqlite3.Row
+        con.execute('CREATE TABLE runs (id INTEGER PRIMARY KEY, session_id, ts, duration_ms, cost_usd, '
+                    'input_tokens, output_tokens, cache_read, context_tokens, round_trips)')
+        con.execute("INSERT INTO runs VALUES (1,'s','2026-11-16T10:00:00',5000,0.5,100,20,9000,9120,3)")
+        con.execute("INSERT INTO runs VALUES (2,'s','2026-11-16T10:05:00',45200,1.25,1200,300,88000,89500,8)")
+        text = topicstatus.context_summary({'session_id': 's'}, con, now_ts=time.time())
+        self.assertIn('2 messages', text)
+        self.assertIn('$1.75 so far', text)
+        self.assertIn('Context: 89,500 tokens.', text)
+        self.assertIn('Last message: 45.2s, 8 steps; 1,200 new tokens in, 88,000 reread from cache, 300 out', text)
+
+    def test_explicit_auto_names_the_engines_own_default_when_known(self):
+        ts = {'engine': 'codex', 'model': 'm', 'effort': 'auto',
+              'effort_caps': {'engine': 'codex', 'model': 'm', 'efforts': ['low'], 'default_effort': 'low'}}
+        self.assertEqual(topicstatus.thinking(ts), 'Default (low)')
 
 
 class Bridge(unittest.TestCase):
@@ -103,13 +121,13 @@ class Bridge(unittest.TestCase):
     def test_new_names_what_is_forgotten_and_what_is_running(self):
         text = self.say('/new')
         self.assertIn('forgotten', text)
-        self.assertIn('Now: Claude Opus · thinking max', text)
+        self.assertIn('Model: Claude Opus · Thinking: max', text)
 
     def test_new_then_switch_says_nothing_carries(self):
         self.say('/new')
         text = self.say('/codex')
         self.assertIn('Switched to Codex. Your next message starts the conversation.', text)
-        self.assertIn('Now: GPT-6.1 Sol · thinking medium', text)
+        self.assertIn('Model: GPT-6.1 Sol · Thinking: Default (medium)', text)
         self.assertIn('earlier choice of max', text)
 
     def test_switch_mid_conversation_carries_a_summary(self):
@@ -121,13 +139,13 @@ class Bridge(unittest.TestCase):
     def test_same_engine_model_keeps_conversation_and_level(self):
         text = self.say('/sonnet')
         self.assertIn('Same conversation', text)
-        self.assertIn('Claude Sonnet · thinking max', text)
+        self.assertIn('Claude Sonnet · Thinking: max', text)
         self.assertEqual(self.state['threads'][self.key]['session_id'], 'kept')
 
     def test_effort_reply_names_the_model(self):
         text = self.say('/low')
-        self.assertIn('Thinking level set to low. Same conversation', text)
-        self.assertIn('Now: Claude Opus · thinking low', text)
+        self.assertIn('Thinking set to low. Same conversation', text)
+        self.assertIn('Model: Claude Opus · Thinking: low', text)
 
 
 if __name__ == '__main__':

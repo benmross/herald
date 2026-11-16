@@ -1748,10 +1748,7 @@ def _select_model(ts: dict, engine: str, model: str, adjust=None) -> str:
 
 
 def _effort_note(ts: dict) -> str:
-    engine, _, effort = topicstatus.resolved(ts)
-    return topicstatus.same_conversation_note(
-        ts, f"Thinking level set to {effort}." if effort else
-        f"Thinking level set to {topicstatus.engine_name(engine)}'s default.")
+    return topicstatus.same_conversation_note(ts, f"Thinking set to {topicstatus.thinking(ts)}.")
 
 
 def _replace_picker(msg: dict, text: str, keyboard: list | None = None) -> dict | None:
@@ -1780,18 +1777,18 @@ def _show_effort_picker(state: dict, key: str, msg: dict, choice: dict,
             send(chat_id, text, thread_id)
         return
     ts = topic_state(state, key)
-    _, _, effort = topicstatus.resolved(ts)
-    current = effort or f"{topicstatus.engine_name(choice['engine'])}'s default"
+    current = topicstatus.thinking(ts)
     levels = ["auto", *dict.fromkeys(choice["efforts"])]
     menus = state.setdefault("effort_menus", {})
     for token, menu in list(menus.items()):
         if time.time() - menu.get("created", 0) > 86400:
             menus.pop(token, None)
     token = secrets.token_hex(8)
-    buttons = [{"text": f"{topicstatus.engine_name(choice['engine'])} decides" if level == "auto" else level,
+    native = choice.get("default_effort")
+    buttons = [{"text": (f"Default ({native})" if native else "Default") if level == "auto" else level,
                 "callback_data": f"effort:{token}:{i}"} for i, level in enumerate(levels)]
     text = (f"Choose a thinking level for {topicstatus.model_name(choice['engine'], choice['model'])}. "
-            f"Current: {current}. Changing it keeps the conversation.")
+            f"Current: {current}.")
     keyboard = [buttons[i:i + 3] for i in range(0, len(buttons), 3)]
     if selection_note is not None:
         response = _replace_picker(msg, selection_note + "\n\n" + text, keyboard)
@@ -1882,10 +1879,7 @@ def _handle_models(update: dict, state: dict) -> None:
             return
         send(chat_id, "Choose a model below, or use /models engine/model.", msg.get("message_thread_id"))
     engine = ts.get("engine") or config.default_engine()
-    lines = [topicstatus.now(ts),
-             "A model from the same provider keeps the conversation. Another provider "
-             "starts a new one with a summary of this topic's work.",
-             "Tap a model to switch, or use /models engine/model."]
+    lines = [topicstatus.now(ts), "Tap a model to switch, or use /models engine/model."]
     for vendor in config.enabled_engines():
         vendor_rows = [r for r in rows if r["engine"] == vendor]
         if vendor_rows:

@@ -287,7 +287,7 @@ class TelegramModels(unittest.TestCase):
         buttons=next(kw['reply_markup']['inline_keyboard']
                for method,kw in reversed(self.calls) if kw.get('reply_markup',{}).get('inline_keyboard'))
         labels=[b['text'] for row in buttons for b in row]
-        self.assertEqual(labels,['Codex decides','low','high','max','ultra'])
+        self.assertEqual(labels,['Default (low)','low','high','max','ultra'])
         self.assertTrue(all(len(b['callback_data'].encode())<=64 for row in buttons for b in row))
 
     def test_typed_model_selection_also_opens_effort_picker(self):
@@ -401,7 +401,7 @@ class TelegramModels(unittest.TestCase):
         self.assertFalse(any(method=='sendMessage' for method,kw in effort_calls))
         edit=next(kw for method,kw in effort_calls if method=='editMessageText')
         self.assertEqual(edit['message_id'],77);self.assertIn('Codex gpt-probe',edit['text'])
-        self.assertIn('Thinking level set to max',edit['text'])
+        self.assertIn('Thinking set to max',edit['text'])
         self.assertEqual(edit['reply_markup'],{'inline_keyboard':[]})
 
     def test_model_without_effort_updates_original_and_removes_all_buttons(self):
@@ -409,7 +409,7 @@ class TelegramModels(unittest.TestCase):
         self.tg._handle_model_callback(update,self.state)
         self.assertEqual(len(self.sent),sends)
         edit=next(kw for method,kw in self.calls[calls:] if method=='editMessageText')
-        self.assertIn('Claude Haiku · no adjustable',edit['text']);self.assertIn('no adjustable',edit['text'])
+        self.assertIn('Claude Haiku · Thinking: not adjustable',edit['text']);self.assertIn('no adjustable',edit['text'])
         self.assertEqual(edit['reply_markup'],{'inline_keyboard':[]})
         self.assertNotIn('effort_menus',self.state)
 
