@@ -35,6 +35,13 @@
       "title": "Discord",
       "for": "anyone on Discord",
       "summary": "Messages from the servers and DMs your own client sees, forwarded by a Vencord plugin, with chosen club channels read for events and opportunities."
+    },
+    {
+      "name": "ios",
+      "url": "https://github.com/benmross/herald-ios",
+      "title": "iOS apps",
+      "for": "Apple developers with a Mac",
+      "summary": "Build and ship native iPhone apps from a machine without Xcode by driving your Mac over SSH: tap-to-install builds and App Store listings."
     }
   ]
 }

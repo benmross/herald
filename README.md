@@ -107,6 +107,7 @@ the extension runs and leaves it off until you say so.
 | [transit](https://github.com/benmross/herald-transit) | DC buses and Metro: live arrivals, alerts, trip planning |
 | [shop](https://github.com/benmross/herald-shop) | clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's |
 | [discord](https://github.com/benmross/herald-discord) | messages from your own Discord client, with club channels read for events |
+| [ios](https://github.com/benmross/herald-ios) | build and ship iPhone apps by driving your Mac over SSH |
 
 Setup offers these at the end, and `herald ext available` lists them any time.
 Find more under the [`herald-extension`](https://github.com/topics/herald-extension)
