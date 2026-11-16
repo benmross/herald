@@ -29,7 +29,8 @@ def prompt(state: State) -> Prompt:
     telegram = bool(config.secret("telegram.chat_id"))
 
     lines = [
-        f"**{agent} is yours now, {who['first']}.**",
+        (f"**{agent} is yours now, {who['first']}.**" if config.get("user.name")
+         else f"**{agent} is yours now.**"),
         "",
         "**What happens without you doing anything**",
         "",
