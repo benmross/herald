@@ -1,42 +1,46 @@
-# Herald
+<p align="center">
+  <img src="docs/brand/banner.jpg" alt="Herald: a second you that never sleeps" width="100%">
+</p>
 
-A personal agent that runs on your own machine, on your own Claude or ChatGPT
-subscription.
+<p align="center">
+  A personal agent that runs on your own machine, on the Claude or ChatGPT subscription you already pay for.
+</p>
 
-Herald reads your mail, calendars and tasks, keeps a written record of what it
-concludes, sends you a digest each morning, and messages you when a deadline
-is about to close. You talk to it on Telegram or in a terminal. An optional Claude Remote
-Control connection also supports the Claude app. Its memory is a folder of files on your disk, so it is the same agent
-everywhere.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="docs/install.md">Install guide</a> ·
+  <a href="#extensions">Extensions</a> ·
+  <a href="#docs">Docs</a>
+</p>
 
-| | |
-|---|---|
-| Reads | Gmail, Google Calendar, Tasks and Contacts, GitHub activity, any `.ics` feed, public job postings, and iMessage on a Mac. |
-| Remembers | Conclusions are written to a ledger and updated when something changes. A morning where nothing happened costs almost nothing. |
-| Ranks | Setup interviews you about what you are trying to do. Everything it surfaces is judged against your answers. |
-| Reaches you | A digest at 06:30, and a message the hour it finds something closing tomorrow. |
-| Asks first | It never sends, posts, applies, spends or deletes without your tap on the exact text. |
-| Changes itself | "Read this feed too", "send the digest at seven", "stop telling me about X". It writes the setting or the extension. |
-| No API bill | It runs the official `claude` or `codex` CLI as a subprocess. No API key, no per-token cost. |
+---
+
+Herald reads your accounts, writes what it learns into a ledger on your disk,
+and works for you around the clock. You talk to it on Telegram or in a terminal.
+
+- Reads Gmail, Calendar, Tasks, Contacts, GitHub, any `.ics` feed, job postings, and iMessage on a Mac.
+- Remembers every conclusion in plain files you own, so a quiet morning costs almost nothing.
+- Drafts replies, manages your calendar, browses, fills in forms, and writes its own extensions.
+- Sends a digest at 6:30 AM, and a message the hour it finds something closing tomorrow.
+- Asks before anything another person sees, anything that costs money, or anything permanent.
+- Runs the official `claude` or `codex` CLI, so there is no API key and no per-token bill.
 
 ## Quick start
 
-You need a Claude or ChatGPT subscription, a Google account, and a Mac or Linux machine
-with 4 GB of RAM. Windows works through WSL2 or Docker.
+You need a Claude or ChatGPT subscription, a Google account, and a Mac or
+Linux machine with 4 GB of RAM. Windows works through WSL2 or Docker.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/benmross/herald/main/install.sh | bash
 herald setup --web
 ```
 
-The installer offers Claude only, Codex only, both, or choosing later in setup,
-and asks before using sudo. The second command opens setup in your browser.
-Setup checks only the providers you choose. Neither provider is preselected. Setup takes
-about half an hour, most of it you writing about yourself.
-[`docs/install.md`](docs/install.md) is the full walkthrough, written for
-someone who has not used a terminal.
+Setup opens in your browser and takes about half an hour, mostly you writing
+about yourself. New to the terminal? [`docs/install.md`](docs/install.md)
+walks through every step.
 
-### Docker
+<details>
+<summary><b>Docker</b></summary>
 
 ```bash
 git clone https://github.com/benmross/herald herald-docker && cd herald-docker
@@ -44,102 +48,81 @@ docker compose -f docker/compose.yml up -d --build
 docker exec -it herald herald setup --web
 ```
 
-The container has no sudo and sees one volume, so a command that goes wrong
-cannot touch the rest of your computer. On Windows, Docker Desktop keeps it
-running with no window open. [`docs/docker.md`](docs/docker.md) covers what
-the container does and does not protect.
+No sudo, one volume, and a healthcheck that covers the bridge, the database,
+your sources and your login. See [`docs/docker.md`](docs/docker.md).
+
+</details>
 
 ## Using it
 
-```bash
-herald status       # what it has read, what it cost, what is failing
-herald attach       # a conversation in this terminal
-herald setup --step providers  # choose providers or change your default
-herald doctor       # find what is broken and how to fix it
-herald update       # install the newest release
-herald setup        # re-run any setup step
-```
+| Command | |
+|---|---|
+| `herald attach` | talk to it in this terminal |
+| `herald status` | what it has read, what it cost, what is failing |
+| `herald doctor` | find what is broken and how to fix it |
+| `herald health` | quick pass or fail |
+| `herald update` | install the newest release |
+| `herald setup` | re-run any setup step |
 
-New conversations and scheduled jobs use your chosen default provider.
-Model and thinking level follow that CLI's defaults unless you override them.
-`herald attach --engine claude` and `herald attach --engine codex` choose a
-provider for a terminal conversation. `herald brain url` is available only if
-you opt into Claude Remote Control in setup.
+**On Telegram,** each forum topic is its own conversation. Reply to an old
+message to pick that thread back up.
 
-In Telegram, each forum topic is its own conversation. `/new` starts a topic
-over, and replying to an older message picks that conversation back up.
-`/private` makes the topic private until `/private off`: Herald can read
-everything and can save or change nothing, enforced by a read-only filesystem
-sandbox, and the conversation is deleted when it ends (Linux with bubblewrap).
-`/models` lists your enabled CLIs' available models and lets you switch by tapping a
-button or sending `/models engine/model`. Switching models within an engine
-keeps the conversation; switching engines starts a fresh session.
-After choosing a model with `/models`, pick one of its supported thinking levels.
-Your choices appear in the original picker message, which removes the buttons
-when you finish.
-`/effort` reopens that picker; its CLI default button clears the override.
-`/claude [model]` and `/codex [model]` choose a provider for a topic.
-`/opus` and `/sonnet` are Claude model shortcuts. `/stop` cancels
-a running turn, and `/obligations` lists what you owe. Telegram autocompletes
-`/new`, `/stop` and `/private`; set `telegram.command_menu` to `full` for all of them.
-You can send follow-up messages while either engine is working in Telegram.
-Codex uses its first-party app-server interface with your existing login.
+| Command | |
+|---|---|
+| `/new` | start the topic over |
+| `/stop` | cancel the running turn |
+| `/private` | read-only and unrecorded until `/private off` |
+| `/models`, `/effort` | pick a model and thinking level |
+| `/claude`, `/codex` | pick a provider for this topic |
+| `/obligations` | what you owe people |
 
-## What it does without asking
+## What it does on its own
 
 | | |
 |---|---|
-| Does it | Anything that stays on the machine: reading, searching, writing its own notes, drafting. |
-| Does it, then tells you | Reversible things only you see: adding an event to a calendar it manages, labelling mail, opening a task. Each one is in the next digest. |
-| Asks every time | Anything another person sees, anything that costs money, anything permanent. |
+| **Just does it** | Reading, searching, writing its notes, drafting. |
+| **Does it, then tells you** | Reversible things only you see: a calendar event, a mail label, a task. Listed in the next digest. |
+| **Asks every time** | Anything another person sees, anything that costs money, anything permanent. |
 
-The rules are in [`config/constitution.md`](config/constitution.md), which
-every session reads. [`SECURITY.md`](SECURITY.md) covers what is stored, what
-is sent where, and how text from mail and web pages is kept from acting as
-instructions.
+The full rules are in [`config/constitution.md`](config/constitution.md).
+[`SECURITY.md`](SECURITY.md) covers what is stored, where it goes, and how
+text from mail and web pages is kept from acting as instructions.
 
 ## Extensions
 
-An extension adds a source or a skill that only some people need. Send your
-Herald the repository's URL and ask it to install one: it shows you what the
-extension would run, leaves it off until you say so, and asks you for each
-setting in chat. `herald ext install <url>` does the same from a terminal.
+Send your Herald a repository URL and ask it to install it. It shows you what
+the extension runs and leaves it off until you say so.
 
-| extension | what it does |
+| Extension | |
 |---|---|
-| [canvas](https://github.com/benmross/herald-canvas) | Canvas LMS through your own browser session: courses, grades, submission state and announcements, with tap-approved writes and courses you can lock to dates and grades only |
-| [umd](https://github.com/benmross/herald-umd) | UMD campus events on a Google calendar of their own, each judged once against criteria you write |
-| [transit](https://github.com/benmross/herald-transit) | DC-region buses and Metro: live arrivals, alerts and a trip planner, from where you are |
-| [shop](https://github.com/benmross/herald-shop) | clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's, with a contact sheet of the photos |
+| [canvas](https://github.com/benmross/herald-canvas) | Canvas LMS: courses, grades, submissions, announcements |
+| [umd](https://github.com/benmross/herald-umd) | UMD campus events, filtered against criteria you write |
+| [transit](https://github.com/benmross/herald-transit) | DC buses and Metro: live arrivals, alerts, trip planning |
+| [shop](https://github.com/benmross/herald-shop) | clothes in your sizes from H&M, Uniqlo, Old Navy and Kohl's |
 
-More are listed under the
-[`herald-extension`](https://github.com/topics/herald-extension) topic. To
-write one, see [`docs/extensions.md`](docs/extensions.md); tag its repository
-`herald-extension` and it appears there too.
+Find more under the [`herald-extension`](https://github.com/topics/herald-extension)
+topic, or write your own with [`docs/extensions.md`](docs/extensions.md).
 
-## Where your data lives
+## Your data
 
-The checkout is the program, and it is the same for everyone. `~/.herald` is
-you: settings, credentials, and the ledger. Nothing in it is sent anywhere
-except to the services you connected and to the model CLI you already use.
-Delete the folder and Herald knows nothing about you.
+The checkout is the program, identical for everyone. `~/.herald` is you:
+settings, credentials and the ledger. It goes only to the services you
+connected and the model CLI you already use. Delete it and Herald forgets you.
 
-## Where to run it
-
-Herald is most useful on a machine that stays on. A laptop asleep at 06:30
-sends that digest late. If the selected CLI needs a new login, `herald doctor`
-shows the sign-in command. An old laptop or a Raspberry Pi works well.
-[`docs/hosting.md`](docs/hosting.md) compares the free options.
+Run it on something that stays on. An old laptop or a Raspberry Pi works well;
+[`docs/hosting.md`](docs/hosting.md) compares free options.
 
 ## Docs
 
-- [`docs/install.md`](docs/install.md): installing, step by step
-- [`docs/docker.md`](docs/docker.md): running it in a container
-- [`docs/hosting.md`](docs/hosting.md): where to run it
-- [`docs/updates.md`](docs/updates.md): following releases, or owning your copy
-- [`docs/extensions.md`](docs/extensions.md): adding your own data sources
-- [`docs/extending.md`](docs/extending.md): collectors, cycles and surfaces
-- [`docs/architecture.md`](docs/architecture.md): how it is built, and why
-- [`docs/operations.md`](docs/operations.md): logs, restarts, and what to do when something breaks
+| | |
+|---|---|
+| [install](docs/install.md) | step-by-step setup |
+| [docker](docs/docker.md) | running in a container |
+| [hosting](docs/hosting.md) | where to run it |
+| [updates](docs/updates.md) | following releases, or owning your copy |
+| [extensions](docs/extensions.md) | adding your own sources |
+| [extending](docs/extending.md) | collectors, cycles and surfaces |
+| [architecture](docs/architecture.md) | how it is built, and why |
+| [operations](docs/operations.md) | logs, restarts, fixing things |
 
 MIT licensed.

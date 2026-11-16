@@ -1,0 +1,204 @@
+<!doctype html><html><head><style>
+@font-face{font-family:A;src:url(../archivo.woff2) format('woff2-variations');font-weight:400 800;font-stretch:62% 125%}
+html,body{margin:0;background:#0c0c0d}
+#w{position:relative;overflow:hidden;font-family:A;color:#ecebe4}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+#t{position:absolute;inset:0;display:flex;font-weight:800;letter-spacing:-.04em;line-height:.8}
+</style></head><body><div id="w"><canvas id="c"></canvas><div id="t"></div></div>
+<script>
+const VERT=`#version 300 es
+void main(){ vec2 p = vec2(float((gl_VertexID<<1)&2), float(gl_VertexID&2)); gl_Position = vec4(p*2.0-1.0,0.0,1.0); }
+`;const FRAG=`#version 300 es
+precision highp float;
+out vec4 O;
+uniform vec2 uRes; uniform float uPS, uSeed;
+uniform int uShape, uTex, uInvert, uChroma;
+uniform float uScale,uAngle,uSoft,uWarp,uDetail,uMottle,uPosX,uPosY;
+uniform float uExp,uCon,uBlack,uGam,uVig;
+uniform float uTexAmt,uTexScale;
+uniform float uGrain,uGSize,uGDens,uGResp;
+uniform float uBands,uBlur,uStreak,uStreakAng,uGloss;
+uniform float uPhase,uMotion;
+uniform vec3 uC0,uC1,uC2; uniform float uMid;
+
+mat2 rot(float a){ float s=sin(a),c=cos(a); return mat2(c,-s,s,c); }
+float h21(vec2 p){ vec3 q=fract(vec3(p.xyx)*vec3(0.1031,0.1030,0.0973)); q+=dot(q,q.yzx+33.33); return fract((q.x+q.y)*q.z); }
+float vn(vec2 p){
+  vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  float a=h21(i), b=h21(i+vec2(1,0)), c=h21(i+vec2(0,1)), d=h21(i+vec2(1,1));
+  return mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+}
+float fbm(vec2 p){
+  float s=0.0,a=0.5,t=0.0;
+  for(int i=0;i<6;i++){
+    float w=clamp(uDetail-float(i),0.0,1.0);
+    s+=a*w*vn(p); t+=a*w;
+    p=rot(0.7)*p*2.03+13.7; a*=0.55;
+  }
+  return s/max(t,1e-4);
+}
+float field(vec2 p, vec2 sv){
+  float L;
+  float bph = uPhase*step(0.0005,uMotion);
+  if(uShape==0){
+    float cx = 0.20*sin(p.y*1.7+sv.x) + 0.08*sin(p.y*3.6+sv.y);
+    float hw = 0.30 + 0.10*p.y + 0.05*sin(p.y*2.6+sv.x);
+    float d  = abs(p.x-cx) - max(hw,0.03);
+    float m  = 1.0/(1.0+exp(clamp(d*(9.0/max(uSoft,0.03)),-40.0,40.0)));
+    float lat= (p.x-cx)/max(hw,1e-3);
+    L = m*mix(0.05,1.0,smoothstep(-1.25,0.85,lat));
+  } else if(uShape==1){
+    float u=p.x, sp=max(uSoft*0.75,0.05);
+    L  = exp(-pow(max((u+0.30)/sp,0.0),1.45));
+    L += 0.22*exp(-pow(abs(u+0.72)/(sp*1.3),2.0));
+    L *= 0.94;
+  } else if(uShape==2){
+    vec2 q=p*3.0+sv;
+    float w=fbm(q*0.22);
+    q += (uWarp*2.2)*(vec2(w,fbm(q*0.22+7.3))-0.5);
+    L = 0.5+0.5*sin((q.x*1.6+q.y*1.05+w*4.0)*max(uBands*0.5,0.25) + bph);
+  } else if(uShape==3){
+    vec2 q=p*vec2(1.0,0.40)*2.2+sv;
+    q += uWarp*1.4*(vec2(fbm(q*0.35),fbm(q*0.35+3.1))-0.5);
+    float r=0.0,a=0.6,t=0.0;
+    for(int i=0;i<5;i++){
+      float w=clamp(uDetail-float(i),0.0,1.0);
+      r+=a*w*(1.0-abs(2.0*vn(q)-1.0)); t+=a*w;
+      q=rot(0.35)*q*1.9; a*=0.5;
+    }
+    L=pow(clamp(r/max(t,1e-4),0.0,1.0),1.4);
+  } else if(uShape==4){
+    vec2 q=p*2.6+sv;
+    q += uWarp*2.4*(vec2(fbm(q*0.8),fbm(q*0.8+4.2))-0.5);
+    float n=fbm(q);
+    float mask=smoothstep(0.80,0.06,length(p*vec2(0.90,0.75)));
+    L=clamp(n*1.75*mask,0.0,1.0);
+  } else if(uShape==5){
+    vec2 q=p*1.9;
+    float r=length(q);
+    float z=sqrt(max(0.0,1.0-min(r*r,1.0)));
+    vec3 n=vec3(q,z+1e-3);
+    n.xy += uWarp*0.35*(vec2(fbm(q*2.2+sv),fbm(q*2.2+sv+9.1))-0.5);
+    n=normalize(n);
+    float lam=max(dot(n,normalize(vec3(-0.55,0.5,0.62))),0.0);
+    float edge=1.0/(1.0+exp(clamp((r-1.0)*(9.0/max(uSoft,0.03)),-40.0,40.0)));
+    L=pow(lam,1.35)*edge + 0.07*exp(-max(r-1.0,0.0)*4.0);
+  } else if(uShape==6){
+    vec2 q=p*2.0+sv;
+    vec2 w1=vec2(vn(q*0.9), vn(q*0.9+vec2(5.2,1.3)))-0.5;
+    vec2 w2=vec2(vn(q*1.9+3.0*w1), vn(q*1.9+3.0*w1+vec2(8.3,2.8)))-0.5;
+    float f=fbm(q + uWarp*3.4*w1 + uWarp*1.6*w2);
+    L=0.5+0.5*sin((f*2.0-1.0)*max(uBands,0.4)*3.14159 + bph);
+  } else {
+    float acc=0.0;
+    vec2 wq=p*1.6+sv;
+    vec2 wp=p + uWarp*0.55*(vec2(fbm(wq),fbm(wq+vec2(4.9,2.2)))-0.5);
+    for(int i=0;i<5;i++){
+      float fi=float(i);
+      vec2 c=vec2(sin(sv.x*1.3+fi*2.13)*0.52, cos(sv.y*1.1+fi*1.71)*0.66);
+      float rr=0.30+0.20*sin(sv.x*1.7+fi*3.31);
+      vec2 dv=(wp-c)*vec2(1.0,0.78);
+      acc += rr*rr/max(dot(dv,dv), 2e-3);
+    }
+    L=smoothstep(0.45,2.1,acc);
+  }
+  L *= mix(1.0, 0.45+1.05*fbm(p*1.5+sv*0.3), uMottle);
+  return L;
+}
+float plate(vec2 p, vec2 sv){
+  if(uBlur < 0.002) return field(p,sv);
+  float r = uBlur*0.42/max(uScale,0.05);
+  float a = radians(uStreakAng - uAngle);
+  vec2 dir = vec2(cos(a),sin(a)), per = vec2(-dir.y,dir.x);
+  float s=0.0, wt=0.0;
+  for(int i=0;i<9;i++){
+    float fi=float(i)+0.5;
+    float ang=fi*2.39996, rad=sqrt(fi/9.0);
+    vec2 k=vec2(cos(ang),sin(ang))*rad;
+    vec2 off=(dir*k.x*(1.0+uStreak*6.0) + per*k.y*(1.0-0.85*uStreak))*r;
+    float w=1.0-0.45*rad;
+    s+=w*field(p+off,sv); wt+=w;
+  }
+  s+=1.7*field(p,sv); wt+=1.7;
+  return s/wt;
+}
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  float asp = uRes.x/uRes.y;
+  vec2 p = (uv-0.5)*vec2(asp,1.0)/max(min(asp,1.0),1e-3);
+  p = rot(radians(uAngle))*p;
+  p = p/max(uScale,0.05) - vec2(uPosX,uPosY);
+  vec2 sv = vec2(uSeed*37.1, uSeed*-21.7);
+  vec2 lp = uMotion*vec2(cos(uPhase)-1.0, sin(uPhase));
+  sv += lp*1.15;
+  p  += lp*0.10;
+
+  float L = plate(p, sv);
+
+  vec2 tp = rot(radians(uAngle+35.0))*(uv-0.5)*vec2(asp,1.0)/max(min(asp,1.0),1e-3)*max(uTexScale,0.05);
+  if(uTex>0 && uTex<4){
+    float t=0.0;
+    if(uTex==1){
+      vec2 c = fract(tp*20.0 + vec2(0.0, floor(tp.x*20.0)*0.5)) - 0.5;
+      float perp  = abs(dot(c, vec2(-0.707,0.707)));
+      float along = abs(dot(c, vec2( 0.707,0.707)));
+      t = 1.35*smoothstep(0.15,0.03,perp)*smoothstep(0.46,0.24,along) - 0.18;
+    }
+    else if(uTex==2){ t = (vn(vec2(tp.x*150.0,tp.y*4.0))-0.5)*2.0; }
+    else { t = sin(tp.x*40.0)*sin(tp.y*40.0)*0.85; }
+    L *= 1.0 + uTexAmt*t*0.5;
+  }
+
+  L = L*exp2(uExp);
+  L = clamp((L-uBlack)/max(1e-3,1.0-uBlack), 0.0, 1.0);
+  L = pow(L, max(uGam,0.05));
+  L = clamp((L-0.45)*uCon+0.45, 0.0, 1.0);
+  if(uGloss > 0.001){
+    float gw = mix(0.5,0.035,uGloss);
+    L = mix(L, smoothstep(0.5-gw,0.5+gw,L), min(uGloss*1.35,1.0));
+  }
+  L *= mix(1.0, smoothstep(1.45,0.30,length((uv-0.5)*vec2(asp,1.0)*2.0)), uVig);
+  if(uInvert==1) L = 1.0-L;
+  if(uTex==4){
+    vec2 c = fract(tp*100.0)-0.5;
+    float rr = length(c)*1.95;
+    float rad = clamp(sqrt(L),0.0,1.0)*1.02;
+    float dotv = smoothstep(rad+0.16, rad-0.16, rr);
+    L = mix(L, mix(dotv, L, 0.18), clamp(uTexAmt,0.0,1.0));
+  }
+
+  vec3 col = L<uMid ? mix(uC0,uC1,L/max(uMid,1e-3)) : mix(uC1,uC2,(L-uMid)/max(1.0-uMid,1e-3));
+
+  float cell = max(uGSize*uPS, 0.35);
+  vec2 gp = floor(gl_FragCoord.xy/cell);
+  float n1 = h21(gp+uSeed*13.1);
+  float n2 = h21(gp*1.37+vec2(91.7,17.3)+uSeed*7.3);
+  float present = step(1.0-uGDens, n2);
+  float lum = dot(col, vec3(0.299,0.587,0.114));
+  float resp = mix(1.0, (4.0*lum*(1.0-lum))*0.95+0.12, uGResp);
+  float amt = uGrain*present*resp;
+  vec3 g = (uChroma==1)
+    ? vec3(n1, h21(gp+vec2(5.2,8.1)+uSeed), h21(gp+vec2(19.4,3.7)+uSeed))-0.5
+    : vec3(n1-0.5);
+  col += g*2.0*amt;
+  col += (h21(gl_FragCoord.xy+uSeed*3.0)-0.5)/255.0;
+  O = vec4(clamp(col,0.0,1.0),1.0);
+}
+`;
+const BASE={shape:2,scale:1.1,angle:-22,soft:.4,warp:.75,detail:3.6,mottle:.2,posx:0,posy:0,bands:2,blur:0,streak:0,streakang:0,
+exposure:-.28,contrast:1.2,black:.04,gamma:1,vignette:.35,gloss:0,c0:'#0c0c0d',c1:'#3a3834',c2:'#d8d3c6',mid:.5,invert:false,
+grain:.18,gsize:1,gdens:1,gresp:.85,chroma:false,tex:0,texamt:.35,texscale:1,flow:.25,seed:.37,phase:1.1};
+const c=document.getElementById('c');let W=2048,H=2048;
+c.width=8;c.height=8;const gl=c.getContext('webgl2',{preserveDrawingBuffer:true});
+const sh=(t,s)=>{const x=gl.createShader(t);gl.shaderSource(x,s);gl.compileShader(x);if(!gl.getShaderParameter(x,gl.COMPILE_STATUS))throw gl.getShaderInfoLog(x);return x};
+const FRAG_SRC=location.search.includes('light=front')?FRAG.replace('normalize(vec3(-0.55,0.5,0.62))','vec3(0.0,0.0,1.0)'):FRAG;
+const pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,VERT));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,FRAG_SRC));gl.linkProgram(pr);gl.useProgram(pr);gl.bindVertexArray(gl.createVertexArray());
+const U=n=>gl.getUniformLocation(pr,n);const hex=h=>{const n=parseInt(h.slice(1),16);return[(n>>16&255)/255,(n>>8&255)/255,(n&255)/255]};
+window.render=(cfg)=>{const P=Object.assign({},BASE,cfg.plate||{});const w=document.getElementById('w');w.style.width=cfg.w+'px';w.style.height=cfg.h+'px';W=cfg.w*4;H=cfg.h*4;c.width=W;c.height=H;
+gl.viewport(0,0,W,H);gl.uniform2f(U('uRes'),W,H);gl.uniform1f(U('uPS'),4);gl.uniform1f(U('uSeed'),P.seed);
+gl.uniform1i(U('uShape'),P.shape);gl.uniform1i(U('uTex'),P.tex);gl.uniform1i(U('uInvert'),0);gl.uniform1i(U('uChroma'),0);
+[['uScale','scale'],['uAngle','angle'],['uSoft','soft'],['uWarp','warp'],['uDetail','detail'],['uMottle','mottle'],['uPosX','posx'],['uPosY','posy'],['uExp','exposure'],['uCon','contrast'],['uBlack','black'],['uGam','gamma'],['uVig','vignette'],['uTexAmt','texamt'],['uTexScale','texscale'],['uGrain','grain'],['uGSize','gsize'],['uGDens','gdens'],['uGResp','gresp'],['uBands','bands'],['uBlur','blur'],['uStreak','streak'],['uStreakAng','streakang'],['uGloss','gloss'],['uMotion','flow'],['uMid','mid']].forEach(([u,k])=>gl.uniform1f(U(u),P[k]));
+gl.uniform1f(U('uPhase'),P.phase);gl.uniform3fv(U('uC0'),hex(P.c0));gl.uniform3fv(U('uC1'),hex(P.c1));gl.uniform3fv(U('uC2'),hex(P.c2));
+gl.drawArrays(gl.TRIANGLES,0,3);
+const t=document.getElementById('t');t.innerHTML=cfg.html;Object.assign(t.style,cfg.style||{});return document.fonts.ready.then(()=>1)};
+</script></body></html>
