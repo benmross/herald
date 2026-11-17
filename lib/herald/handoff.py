@@ -4,9 +4,10 @@ A session renews when its context fills, moves provider, or dies on a usage
 limit, and what it had not written down went with it. Asking every session to
 checkpoint fails in exactly those cases, so the next session reads the end of
 the old transcript instead, and the topic keeps a small record of its work that
-outlives any one session. `/new` drops both: it abandons the objective, where a
-renewal continues it. Quoted words are history to check, never instructions, and
-no approval carries across.
+outlives any one session. `/new` abandons the objective, so it drops the work
+record but still passes on the end of the old transcript, labelled as the
+conversation before /new. `/clear` and `/reset` drop both. Quoted words are
+history to check, never instructions, and no approval carries across.
 """
 
 from __future__ import annotations
@@ -61,12 +62,13 @@ def _work_lines(work: dict | None) -> list[str]:
     return lines
 
 
-def brief(con, session_id: str | None, last_ts: float = 0, work: dict | None = None) -> str:
+def brief(con, session_id: str | None, last_ts: float = 0, work: dict | None = None,
+          after_new: bool = False) -> str:
     carried = "\n".join(_work_lines(work))
-    return carried + _stopped(con, session_id, last_ts)
+    return carried + _stopped(con, session_id, last_ts, after_new)
 
 
-def _stopped(con, session_id: str | None, last_ts: float = 0) -> str:
+def _stopped(con, session_id: str | None, last_ts: float = 0, after_new: bool = False) -> str:
     if not session_id:
         return ""
     if last_ts and (dt.datetime.now().timestamp() - last_ts) / 3600 > MAX_AGE_HOURS:
@@ -78,8 +80,14 @@ def _stopped(con, session_id: str | None, last_ts: float = 0) -> str:
     last = said[-1]
     run = con.execute("SELECT exit_code,error FROM runs WHERE session_id=? ORDER BY id DESC LIMIT 1",
                       (session_id,)).fetchone()
-    lines = ["", "## Where the previous session in this topic stopped",
-             f"It ran {len(said)} turn(s) and began with: “{_clip(said[0]['user'], 200)}”"]
+    if after_new:
+        lines = ["", "## The conversation before /new in this topic",
+                 "The user sent /new to start a fresh conversation, so the new message "
+                 "may be about something else. Use this only if it refers back.",
+                 f"It ran {len(said)} turn(s) and began with: “{_clip(said[0]['user'], 200)}”"]
+    else:
+        lines = ["", "## Where the previous session in this topic stopped",
+                 f"It ran {len(said)} turn(s) and began with: “{_clip(said[0]['user'], 200)}”"]
     if len(said) > RECENT_TURNS:
         lines.append(f"The {len(said) - RECENT_TURNS - 1} turn(s) between are in its transcript.")
     for turn in said[max(1, len(said) - RECENT_TURNS):] if len(said) > 1 else []:

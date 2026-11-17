@@ -127,12 +127,17 @@ class Bridge(unittest.TestCase):
         return self.sent[-1]
 
     def test_new_names_what_is_forgotten_and_what_is_running(self):
-        text = self.say('/new')
+        text = self.say('/clear')
         self.assertIn('forgotten', text)
         self.assertIn('Model: Claude Opus · Thinking: max', text)
 
-    def test_new_then_switch_says_nothing_carries(self):
-        self.say('/new')
+    def test_new_says_it_keeps_the_last_messages(self):
+        self.assertIn('last few messages',
+                      topicstatus.new_note({}, True, kept=True))
+        self.assertIn('nothing here to forget', topicstatus.new_note({}, False, kept=True))
+
+    def test_clear_then_switch_says_nothing_carries(self):
+        self.say('/clear')
         text = self.say('/codex')
         self.assertIn('Switched to Codex. Your next message starts the conversation.', text)
         self.assertIn('Model: GPT-6.1 Sol · Thinking: Default (medium)', text)

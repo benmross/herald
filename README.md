@@ -64,7 +64,8 @@ conversation.
 
 | Telegram command | What it does |
 |---|---|
-| `/new` | forget this conversation; model and thinking level stay |
+| `/new` | new conversation that sees the last few messages of this one; model and thinking level stay |
+| `/clear` | forget this conversation entirely (`/reset` is the same) |
 | `/stop` | cancel the running turn |
 | `/private` | read-only and unrecorded until `/private off` |
 | `/models`, `/effort` | pick a model and thinking level; the conversation continues on the same provider |

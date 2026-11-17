@@ -79,12 +79,12 @@ def scenes() -> list[dict]:
                        "Last message: 38.0s, 12 steps; 310 new tokens in, 58,900 "
                        "reread from cache, 1,420 out", mono=True)]},
         {"title": "/new when the subject changes",
-         "caption": "/new forgets this conversation and what the topic was working "
-                    "on. The model and thinking level stay. Use it when you move "
-                    "on to something unrelated in the same topic.",
+         "caption": "/new starts a fresh conversation that still sees the last "
+                    "few messages, so you can refer back. The model and thinking "
+                    "level stay. /clear forgets everything instead.",
          "topics": topics, "topic": "Spring break", "history": old_trip,
          "steps": [me("/new"),
-                   bot(topicstatus.new_note(OPUS, True)),
+                   bot(topicstatus.new_note(OPUS, True, kept=True)),
                    me("Different question: what should I pack for Denver in March?"),
                    bot("Layers. Highs around 55°F and lows near freezing, and "
                        "snow is possible. A packing list is below.")]},
@@ -93,7 +93,7 @@ def scenes() -> list[dict]:
                     "came from, even after /new. The messages after that continue it.",
          "topics": topics, "topic": "Spring break",
          "history": old_trip + [me("/new", old=True),
-                                bot(topicstatus.new_note(OPUS, True), old=True),
+                                bot(topicstatus.new_note(OPUS, True, kept=True), old=True),
                                 me("What should I pack for Denver in March?", old=True),
                                 bot("Layers. Highs around 55°F and lows near freezing.", old=True)],
          "steps": [me("Put the $214 one on my calendar", reply_to="flights"),

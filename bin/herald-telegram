@@ -98,9 +98,10 @@ TOOL_BULLET = "\u2023"      # a single right-pointing bracket
 #
 # The cost of this is honest and worth stating: resuming a long-idle topic
 # re-sends its accumulated context uncached, so an old thread costs more per
-# message than a new one. `/new` in any topic starts that topic over.
+# message than a new one. `/new` in any topic starts a fresh session that sees
+# only the last few turns of the old one; `/clear` starts it over entirely.
 #
-# `/new` moves the topic's pointer and leaves the old session where it was.
+# Both move the topic's pointer and leave the old session where it was.
 # Replying to any message from an earlier conversation in the topic points the
 # topic back at that session and continues it: see `_reply_target`.
 #
@@ -137,7 +138,7 @@ def interactive_tools(engine):
 # Every other command still works when typed. Topics and these three are all
 # most people should need, so they are all the default menu offers;
 # telegram.command_menu "full" adds the rest for someone who uses them.
-MENU = (("new", "Forget this conversation, keep settings"), ("stop", "Stop what I'm doing"),
+MENU = (("new", "Fresh conversation that sees the last few messages"), ("stop", "Stop what I'm doing"),
         ("private", "Private conversation, nothing saved"),
         ("help", "How to use these commands"))
 FULL_MENU = (*MENU,
@@ -158,7 +159,8 @@ FULL_MENU = (*MENU,
              ("context", "What this topic is using and remembering"),
              ("debug", "Technical report: tokens, timing, session id"),
              ("session", "Same as /debug"),
-             ("clear", "Same as /new"), ("reset", "Same as /new"))
+             ("clear", "Forget this conversation, keep settings"),
+             ("reset", "Same as /clear"))
 MODEL_COMMANDS = {"/fable": "fable", "/opus": "opus", "/sonnet": "sonnet"}
 ENGINE_COMMANDS = {"/claude": "claude", "/codex": "codex", "/kiro": "kiro"}
 # Per-topic thinking level, for either engine: `/effort high`, or the level
@@ -1007,8 +1009,10 @@ def orientation_for(ts: dict, fresh: bool) -> str | None:
     try:
         with db.session() as con:
             text = _snapshot.orientation(con)
-            handoff.absorb(ts, ts.get("handoff_from"))
-            text += handoff.brief(con, ts.get("handoff_from"), ts.get("last_ts", 0), ts.get("work"))
+            if not ts.get("handoff_after_new"):  # /new started new work
+                handoff.absorb(ts, ts.get("handoff_from"))
+            text += handoff.brief(con, ts.get("handoff_from"), ts.get("last_ts", 0), ts.get("work"),
+                                  after_new=bool(ts.get("handoff_after_new")))
     except Exception as exc:  # noqa: BLE001 -- never worth failing a turn
         print(f"orientation unavailable ({type(exc).__name__}: {exc})")
         return None
@@ -1080,6 +1084,8 @@ def _clear_context(ts: dict) -> None:
 def _hand_off(ts: dict, session_id: str | None) -> None:
     """The next session continues this one's work."""
     ts["handoff_from"] = session_id or ts.get("handoff_from")
+    if session_id:  # a switch right after /new still hands on the pre-/new turns as such
+        ts.pop("handoff_after_new", None)
     ts["previous_session"] = session_id or ts.get("previous_session")
     ts["session_id"] = None
     ts["turns"] = 0
@@ -1328,17 +1334,25 @@ def handle(update: dict, state: dict) -> None:
         return
 
     if command_word(text) in ("/new", "/clear", "/reset"):
+        keep = command_word(text) == "/new"
         ended, turns = ts.get("session_id"), ts.get("turns", 0)
         had = topicstatus.has_conversation(ts) or bool(ts.get("work"))
         ts["previous_session"] = ended or ts.get("previous_session")
         ts["session_id"] = None
         ts["turns"] = 0
         ts["last_ts"] = time.time()
-        # Unlike a renewal, this abandons what the topic was doing.
-        ts.pop("handoff_from", None)
+        # Both abandon the topic's objective. /new still shows the next session
+        # the end of the one it ended, because with idle rotation off a topic
+        # otherwise never renews and the user has no way to say "same thread,
+        # fresh context". /clear and /reset carry nothing.
         ts.pop("work", None)
+        ts.pop("handoff_from", None)
+        ts.pop("handoff_after_new", None)
+        if keep and ended:
+            ts["handoff_from"] = ended
+            ts["handoff_after_new"] = True
         _clear_context(ts)
-        note = send(chat_id, topicstatus.new_note(ts, had), thread_id)
+        note = send(chat_id, topicstatus.new_note(ts, had, kept=keep), thread_id)
         # The command and its answer are the last two messages of the
         # conversation they ended, so a reply to either one resumes it. This
         # also saves the session itself, which is what makes a conversation
@@ -1450,6 +1464,7 @@ def handle(update: dict, state: dict) -> None:
         # has to match what that session was started with.
         ts["orientation"] = target["orientation"]
         ts.pop("handoff_from", None)
+        ts.pop("handoff_after_new", None)
         _clear_context(ts)
         notices = send(chat_id, f"*Back in the conversation from "
                                 f"{when.strftime('%-d %b, %-I:%M %p')}.*", thread_id)
@@ -1556,6 +1571,7 @@ def handle(update: dict, state: dict) -> None:
             print(f"[{key}] resume failed, retrying fresh")
             posted += working.message_ids
             ts["handoff_from"] = resume
+            ts.pop("handoff_after_new", None)
             with Working(chat_id, thread_id) as working:
                 result = attempt(working, True, None)
             if result.ok:
@@ -1566,6 +1582,7 @@ def handle(update: dict, state: dict) -> None:
         posted += working.message_ids
         if result.ok:
             ts.pop("handoff_from", None)
+            ts.pop("handoff_after_new", None)
             ts["context_tokens"] = getattr(result, "context_tokens", None)
             ts["context_window"] = getattr(result, "context_window", None)
             if not working.already_sent(result.text):

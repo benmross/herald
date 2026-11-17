@@ -102,12 +102,18 @@ def has_conversation(ts: dict) -> bool:
     return bool(ts.get("session_id") or ts.get("handoff_from"))
 
 
-def new_note(ts: dict, had_conversation: bool) -> str:
-    """The reply to /new. `ts` is the topic after it was cleared."""
-    first = ("New conversation. This conversation and what the topic was working "
-             "on are forgotten." if had_conversation else
-             "New conversation. There was nothing here to forget.")
-    back = " Reply to an older message to go back to it." if had_conversation else ""
+def new_note(ts: dict, had_conversation: bool, kept: bool = False) -> str:
+    """The reply to /new (kept=True) or /clear. `ts` is the topic after."""
+    if not had_conversation:
+        first = "New conversation. There was nothing here to forget."
+    elif kept:
+        first = ("New conversation. It starts with the last few messages of the "
+                 "previous one, so you can refer back to them.")
+    else:
+        first = ("New conversation. This conversation and what the topic was working "
+                 "on are forgotten.")
+    back = (" Reply to an older message to continue that conversation in full."
+            if had_conversation else "")
     return f"{first}{back}\n{now(ts)}"
 
 
@@ -220,9 +226,10 @@ def guide() -> str:
         f"{agent} remembers you through its notes, so even a new conversation "
         "knows your schedule, mail and preferences.",
         "",
-        "/new  Start a new conversation in this topic. It forgets this conversation "
-        "and what the topic was working on; the model and thinking level stay. "
-        "Reply to an older message to go back to it.",
+        "/new  Start a new conversation in this topic. It sees the last few "
+        "messages of this one, so you can refer back; the model and thinking "
+        "level stay. Reply to an older message to continue it in full.",
+        "/clear  Start over and forget this conversation entirely.",
         "/context  The model and thinking level in use, and how full this "
         "conversation is.",
         "/models  Choose a model and thinking level. On the same provider the "

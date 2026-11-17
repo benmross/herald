@@ -1,4 +1,5 @@
 """Renewal continues a topic's work, /new abandons it, Auto moves it on a limit."""
+import contextlib
 import importlib.machinery
 import importlib.util
 import json
@@ -44,6 +45,24 @@ class Renewal(unittest.TestCase):
         self.assertEqual((ts["handoff_from"], ts["session_id"], ts["turns"]), ("a", None, 0))
         self.assertIsNone(ts.get("context_window"))
         self.assertEqual(ts["work"]["request"], "build it")
+
+    def test_the_session_after_new_reads_the_old_turns_but_not_its_work(self):
+        ts = {"handoff_from": "a", "handoff_after_new": True, "scratch": "x"}
+        with mock.patch.object(self.tg._snapshot, "orientation", return_value="card"), \
+                mock.patch.object(self.tg.handoff, "absorb") as absorb, \
+                mock.patch.object(self.tg.handoff, "brief", return_value="") as brief, \
+                mock.patch.object(self.tg.db, "session", return_value=contextlib.nullcontext()):
+            self.tg.orientation_for(ts, True)
+        absorb.assert_not_called()
+        self.assertEqual(brief.call_args.args[1], "a")
+        self.assertTrue(brief.call_args.kwargs["after_new"])
+
+    def test_a_switch_right_after_new_keeps_the_pre_new_label(self):
+        ts = {"handoff_from": "a", "handoff_after_new": True, "session_id": None}
+        self.tg._hand_off(ts, None)
+        self.assertTrue(ts["handoff_after_new"])
+        self.tg._hand_off(ts, "b")
+        self.assertNotIn("handoff_after_new", ts)
 
 
 class Work(unittest.TestCase):

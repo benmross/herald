@@ -398,9 +398,13 @@ crash and a provider change, and the next session also gets the end of the last
 transcript. A summary is fallible, so it is labelled as something to check, and
 it carries no approval.
 
-`/new` is different in kind. It abandons the objective, so it drops that record
-and no handoff follows. The old session stays reachable by replying to one of
-its messages. General also drops the record after five idle hours.
+`/new` is different in kind. It abandons the objective, so it drops that record,
+but the next session still gets the last turns of the one it ended, headed as the
+conversation before /new and marked as possibly unrelated. With idle rotation
+off, `/new` is the only way to ask for fresh context on the same thread.
+`/clear` and `/reset` drop both. Either way the old session stays reachable by
+replying to one of its messages. General also drops the record after five idle
+hours.
 
 The two are made to look identical above `think.py`: one `Result`, one
 `Progress` stream, one `runs` row, one `Progress` display in Telegram. The

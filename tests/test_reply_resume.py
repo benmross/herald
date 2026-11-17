@@ -120,9 +120,21 @@ class ReplyResume(unittest.TestCase):
         self.assertEqual(ts["work"]["request"], "build the thing")
         ts["handoff_from"] = "stale"
         self.say("/new")
-        self.assertNotIn("handoff_from", ts)
+        # /new drops the work but shows the next session the end of this one.
+        self.assertNotIn("work", ts)
+        self.assertEqual((ts["handoff_from"], ts["handoff_after_new"]), ("sess-B", True))
         self.say("something else")
         self.assertEqual(ts["work"]["request"], "something else")
+        self.assertNotIn("handoff_after_new", ts)
+
+    def test_clear_and_reset_carry_nothing(self):
+        for command in ("/clear", "/reset"):
+            self.say("build the thing")
+            ts = self.state["threads"][KEY]
+            self.say(command)
+            self.assertNotIn("handoff_from", ts)
+            self.assertNotIn("handoff_after_new", ts)
+            self.assertNotIn("work", ts)
 
     def test_auto_pauses_for_a_choice_at_a_limit(self):
         results = iter([
