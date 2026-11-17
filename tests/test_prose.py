@@ -171,3 +171,22 @@ class TheHook(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TextForSomebodyElse(unittest.TestCase):
+    """`herald prose` reads files written for a visitor, a buyer or a recruiter."""
+
+    def test_a_disclaimer_on_a_page_is_flagged(self):
+        for text in ("Illustration. The messages, names and jobs are made up.",
+                     "All numbers shown are sample data.",
+                     "The graphic is an illustration, not the project."):
+            hits = prose.lint(text, reader=True)
+            self.assertIn("disclaimer", {h.rule for h in hits}, text)
+            self.assertTrue(prose.flagged(hits), text)
+
+    def test_the_same_words_in_a_reply_to_the_user_pass(self):
+        self.assertNotIn("disclaimer", rules("The numbers in the mockup are made up for now."))
+
+    def test_ordinary_copy_passes(self):
+        self.assertFalse(prose.lint("Your year in texts. Made on your Mac. Nothing leaves it.",
+                                    reader=True))

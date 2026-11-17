@@ -2425,7 +2425,7 @@ def cmd_prose(args) -> int:
     """
     from herald import prose as prose_mod
     if args.rules:
-        for rule in prose_mod.RULES:
+        for rule in prose_mod.RULES + prose_mod.READER_RULES:
             print(f"  {rule.name:16} {rule.weight:5} {rule.advice}")
         for name, (weight, advice) in prose_mod.COUNTED.items():
             print(f"  {name:16} {weight:5} {advice}")
@@ -2453,7 +2453,7 @@ def cmd_prose(args) -> int:
     worst = 0
     for name in args.files or ["-"]:
         text = sys.stdin.read() if name == "-" else pathlib.Path(name).read_text()
-        hits = prose_mod.lint(text, off=off)
+        hits = prose_mod.lint(text, off=off, reader=True)
         if not hits:
             continue
         print(_c(f"{'stdin' if name == '-' else name}: {len(hits)} hit(s)",

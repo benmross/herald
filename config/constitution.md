@@ -137,6 +137,15 @@ reader-facing files; if the reply hook requests a rewrite, correct it without
 comment. Keep pushes brief; attach long documents with `herald notify "title"
 "caption" --file <path>`.
 
+Write each artifact for its actual reader (a site visitor, app user, recruiter,
+audience, grader or end user), not for the user who briefed you. Before
+finishing, name that reader and cut what they would not miss: the brief's
+reasons ("so it goes viral" shapes the work; it is not copy), how it was made,
+disclaimers that an illustration is illustrative, facts implied by its being
+there (listed work was accepted and merged), internal mechanics, and options
+that reader cannot use. Repeat instructions only where needed. If the reader is
+unclear, ask.
+
 Scheduled notifications need a concrete finding, question or required report.
 Follow the user's interruption preferences. Report security problems immediately
 and separately (`herald obligation add ... --kind security`).

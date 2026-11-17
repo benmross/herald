@@ -156,6 +156,25 @@ RULES: list[Rule] = [
          "a question asked only so it can be answered. State the answer"),
 ]
 
+#: Rules for text written for somebody other than the user: a page, an app's copy,
+#: a slide, a resume. `herald prose` applies them; the reply hook does not,
+#: because telling the user a mockup's numbers are invented is useful to them.
+#: The person a reader-facing page is for does not need to be told that an
+#: illustration is an illustration, or that a sample is a sample (the maintainer
+#: of upstream, 22 Sep and 17 Nov 2026). These are only the literal form of a
+#: wider failure, writing for the wrong reader; the constitution states that.
+READER_RULES = [
+    Rule("disclaimer", HARD, _rx(_alt(
+        r"made[- ]up", r"for illustration(?: only| purposes)?",
+        r"(?:is|are) (?:an |purely )?illustrat(?:ion|ive)s?(?: only)?",
+        r"illustrative (?:only|purposes)", r"(?:simulated|sample|dummy|fake|mock) data",
+        r"placeholder (?:data|text|content|names?)", r"not real(?: data)?",
+        r"(?:all |entirely )?fictional", r"(?:nothing|none of) (?:here|this|it) is real")),
+         "who reads this, and would they miss the sentence? A visitor does not "
+         "need to be told an illustration is illustrative. Cut it unless the "
+         "reader would otherwise be misled about something that matters to them"),
+]
+
 _BY_NAME = {r.name: r for r in RULES}
 #: rules that are counted over the whole text instead of matched
 COUNTED = {
@@ -166,7 +185,7 @@ COUNTED = {
     "bold": (SOFT, "bold scattered through running text. Keep it for the one "
                    "thing the reader must not miss, or drop it"),
 }
-RULE_NAMES = tuple(_BY_NAME) + tuple(COUNTED)
+RULE_NAMES = tuple(_BY_NAME) + tuple(r.name for r in READER_RULES) + tuple(COUNTED)
 
 
 def _blank(match: re.Match) -> str:
@@ -226,8 +245,9 @@ def _staccato(text: str) -> list[tuple[int, int]]:
     return out
 
 
-def lint(text: str, off: tuple | list | set = ()) -> list[Hit]:
-    """Every hit in `text`, in the order it reads."""
+def lint(text: str, off: tuple | list | set = (), reader: bool = False) -> list[Hit]:
+    """Every hit in `text`, in the order it reads. `reader` adds READER_RULES,
+    for text whose reader is not the user."""
     off = set(off or ())
     seen = visible(text)
     found: list[tuple[int, Hit]] = []
@@ -236,7 +256,7 @@ def lint(text: str, off: tuple | list | set = ()) -> list[Hit]:
         found.append((start, Hit(name, weight, _excerpt(text, start, end),
                                  text.count("\n", 0, start) + 1, advice)))
 
-    for rule in RULES:
+    for rule in RULES + (READER_RULES if reader else []):
         if rule.name in off:
             continue
         for m in rule.pattern.finditer(seen):
