@@ -281,6 +281,23 @@ CREATE INDEX IF NOT EXISTS idx_notif_ts ON notifications (ts DESC);
 
 -- Completed replies and terminal progress edits awaiting Telegram recovery.
 -- Private conversations never enter this table.
+CREATE TABLE IF NOT EXISTS telegram_turns (
+    id TEXT PRIMARY KEY,
+    topic TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    snapshot TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'queued',
+    parent_id TEXT,
+    session_id TEXT,
+    messages TEXT NOT NULL DEFAULT '[]',
+    answer TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_turns_pending ON telegram_turns(status,created_at);
+
 CREATE TABLE IF NOT EXISTS telegram_outbox (
     id INTEGER PRIMARY KEY,
     created_at TEXT NOT NULL,

@@ -1,0 +1,9 @@
+[Unit]
+Description=Bounded model and tool workers
+
+[Slice]
+MemoryAccounting=yes
+# Leave room for remote access, the bridge, and the rest of the machine.
+MemoryHigh=55%
+MemoryMax=65%
+MemorySwapMax=1G

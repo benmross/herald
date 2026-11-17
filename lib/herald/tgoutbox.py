@@ -19,13 +19,21 @@ def enqueue(method: str, params: dict, *, fallback: str | None = None,
     if method not in ("sendMessage", "editMessageText"):
         raise ValueError("Only text messages and progress edits may be queued")
     with db.session() as con:
-        row = con.execute("""
+        return enqueue_in(con, method, params, fallback=fallback, session_id=session_id, key=key)
+
+
+def enqueue_in(con, method: str, params: dict, *, fallback: str | None = None,
+               session_id: str | None = None, key: str | None = None) -> int:
+    """Queue in the caller's transaction, including a turn-completion commit."""
+    if method not in ('sendMessage', 'editMessageText'):
+        raise ValueError('Only text messages and progress edits may be queued')
+    row = con.execute("""
             INSERT INTO telegram_outbox (created_at, method, params, fallback, session_id, dedupe_key)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(dedupe_key) DO UPDATE SET params=excluded.params
             RETURNING id
-        """, (db.now(), method, json.dumps(params), fallback, session_id, key)).fetchone()
-        return row[0]
+    """, (db.now(), method, json.dumps(params), fallback, session_id, key)).fetchone()
+    return row[0]
 
 
 def deliver(identifier: int, api) -> dict | None:

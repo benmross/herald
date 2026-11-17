@@ -1,0 +1,6 @@
+[Unit]
+Description=Herald conversation control plane
+
+[Slice]
+MemoryLow=128M
+ManagedOOMPreference=avoid

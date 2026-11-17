@@ -56,7 +56,8 @@ def render(text: str) -> str:
 
 def unit_sources() -> list[pathlib.Path]:
     """Every unit template, Herald's own and every enabled extension's."""
-    out = sorted((config.ROOT / "systemd").glob("herald-*"))
+    out = sorted([*(config.ROOT / "systemd").glob("herald-*"),
+                  *(config.ROOT / "systemd").glob("herald.slice")])
     for ext in extensions.enabled():
         out += ext.units()
     return out

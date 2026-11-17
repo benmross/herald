@@ -40,11 +40,14 @@ to file it properly and pull the dates out of it.
 from __future__ import annotations
 
 import difflib
+import fcntl
 import html
 import json
+import os
 import pathlib
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -57,7 +60,7 @@ from datetime import datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, topicstatus, usage  # noqa: E402
+from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, tgturns, topicstatus, usage  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -142,6 +145,7 @@ MENU = (("new", "Fresh conversation that sees the last few messages"), ("stop", 
         ("private", "Private conversation, nothing saved"),
         ("help", "How to use these commands"))
 FULL_MENU = (*MENU,
+             ("resume", "Continue a saved session in this topic"),
              ("update", "Update Herald to the latest release"),
              ("obligations", "What you owe and this week's deadlines"),
              ("usage", "Subscription usage and reset times"),
@@ -178,7 +182,7 @@ OBLIGATION_COMMANDS = ("/obligations",)
 HELP_COMMANDS = ("/help", "/start")
 # Built-in commands the bridge answers itself. Extensions register query
 # commands separately; unknown slash words are refused before reaching a model.
-SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private")
+SESSION_COMMANDS = ("/new", "/clear", "/reset", "/stop", "/private", "/resume")
 # These commands ask the selected engine to carry out a documented workflow.
 # Keep the original message for history and add these instructions to its turn.
 PROMPT_COMMANDS = {
@@ -314,6 +318,11 @@ PRIVATE_ON = (
 # which is what `save_state` writes: a private session's pointer exists only
 # in this process, and its transcript only in the scratch directory named here.
 _private: dict[str, dict] = {}
+_ingress_private: set[str] = set()  # includes /private not yet handled by a worker
+_journal_lock = threading.RLock()
+_running_turns: dict[str, str] = {}
+_recovered_ids: set[str] = set()
+_model_slots = threading.BoundedSemaphore(max(1, int(config.get('telegram.max_parallel_turns', 2))))
 
 
 def topic_state(state: dict, key: str) -> dict:
@@ -472,6 +481,11 @@ class Working:
         self._typing_in_general = chat_id < 0 and thread_id is None
         self._sent_replies: list[str] = []   # interim replies already sent
         self.message_ids: list[int] = []     # everything this turn has posted
+        self.journal_root: str | None = None
+
+    def _save_messages(self):
+        if self.journal_root:
+            tgturns.progress(self.journal_root, self.chat_id, self.message_ids)
 
     def __enter__(self):
         self._thread.start()
@@ -502,6 +516,8 @@ class Working:
         text = getattr(event, "text", str(event))
         if not text:
             return
+        if kind == 'session':
+            return  # handled by the turn's durable session callback
         self._last_event = time.monotonic()
         if kind == "retract":
             # A Stop hook sent the held draft back for a rewrite. It was never
@@ -580,6 +596,7 @@ class Working:
                 self._anchor_units = self._display_units(self._anchor)
                 self._sent_text, self._dirty = self._anchor, False
                 self._last_edit = time.monotonic()
+            self._save_messages()
             return complete
 
     @staticmethod
@@ -688,6 +705,7 @@ class Working:
                 self._sent_text = text
                 if self._msg_id:
                     self.message_ids.append(self._msg_id)
+                    self._save_messages()
             # Without this the first edit could fire immediately after the
             # send, since _last_edit was still 0.
             self._last_edit = time.monotonic()
@@ -782,7 +800,8 @@ class Working:
 
 def send(chat_id: int, text: str, thread_id: int | None = None,
          *, markup: bool = True, durable: bool = False,
-         session_id: str | None = None) -> list[int]:
+         session_id: str | None = None, turn_root: str | None = None,
+         turn_paused: bool = False) -> list[int]:
     """One reply, as HTML this process generated itself.
 
     Markdown mode was tried and removed, for a reason worth keeping in mind
@@ -821,6 +840,24 @@ def send(chat_id: int, text: str, thread_id: int | None = None,
                  link_preview_options={"is_disabled": True}, **extra))
         return ids
     queued = []
+    if turn_root:
+        # A crash can happen anywhere between completion and Telegram's reply.
+        # Queue every chunk and consume the request in ONE commit, before I/O.
+        if not durable:
+            raise ValueError('Journaled replies must use durable delivery')
+        with db.session() as con:
+            for chunk in tgtext.chunks(text, MAX_REPLY):
+                params = dict(chat_id=chat_id, text=tgtext.to_html(chunk), parse_mode='HTML',
+                              link_preview_options={'is_disabled': True}, **extra)
+                queued.append(tgoutbox.enqueue_in(con, 'sendMessage', params,
+                              fallback=chunk, session_id=session_id))
+            tgturns.finish_in(con, turn_root, paused=turn_paused)
+        for identifier in queued:
+            try:
+                sent(tgoutbox.deliver(identifier, api))
+            except Exception as exc:
+                print(f'completed reply delivery deferred ({type(exc).__name__})', file=sys.stderr)
+        return ids
     for chunk in tgtext.chunks(text, MAX_REPLY):
         params = dict(chat_id=chat_id, text=tgtext.to_html(chunk), parse_mode="HTML",
                       link_preview_options={"is_disabled": True}, **extra)
@@ -1250,6 +1287,9 @@ def handle(update: dict, state: dict) -> None:
     # only, and the topic's stored record is left exactly as it was.
     pv = _private.get(key)
     ts = topic_state(state, key)
+    if update.get('_turn_ids') and all(
+            (tgturns.get(i) or {}).get('status') == 'done' for i in update['_turn_ids']):
+        return  # /stop may have cancelled it while it waited for this topic
     if pv is None:
         _observe_topic_name(state, msg)
     if not update.get("_limit_resume"):
@@ -1323,6 +1363,27 @@ def handle(update: dict, state: dict) -> None:
             _sync_topic_name(thread_state(state, key), key)
         return
 
+    if command_word(text) == '/resume':
+        if pv is not None:
+            send(chat_id, 'Use /private off before resuming a saved conversation.', thread_id)
+            return
+        wanted = text.split(None, 1)[1].strip() if len(text.split(None, 1)) > 1 else ''
+        with db.session() as con:
+            row = con.execute('SELECT * FROM telegram_sessions WHERE session_id=? AND topic=?', (wanted, key)).fetchone()
+        if not row:
+            send(chat_id, 'Use /resume followed by a saved session ID from this topic. /debug shows the current ID.', thread_id)
+            return
+        tgturns.cancel(key)
+        ts.update(session_id=row['session_id'], engine=row['engine'], model=row['model'],
+                  turns=row['turns'], orientation=row['orientation'], last_ts=time.time(),
+                  pinned=True, _crash_resume=True)
+        ts.pop('handoff_from', None)
+        ts.pop('handoff_after_new', None)
+        _clear_context(ts)
+        _checkpoint(state)
+        send(chat_id, 'That saved conversation is selected. Send your next message to continue it.', thread_id)
+        return
+
     if pv is not None and command_word(text) in ("/new", "/clear", "/reset"):
         private_mod.destroy(pv["scratch"])
         pv.update(scratch=str(private_mod.new_scratch(NAME)), session_id=None, turns=0,
@@ -1334,6 +1395,7 @@ def handle(update: dict, state: dict) -> None:
         return
 
     if command_word(text) in ("/new", "/clear", "/reset"):
+        tgturns.cancel(key)
         keep = command_word(text) == "/new"
         ended, turns = ts.get("session_id"), ts.get("turns", 0)
         had = topicstatus.has_conversation(ts) or bool(ts.get("work"))
@@ -1449,6 +1511,7 @@ def handle(update: dict, state: dict) -> None:
     # after this one continue it without having to be replies themselves, and
     # the conversation being left stays resumable the same way.
     notices: list[int] = []
+    resume_saved = bool(ts.get('_crash_resume')) or bool(update.get('_recover'))
     target = None if pv else _reply_target(msg, key, ts)
     if target:
         when = datetime.fromtimestamp(target["last_ts"] or 0, tz=config.tz())
@@ -1476,7 +1539,7 @@ def handle(update: dict, state: dict) -> None:
     if pv is not None:
         reason = None if ts.get("session_id") else "no session yet"
     else:
-        reason = None if target else should_rotate(ts, is_general)
+        reason = None if target or ts.pop('_crash_resume', False) else should_rotate(ts, is_general)
     if pv is None and reason and ts.get("session_id"):
         if reason.endswith("(General)"):
             ts.pop("work", None)
@@ -1510,6 +1573,20 @@ def handle(update: dict, state: dict) -> None:
     if cmd in PROMPT_COMMANDS:
         body += "\n\n" + PROMPT_COMMANDS[cmd]
 
+    if update.get('_recover'):
+        body = ('The bridge was interrupted during this request. Continue the saved native '
+                'conversation and finish the authorized work. Inspect what already happened; '
+                'do not repeat completed actions or replay tool calls. An approval from before '
+                'the interruption does not authorize a new red action.\n\n' + body)
+        for followup in update.get('_recovery_followups', []):
+            fm = followup.get('message') or {}
+            paths = prepare_attachments(followup, None)
+            if paths is None:
+                raise RuntimeError('Could not restore an attached steering message')
+            body += '\n\nFollow-up received before the interruption:\n' + (
+                attachment_request(paths, fm.get('text') or fm.get('caption') or '', fm)
+                if paths else sent_at_line(fm) + (fm.get('text') or ''))
+
     # Marks this topic active for exactly as long as a `herald restart --defer`
     # issued from *inside* this turn needs to stay pending -- see
     # lib/herald/activity.py and cmd_restart in bin/herald.
@@ -1521,7 +1598,7 @@ def handle(update: dict, state: dict) -> None:
         send(chat_id, str(exc), thread_id)
         return
     ts["engine"] = engine
-    auto = pv is None and not target and not update.get("_limit_resume") and routing.enabled(ts)
+    auto = pv is None and not target and not resume_saved and not update.get("_limit_resume") and routing.enabled(ts)
     if auto:
         with db.session() as con:
             move = routing.before_turn(con, engine)
@@ -1537,19 +1614,39 @@ def handle(update: dict, state: dict) -> None:
         handoff.begin(ts, text or "(a file)")
     model = ts.get("model") or config.get(f"engines.{engine}.model")
     effort = ts.get("effort")
+    journal_root = None
+
+    def save_progress(event, working):
+        if getattr(event, 'kind', None) == 'session':
+            ts['session_id'] = event.text
+            if journal_root:
+                tgturns.session(journal_root, event.text, dict(ts, engine=engine, model=model,
+                    effort=effort if effort is not None else config.get(f'engines.{engine}.effort')), chat_id,
+                                [*(m.get('message_id') for m in parts), *working.message_ids])
+                _checkpoint(state)
+            return
+        return working.on_progress(event)
 
     def attempt(working, fresh: bool, resume_id: str | None):
+        nonlocal journal_root
         prompt, system_card = session_input(lead, body, ts, fresh)
-        return think.think(
-            prompt, label=label, model=model, cwd=config.ROOT, resume=resume_id,
-            engine=engine, effort=effort, codex_transport="app-server",
-            # None: think() takes it from safety.engine_mode for the
-            # "telegram" surface, so the setting applies here too.
-            permission_mode=None,
-            allowed_tools=interactive_tools(engine),
-            append_system_prompt=system_card,
-            on_progress=working.on_progress, cancel_key=key,
-            private=pv["scratch"] if pv else None)
+        if pv is None:
+            tgturns.supersede_paused(key)
+            journal_root = tgturns.begin(update, key, dict(ts, engine=engine, model=model,
+                effort=effort if effort is not None else config.get(f'engines.{engine}.effort')))
+            working.journal_root = journal_root
+            with _journal_lock:
+                _running_turns[key] = journal_root
+        with _model_slots:
+            if journal_root and tgturns.get(journal_root)['status'] == 'done':
+                return think.Result(ok=False, engine=engine, cancelled=True, session_id=resume_id)
+            return think.think(
+                prompt, label=label, model=model, cwd=config.ROOT, resume=resume_id,
+                engine=engine, effort=effort, codex_transport="app-server",
+                permission_mode=None, allowed_tools=interactive_tools(engine),
+                append_system_prompt=system_card,
+                on_progress=lambda event: save_progress(event, working), cancel_key=key,
+                private=pv["scratch"] if pv else None)
 
     with activity.Turn("telegram", key):
         posted: list[int] = [*(m.get("message_id") for m in parts), *notices]
@@ -1580,6 +1677,14 @@ def handle(update: dict, state: dict) -> None:
                 reason = "resume failed"
 
         posted += working.message_ids
+        if journal_root:
+            with _journal_lock:
+                record = {name: getattr(result, name, None) for name in
+                          ('ok', 'text', 'session_id', 'model', 'error', 'cancelled', 'rate_limited')}
+                tgturns.answer(journal_root, record, dict(ts,
+                    engine=engine, model=getattr(result, 'model', None) or model,
+                    effort=effort if effort is not None else config.get(f'engines.{engine}.effort')))
+                _running_turns.pop(key, None)
         if result.ok:
             ts.pop("handoff_from", None)
             ts.pop("handoff_after_new", None)
@@ -1587,23 +1692,32 @@ def handle(update: dict, state: dict) -> None:
             ts["context_window"] = getattr(result, "context_window", None)
             if not working.already_sent(result.text):
                 posted += send(chat_id, result.text or "(no reply)", thread_id,
-                               durable=pv is None, session_id=result.session_id or ts.get("session_id"))
+                               durable=pv is None, session_id=result.session_id or ts.get("session_id"),
+                               turn_root=journal_root)
+            elif journal_root:
+                with db.session() as con:
+                    tgturns.finish_in(con, journal_root)
             ts["session_id"] = result.session_id or ts.get("session_id")
             ts["turns"] = 1 if reason else ts.get("turns", 0) + 1
             ts.pop(limitresume.ATTEMPTS, None)
         elif result.cancelled:
+            if journal_root:
+                with db.session() as con:
+                    tgturns.finish_in(con, journal_root)
             # /stop already told them it stopped -- see _handle_stop. A second
             # message here would just be noise. The interrupted session may
             # have been mid-tool-call when it died, so don't trust --resume
             # with it; next message in this topic starts clean.
             print(f"[{key}] cancelled by user")
-            if pv is None:
-                _hand_off(ts, result.session_id or resume)
-            ts["session_id"] = None
+            ts['session_id'] = result.session_id or resume
+            ts['_crash_resume'] = bool(ts['session_id'])
         else:
             if not (result.rate_limited and pv is None):
                 send(chat_id, f"That failed: {(result.error or 'unknown')[:300]}", thread_id,
-                     durable=pv is None, session_id=result.session_id or ts.get("session_id"))
+                     durable=pv is None, session_id=result.session_id or ts.get("session_id"),
+                     turn_root=journal_root, turn_paused=True)
+            elif journal_root:
+                tgturns.pause(journal_root, result.error or 'Usage limit')
             if result.session_id:
                 # A failed turn can still have done an hour of real work --
                 # a timeout kills the process, not the transcript. Keep its
@@ -2171,6 +2285,8 @@ def _handle_stop(update: dict, key: str, state: dict | None = None) -> None:
     if sender != owner:
         print(f"ignoring /stop from user {sender}", file=sys.stderr)
         return
+    if key not in _private:
+        tgturns.cancel(key)
     thread_id = msg.get("message_thread_id")
     waiting = state is not None and limitresume.cancel(thread_state(state, key))
     if state is not None:
@@ -2411,8 +2527,15 @@ def _try_steer(update: dict, key: str, state: dict | None = None) -> bool:
                    attachment_request(paths, text, msg))
     else:
         message = f"{sent_at_line(msg)}{text}"
-    if not think.steer(key, message, **({"target": target} if media else {})):
-        return False
+    with _journal_lock:
+        root = _running_turns.get(key)
+        identifiers = update.get('_turn_ids', [])
+        if root and identifiers and not tgturns.attach(root, identifiers):
+            return False
+        if not think.steer(key, message, **({"target": target} if media else {})):
+            if root and identifiers:
+                tgturns.detach(identifiers)
+            return False
 
     thread_id = msg.get("message_thread_id")
     snippet = think.current_progress(key)
@@ -2462,6 +2585,7 @@ def _flush_album(gid: str, state: dict) -> None:
         return
     merged = dict(updates[0])
     merged["_album"] = [u["message"] for u in updates]
+    merged['_turn_ids'] = [i for u in updates for i in u.get('_turn_ids', [])]
     key = _topic_key(merged) or f"album:{gid}"
     try:
         if not _try_steer(merged, key, state):
@@ -2469,7 +2593,9 @@ def _flush_album(gid: str, state: dict) -> None:
                 handle(merged, state)
     except Exception as e:                                    # noqa: BLE001
         print(f"album handler error: {e}", file=sys.stderr)
+        _failed_turn(key, e)
     finally:
+        tgturns.acknowledge(merged)
         with _inflight_lock:
             for u in updates:
                 _inflight.discard(u["update_id"])
@@ -2577,6 +2703,7 @@ def _flush_split(key: str, state: dict) -> None:
     merged["message"] = dict(updates[0]["message"])
     merged["message"]["text"] = "\n".join(u["message"].get("text") or ""
                                           for u in updates)
+    merged['_turn_ids'] = [i for u in updates for i in u.get('_turn_ids', [])]
     if len(updates) > 1:
         print(f"[{key}] rejoined {len(updates)} parts of a split message")
     try:
@@ -2585,7 +2712,9 @@ def _flush_split(key: str, state: dict) -> None:
                 handle(merged, state)
     except Exception as e:                                    # noqa: BLE001
         print(f"split handler error: {e}", file=sys.stderr)
+        _failed_turn(key, e)
     finally:
+        tgturns.acknowledge(merged)
         with _inflight_lock:
             for u in updates:
                 _inflight.discard(u["update_id"])
@@ -2795,12 +2924,152 @@ def _dispatch(update: dict, state: dict) -> None:
                     handle(update, state)
                 except Exception as e:                        # noqa: BLE001
                     print(f"handler error: {e}", file=sys.stderr)
+                    _failed_turn(key, e)
     finally:
         if not handed_off:
+            tgturns.acknowledge(update)
             with _inflight_lock:
                 _inflight.discard(update["update_id"])
     _checkpoint(state)
     _maybe_restart()
+
+
+def _failed_turn(key: str, exc: Exception) -> None:
+    with _journal_lock:
+        root = _running_turns.pop(key, None)
+    if root:
+        tgturns.pause(root, type(exc).__name__)
+        chat, thread = key.split(':', 1)
+        send(int(chat), 'That turn was interrupted. Its session is saved; your next message will continue it.',
+             None if thread == 'main' else int(thread), durable=True)
+
+
+def _journal_receive(update: dict) -> bool:
+    """Persist before getUpdates can acknowledge it. False means already done."""
+    msg = update.get('message') or {}
+    key = _topic_key(update)
+    if not key or (msg.get('from') or {}).get('id') != config.secret('telegram.user_id'):
+        return True
+    text = msg.get('text') or msg.get('caption') or ''
+    command = command_word(text)
+    if command == '/private':
+        arg = text.split(None, 1)[1].lower().strip() if len(text.split(None, 1)) > 1 else ''
+        if arg in ('off', 'end', 'stop', 'exit', 'done'):
+            _ingress_private.discard(key)
+        else:
+            _ingress_private.add(key)
+        return True
+    if key in _ingress_private or key in _private:
+        return True
+    if command and command not in PROMPT_COMMANDS:
+        return True
+    if not (text.strip() or msg.get('photo') or msg.get('document')):
+        return True
+    identifier = tgturns.receive(update, key)
+    if identifier in _recovered_ids:
+        return False
+    if identifier:
+        update['_turn_ids'] = [identifier]
+        return True
+    return False
+
+
+def _saved_answer(row: dict, state: dict) -> bool:
+    if not row.get('answer'):
+        return False
+    result = json.loads(row['answer'])
+    chat, thread = row['topic'].split(':', 1)
+    ts = thread_state(state, row['topic'])
+    ts.update(json.loads(row['snapshot']))
+    ts.update(session_id=result.get('session_id') or row['session_id'], last_ts=time.time())
+    _checkpoint(state)
+    if result.get('cancelled'):
+        with db.session() as con:
+            tgturns.finish_in(con, row['id'])
+    else:
+        text = (result.get('text') or '(no reply)') if result.get('ok') else 'That failed: ' + (result.get('error') or 'unknown')[:300]
+        send(int(chat), text, None if thread == 'main' else int(thread), durable=True,
+             session_id=ts.get('session_id'), turn_root=row['id'], turn_paused=not result.get('ok'))
+    return True
+
+
+def _recover_turns(state: dict) -> None:
+    """Reserve each interrupted topic before accepting newer messages."""
+    topics: dict[str, list[dict]] = {}
+    tgturns.coalesce_queued()
+    for row in tgturns.unfinished():
+        _recovered_ids.add(row['id'])
+        key = row['topic']
+        saved = json.loads(row['snapshot'])
+        ts = thread_state(state, key)
+        if row['session_id'] and row['updated_at'] >= ts.get('last_ts', 0):
+            ts.update(saved, session_id=row['session_id'], _crash_resume=True)
+        if row['status'] != 'paused':
+            prior = topics.get(key, [])
+            if (row['status'] == 'queued' and prior and prior[-1]['status'] == 'running'
+                    and prior[-1]['attempts'] < tgturns.MAX_RECOVERIES):
+                update = json.loads(row['payload'])
+                msg = update.get('message') or {}
+                if (not command_word(msg.get('text') or msg.get('caption') or '')
+                        and not _reply_target(msg, key, ts)
+                        and tgturns.attach(prior[-1]['id'], [row['id']])):
+                    continue  # fold received constraints in BEFORE resuming work
+            topics.setdefault(key, []).append(row)
+    _checkpoint(state)
+
+    def run(key, rows, lock):
+        try:
+            for row in rows:
+                current = tgturns.get(row['id'])
+                if not current or current['status'] in ('done', 'paused', 'attached'):
+                    continue
+                chat, thread = key.split(':', 1)
+                thread_id = None if thread == 'main' else int(thread)
+                for mid in json.loads(current['messages'])[-1:]:
+                    tgoutbox.enqueue('editMessageText', dict(chat_id=int(chat), message_id=mid,
+                        text='Interrupted when Herald stopped. Recovering this conversation.'), key=f'recovery:{mid}:{key}')
+                if _saved_answer(current, state):
+                    continue
+                if current['attempts'] >= tgturns.MAX_RECOVERIES:
+                    tgturns.pause(row['id'], 'Automatic recovery limit reached')
+                    send(int(chat), 'This turn was interrupted repeatedly, so automatic recovery is paused. '
+                         'Your next message will continue its saved session.', thread_id, durable=True)
+                    continue
+                if current['session_id']:
+                    thread_state(state, key).update(json.loads(current['snapshot']),
+                        session_id=current['session_id'], _crash_resume=True)
+                send(int(chat), 'Herald restarted while I was working. I’m continuing where this conversation stopped.',
+                     thread_id, durable=True, session_id=current['session_id'])
+                handle(tgturns.recovery_update(current), state)
+        except Exception as exc:
+            print(f'recovery failed ({type(exc).__name__}) [{key}]', file=sys.stderr)
+            _failed_turn(key, exc)
+            if row:
+                tgturns.pause(row['id'], type(exc).__name__)
+                chat, thread = key.split(':', 1)
+                send(int(chat), 'Automatic recovery could not finish. Your next message will continue the saved session.',
+                     None if thread == 'main' else int(thread), durable=True, session_id=row['session_id'])
+        finally:
+            _checkpoint(state)
+            lock.release()
+
+    for key, rows in topics.items():
+        lock = _lock_for(key)
+        lock.acquire()
+        threading.Thread(target=run, args=(key, rows, lock), daemon=True).start()
+
+
+def _notify_service(message: str) -> None:
+    address = os.environ.get('NOTIFY_SOCKET')
+    if not address:
+        return
+    if address.startswith('@'):
+        address = '\0' + address[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.sendto(message.encode(), address)
+    except OSError as exc:
+        print(f'service heartbeat failed ({type(exc).__name__})', file=sys.stderr)
 
 
 def _retry_deliveries() -> None:
@@ -2831,6 +3100,14 @@ def main() -> int:
     if not config.secret("telegram.bot_token"):
         print("no telegram.bot_token in config/secrets.json", file=sys.stderr)
         return 1
+    # Prevent a second poller or recovery owner from racing the live bridge.
+    config.LOGS.mkdir(parents=True, exist_ok=True)
+    singleton = (config.LOGS / 'telegram.lock').open('a')
+    try:
+        fcntl.flock(singleton, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print('Telegram bridge already running', file=sys.stderr)
+        return 1
 
     # Load trusted extension code before handling any private conversation.
     extension_commands = tgcommands.commands((*COMMANDS, *ENGINE_COMMANDS_PASSED))
@@ -2856,8 +3133,11 @@ def main() -> int:
     threading.Thread(target=_resume_after_limits, args=(state,), daemon=True).start()
     threading.Thread(target=_retry_deliveries, daemon=True).start()
     threading.Thread(target=_refresh_topic_names, args=(state,), daemon=True).start()
+    _recover_turns(state)
+    _notify_service('READY=1\nWATCHDOG=1')
 
     while True:
+        _notify_service('WATCHDOG=1')
         resp = api("getUpdates", offset=state["offset"], timeout=POLL_TIMEOUT,
                    allowed_updates=["message", "edited_message", "callback_query"])
         if not resp or not resp.get("ok"):
@@ -2865,6 +3145,16 @@ def main() -> int:
             continue
 
         for update in resp.get("result", []):
+            try:
+                accepted = _journal_receive(update)
+            except Exception as exc:
+                # Do not advance the API offset until the request is durable.
+                print(f'incoming request not saved ({type(exc).__name__}); polling will retry', file=sys.stderr)
+                time.sleep(5)
+                break
+            if not accepted:
+                state['offset'] = update['update_id'] + 1
+                continue
             # The live offset has to advance here, synchronously, regardless of
             # how long this update takes to handle -- it is what tells the next
             # getUpdates call not to hand back what is already in flight. The

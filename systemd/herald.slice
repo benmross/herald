@@ -1,0 +1,6 @@
+[Unit]
+Description=Herald control and disposable work
+
+[Slice]
+MemoryAccounting=yes
+MemoryLow=256M

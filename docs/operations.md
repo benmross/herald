@@ -133,6 +133,41 @@ Successful rows are removed. A crashed delivery is retried once its five-minute
 lease expires. Telegram has no idempotency key for sending a message, so a
 connection timeout after acceptance can still produce a duplicate on retry.
 
+**Interrupted turns.** Ordinary incoming requests are committed to
+`telegram_turns` before polling acknowledges them. Native session IDs and
+message associations are saved at initialization, before tools run. On startup,
+interrupted turns continue with their provider, model, effort and transcript.
+Albums, split pastes and accepted steering messages stay with the request.
+Completed answers are queued and requests consumed in one transaction, so
+delivery recovery does not rerun the model. Recovery asks the model to inspect
+prior effects; it does not replay tool calls or reuse old approvals. External
+side effects cannot be made exactly-once by this journal.
+
+After three interrupted attempts, recovery pauses with a notice. The next user
+message continues the saved session, bypassing automatic context renewal once.
+`/stop`, `/new`, `/clear` and `/reset` cancel queued recovery. `/resume SESSION_ID`
+selects a recorded session from that topic without starting a model turn.
+Private sessions are never journaled or recovered. An entering `/private`
+fences later messages in the same poll before dispatch.
+
+The systemd bridge has a five-minute main-loop watchdog, a five-second restart
+delay, a singleton lock, and a bounded control cgroup. Model/tool workers use
+separate transient scopes in `herald-work.slice`, with per-worker limits and
+an aggregate budget. Scopes stop with the bridge and are cleaned after each
+turn, including daemonized children. `telegram.max_parallel_turns` defaults
+to two. `engines.worker_memory_high` and `worker_memory_max` default to 2G and
+3G. These scope changes require installed systemd units; macOS and containers
+retain their process launching and use the same recovery journal.
+
+For Linux hosts that must preserve remote access, review
+`python3 tools/protect-remote-access.py --uid UID`. Its `--apply` operation
+requires the separate root approval door. It reserves memory and excludes SSH
+and Tailscale from oomd selection, with kernel OOM scores of -1000 and -900.
+The user manager is protected at -500. Existing drop-ins are backed up under
+`/var/lib/herald-resilience/backups`. It applies resource settings and updates
+live daemon scores without restarting either remote-access service. The
+bridge remains bounded; model work remains eligible for OOM termination.
+
 A 409 means something else is polling the same bot: Telegram allows exactly one
 `getUpdates` consumer. The Claude Code telegram plugin is one candidate: it
 polls whatever bot it is configured with and starts with every Claude Code

@@ -69,8 +69,9 @@ class CodexStreamTests(unittest.TestCase):
                                  "text": "{\"answer\":\"probe-ok\",\"n\":7}"}},
                        {"type": "turn.completed", "usage": USAGE}], seen)
         kinds = [p.kind for p in seen]
-        self.assertEqual(kinds, ["text", "tool", "text"])
-        self.assertEqual(seen[1].text, "Bash: echo probe-ok && pwd")
+        self.assertEqual(kinds, ["session", "text", "tool", "text"])
+        self.assertEqual(seen[0].text, THREAD['thread_id'])
+        self.assertEqual(seen[2].text, "Bash: echo probe-ok && pwd")
         tools = [p for p in state["phases"] if p["kind"] == "tool"]
         self.assertEqual([t["name"] for t in tools], ["Bash"])
         self.assertEqual(state["pending_tools"], {})

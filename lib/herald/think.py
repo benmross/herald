@@ -33,6 +33,7 @@ Every invocation is metered into the `runs` table, except a private one
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import queue
@@ -79,6 +80,17 @@ def _private_scratch() -> Path | None:
     return getattr(_private, "scratch", None)
 
 
+@functools.lru_cache(maxsize=1)
+def _scope_oom_policy(runner: str) -> list[str]:
+    """OOMPolicy on scopes arrived in systemd 253; older installs still isolate."""
+    try:
+        version = subprocess.run([runner, '--version'], capture_output=True, text=True,
+                                 timeout=5, check=True).stdout.split()[1]
+        return ['--property=OOMPolicy=kill'] if int(version) >= 253 else []
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return []
+
+
 def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     """Start an engine. In a private session it starts inside the read-only
     sandbox, in its own process group so a cancel reaches the engine and not
@@ -87,6 +99,8 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     if trace:
         trace.emit("command", {"argv": cmd, "cwd": kwargs.get("cwd")})
     env = config.agent_env()
+    for name in ('NOTIFY_SOCKET', 'WATCHDOG_PID', 'WATCHDOG_USEC'):
+        env.pop(name, None)
     # Opaque invocation correlation for additional context lookups. Never a
     # user prompt or topic name; private retrievals never persist measurements.
     env['HERALD_RETRIEVAL_TURN'] = uuid.uuid4().hex
@@ -103,7 +117,40 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
         cmd = private_mod.wrap(cmd, engine, scratch, env)
         env[private_mod.ENV] = "1"
         kwargs["start_new_session"] = True
-    return subprocess.Popen(cmd, env=env, **kwargs)
+    parent = os.environ.get('HERALD_WORKER_PARENT')
+    unit = None
+    if parent and sys.platform == 'linux':
+        # The bridge is the control plane. Its model/tools get their own
+        # bounded cgroup, tied to the bridge so a crash cannot leave an orphan
+        # writing to the same native session that recovery is about to resume.
+        runner = shutil.which('systemd-run')
+        if not runner:
+            raise RuntimeError('Worker isolation requires systemd-run')
+        unit = 'herald-turn-' + uuid.uuid4().hex
+        prefix = [runner, '--user', '--scope', '--quiet', '--collect',
+                  '--unit=' + unit, '--slice=herald-work.slice',
+                  '--property=BindsTo=' + parent, '--property=After=' + parent,
+                  '--property=MemoryHigh=' + str(config.get('engines.worker_memory_high', '2G')),
+                  '--property=MemoryMax=' + str(config.get('engines.worker_memory_max', '3G')),
+                  *_scope_oom_policy(runner), '--']
+        choom = shutil.which('choom')
+        cmd = prefix + ([choom, '-n', '500', '--'] if choom else []) + cmd
+    proc = subprocess.Popen(cmd, env=env, **kwargs)
+    if unit:
+        proc._herald_scope = unit + '.scope'
+    return proc
+
+
+def _stop_worker(proc) -> None:
+    unit = getattr(proc, '_herald_scope', None) if proc is not None else None
+    if not isinstance(unit, str):
+        return
+    # Clean up daemonized tools too, even if the engine already exited.
+    for args in (['kill', '--signal=KILL', unit], ['stop', '--no-block', unit]):
+        try:
+            subprocess.run(['systemctl', '--user', *args], capture_output=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            pass
 
 
 @contextlib.contextmanager
@@ -687,6 +734,8 @@ def _handle_stream_line(line: str, state: dict, on_progress,
         return
 
     if kind_top == "system" and candidate.get("subtype") == "init":
+        if candidate.get('session_id') and on_progress:
+            on_progress(Progress('session', candidate['session_id']))
         # Process launch through to the CLI being ready. The only phase that is
         # pure overhead: no model, no tool, nothing the prompt can shorten.
         if state.get("t0") is not None and not state.get("saw_init"):
@@ -912,6 +961,8 @@ def _handle_kiro_line(line, state, on_progress, cancel_key=None):
     params = event.get("data") or event.get("params") or {}
     session = event.get("session_id") or event.get("sessionId") or params.get("sessionId")
     if session:
+        if state.get('session_id') != session and on_progress:
+            on_progress(Progress('session', session))
         state["session_id"] = session
         if state.get("t0") is not None and not state.get("saw_init"):
             state["saw_init"] = True
@@ -1177,6 +1228,8 @@ def _handle_codex_line(line: str, state: dict, on_progress,
 
     if kind_top == "thread.started":
         state["session_id"] = candidate.get("thread_id")
+        if state['session_id'] and on_progress:
+            on_progress(Progress('session', state['session_id']))
         if state.get("t0") is not None and not state.get("saw_init"):
             state["saw_init"] = True
             _mark(state, "startup", None, state["t0"])
@@ -1640,6 +1693,7 @@ def _run_codex_app_server(prompt: str, *, model: str | None, effort: str | None,
                 reader.join(timeout=1)
             proc.stdout.close()
             proc.stderr.close()
+        _stop_worker(proc)
         if cancel_key:
             with _active_lock:
                 if _active.get(cancel_key, {}).get("proc") is proc:
@@ -1890,6 +1944,7 @@ def _run_process(engine: str, cmd: list[str], prompt: str, *, write, steerable: 
                 os.killpg(proc.pid, signal.SIGKILL)
             if proc.poll() is None:
                 proc.wait(timeout=5)
+        _stop_worker(proc)
         if cancel_key:
             with _active_lock:
                 if _active.get(cancel_key, {}).get("proc") is proc:

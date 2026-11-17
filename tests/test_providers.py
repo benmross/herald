@@ -33,6 +33,7 @@ class Providers(unittest.TestCase):
         self.addCleanup(td.cleanup)
         self.home = pathlib.Path(td.name)
         for p in [mock.patch.object(config, 'HOME', self.home),
+                  mock.patch.object(config, 'DB_PATH', self.home / 'facts.db'),
                   mock.patch.object(config, 'CONFIG_PATH', self.home / 'config.json'),
                   mock.patch.object(config, 'STATE', self.home / 'ledger' / 'state'),
                   mock.patch.object(config, '_cache', None),

@@ -320,6 +320,14 @@ to any of them points the topic back at that session and continues it, on the
 engine and with the orientation card it started with. A message sent before
 7 October 2026 has no row and cannot be resumed this way.
 
+Telegram also journals ordinary requests before acknowledging incoming updates.
+The native session is checkpointed at initialization rather than at completion.
+On restart, interrupted work resumes its transcript with its received follow-ups;
+completed answers use the delivery outbox without another model call. Model and
+tool workers run in separately bounded systemd scopes tied to the bridge, so
+their memory pressure and cleanup do not share the bridge's control budget.
+See [interrupted turns](operations.md) for recovery limits and manual resume.
+
 ### Private sessions
 
 `/private` in a Telegram topic, or `herald think --private`, starts a session

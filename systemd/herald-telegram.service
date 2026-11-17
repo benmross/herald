@@ -5,7 +5,12 @@ Wants=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=300
+TimeoutStartSec=90
+TimeoutStopSec=45
+Slice=herald-control.slice
 WorkingDirectory={{ROOT}}
 Environment=HOME=%h
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
@@ -14,13 +19,17 @@ Environment=PYTHONPATH={{GOOGLE}}
 # this service prints sits in the buffer indefinitely -- the journal showed the
 # service starting and nothing else while it was happily answering messages.
 Environment=PYTHONUNBUFFERED=1
+Environment=HERALD_WORKER_PARENT=herald-telegram.service
 ExecStart={{ROOT}}/venv/bin/python {{ROOT}}/bin/herald-telegram
 Restart=always
-RestartSec=15
+RestartSec=5
 
-MemoryHigh=1400M
-MemoryMax=2400M
-OOMScoreAdjust=400
+# Models and their tools run in herald-work.slice, outside this budget.
+MemoryLow=128M
+MemoryHigh=512M
+MemoryMax=1G
+ManagedOOMPreference=omit
+OOMScoreAdjust=100
 NoNewPrivileges=true
 
 # 8 Sep 2026: a connection leak ate the default 1024 in seven hours.
