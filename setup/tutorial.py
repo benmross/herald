@@ -1,8 +1,9 @@
 """Last step: an animated tour of Telegram, topics and the commands.
 
 The command guide pinned in Telegram says what each command does. This shows
-how they are meant to be used together: one topic per project, /new when the
-subject changes, a reply to go back, /models for speed against depth,
+how they are meant to be used together: one topic per project, /new for a
+fresh start that still sees the last few messages, /clear for a clean slate,
+a reply to go back, /models for speed against depth,
 approvals as buttons. The web page plays it; a terminal gets the guide text.
 
 The bot's lines come from `herald.topicstatus`, the module the real bridge
@@ -78,23 +79,34 @@ def scenes() -> list[dict]:
                        "of this one.\n"
                        "Last message: 38.0s, 12 steps; 310 new tokens in, 58,900 "
                        "reread from cache, 1,420 out", mono=True)]},
-        {"title": "/new when the subject changes",
+        {"title": "/new keeps the last few messages",
          "caption": "/new starts a fresh conversation that still sees the last "
-                    "few messages, so you can refer back. The model and thinking "
-                    "level stay. /clear forgets everything instead.",
+                    "few messages of the old one, so you can refer back to them. "
+                    "Use it when a long conversation moves on to its next step. "
+                    "The model and thinking level stay.",
          "topics": topics, "topic": "Spring break", "history": old_trip,
          "steps": [me("/new"),
                    bot(topicstatus.new_note(OPUS, True, kept=True)),
-                   me("Different question: what should I pack for Denver in March?"),
-                   bot("Layers. Highs around 55°F and lows near freezing, and "
-                       "snow is possible. A packing list is below.")]},
+                   me("What should I pack for that trip?"),
+                   bot("For Denver in March: layers. Highs around 55°F and lows "
+                       "near freezing, and snow is possible. A packing list is below.")]},
+        {"title": "/clear forgets it all",
+         "caption": "/clear starts over with nothing from the old conversation. "
+                    "Use it when you move on to something unrelated in the same "
+                    "topic. /reset does the same. Either way, replying to an older "
+                    "message still brings that conversation back.",
+         "topics": topics, "topic": "Website", "history": old_site,
+         "steps": [me("/clear"),
+                   bot(topicstatus.new_note(OPUS, True)),
+                   me("Write alt text for the photos on my About page"),
+                   bot("Done. All six photos now have alt text describing what's in them.")]},
         {"title": "Reply to go back",
          "caption": "Replying to an older message returns to the conversation it "
                     "came from, even after /new. The messages after that continue it.",
          "topics": topics, "topic": "Spring break",
          "history": old_trip + [me("/new", old=True),
                                 bot(topicstatus.new_note(OPUS, True, kept=True), old=True),
-                                me("What should I pack for Denver in March?", old=True),
+                                me("What should I pack for that trip?", old=True),
                                 bot("Layers. Highs around 55°F and lows near freezing.", old=True)],
          "steps": [me("Put the $214 one on my calendar", reply_to="flights"),
                    event("Back in the conversation from 14 Nov, 3:12 PM."),

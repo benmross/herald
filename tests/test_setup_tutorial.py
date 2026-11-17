@@ -41,6 +41,13 @@ class Tour(unittest.TestCase):
                     self.assertIn(m['tap'], [b for row in m['buttons'] for b in row])
         self.assertIn('Switching provider', [s['title'] for s in scenes])
 
+    def test_new_and_clear_are_shown_apart_with_the_bots_own_replies(self):
+        scenes = {s['title']: s for s in tutorial.scenes()}
+        kept = scenes['/new keeps the last few messages']['steps'][1]['text']
+        cleared = scenes['/clear forgets it all']['steps'][1]['text']
+        self.assertIn('last few messages', kept)
+        self.assertIn('forgotten', cleared)
+
     def test_one_provider_has_no_switching_scene(self):
         with patch.object(tutorial.config, 'enabled_engines', return_value=('claude',)):
             self.assertNotIn('Switching provider', [s['title'] for s in tutorial.scenes()])
