@@ -30,7 +30,9 @@ def capacity(con, engine: str) -> dict | None:
     if engine not in config.enabled_engines():
         return None
     try:
-        snapshot = usage.refresh(con, engine)
+        from . import claude_accounts
+        snapshot = (claude_accounts.snapshot(model=config.get("engines.claude.model"))
+                    if engine == "claude" and claude_accounts.enabled() else usage.refresh(con, engine))
         now = time.time()
         windows = snapshot["windows"]
         if not windows or not 0 <= now - snapshot["sampled_at"] <= 300:
@@ -56,7 +58,17 @@ def clock(at: float) -> str:
 def make(con, ts: dict, progress: str = "", request: str = "") -> tuple[dict, str, list]:
     engine = ts["engine"]
     now = time.time()
-    reset = limitresume.reset_at(con, engine, now)
+    from . import claude_accounts
+    if engine == "claude" and claude_accounts.enabled():
+        try:
+            windows = claude_accounts.snapshot(ts.get("session_id"), ts.get("model") or config.get("engines.claude.model"))["windows"]
+            resets = [w["resets_at"] for w in windows if w["resets_at"] and w["resets_at"] > now
+                      and w["used_percent"] >= limitresume.FULL_PERCENT]
+            reset = max(resets) if resets else None
+        except (claude_accounts.AccountError, OSError, ValueError):
+            reset = None
+    else:
+        reset = limitresume.reset_at(con, engine, now)
     at = reset + limitresume.GRACE_SECONDS if reset else now + limitresume.RETRY_SECONDS
     other = next((e for e in config.enabled_engines() if e != engine), None)
     snapshot = capacity(con, other) if other else None

@@ -44,6 +44,14 @@
     "enabled": null,
     "claude": {
       "cmd": "claude",
+      "accounts": {
+        "_comment": "Optional claude-swap integration. New conversations balance available five-hour usage, then weekly usage. Existing conversations keep their account unless its applicable quota pressure reaches switch_threshold and another account is at least switch_margin percentage points lower, with a per-session cooldown. Moves happen only between turns, retain native history and are announced. Uses cswap run with shared history, never global switch/auto. Existing unbound sessions adopt the default login before evaluating a move. Private sessions and lean quota-anchor probes use the default login. Install cswap and add subscription accounts before enabling.",
+        "enabled": false,
+        "cmd": "cswap",
+        "switch_threshold": 90,
+        "switch_margin": 20,
+        "cooldown_seconds": 1800
+      },
       "model": null,
       "effort": null,
       "permission_mode": null,
@@ -214,6 +222,8 @@
       "~/.gnupg",
       "~/.config/gh/hosts.yml",
       "~/.claude/.credentials.json",
+      "~/.local/share/claude-swap",
+      "~/.claude-swap-backup",
       "~/.codex/auth.json",
       "~/.local/share/kiro-cli",
       "~/.config/google-agent",

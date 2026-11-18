@@ -385,6 +385,17 @@ def report(con, engines=None, *, force: bool = False, cached_only: bool = False)
             lines.append(f"{engine}: ERROR: provider is not enabled")
             failed = True
             continue
+        if engine == "claude":
+            from . import claude_accounts
+            if claude_accounts.enabled():
+                try:
+                    text, account_failed = claude_accounts.report(cached_only=cached_only)
+                    lines.append(text)
+                    failed |= account_failed
+                except (claude_accounts.AccountError, OSError, ValueError) as exc:
+                    lines.append(f"claude: ERROR: {exc}")
+                    failed = True
+                continue
         snapshot = _saved(con, "snapshot", engine)
         status = _saved(con, "status", engine)
         if not cached_only and (force or not snapshot or not status or not status.get("ok")

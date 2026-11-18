@@ -268,6 +268,59 @@ on Claude and 14,000 mostly cached on Codex, measured 30 October 2026.
 
 ## Subscription usage
 
+### Multiple Claude subscriptions
+
+If you have added multiple subscription logins with
+[claude-swap](https://github.com/realiti4/claude-swap), enable account selection:
+
+```bash
+herald config set engines.claude.accounts.enabled true
+herald config set engines.claude.accounts.switch_threshold 90
+herald config set engines.claude.accounts.switch_margin 20
+herald config set engines.claude.accounts.cooldown_seconds 1800
+herald usage claude
+```
+
+Herald uses `cswap list --json` for usage and `cswap run ACCOUNT
+--share-history -- ...` to launch the first-party Claude CLI. It never switches
+the machine's default login or runs cswap's global auto-switcher. Leave that
+auto-switcher off if you want ongoing default-login sessions to keep their
+account. Use the standard `claude` command on PATH with this feature.
+
+A new conversation chooses the available subscription with the lowest
+five-hour usage, then its maximum applicable quota usage. Every applicable
+window must have capacity. If the model is unspecified, all reported
+model-specific windows count. Disabled, expired, stale and unreadable accounts
+are excluded. A missing reading never means zero usage. cswap manages its own
+usage polling cache; Herald also rejects readings older than 15 minutes.
+
+Once Claude reports a native session ID, Herald saves its account ownership
+before checkpointing that ID. Replies, retries, recovery after interruption and
+replies to old messages normally retain that account, preserving the chance of
+a cache hit. At a turn boundary, Herald may move the session if the account's
+maximum applicable usage reaches `switch_threshold` and another subscription
+is at least `switch_margin` percentage points lower. Each session has its own
+`cooldown_seconds` between moves. The move is saved atomically and announced;
+it retains the native transcript and may rebuild its first-request cache.
+Usage inspection and quota-choice cards never move an account. Existing
+conversations without a binding adopt the default login before evaluating a
+move. Do not globally switch that login before those conversations have been
+bound. A missing bound account pauses the conversation. Bindings, moves and a
+usage cache live in the new additive
+`$HERALD_HOME/ledger/raw/claude-accounts.sqlite3` store; no existing data moves.
+
+`/usage` and `herald usage claude` show each account. `--cached` makes no cswap
+call. Quota-limit choices use the conversation's account to find its reset;
+provider Auto does not move a Claude conversation based on the default login's
+unrelated quota reading. A real quota failure still offers the existing
+provider-switch, wait or stop choices. An account never changes inside a turn.
+
+This covers Telegram and non-lean `think()` calls, including scheduled cycles.
+Private conversations, lean quota-anchor probes, terminal attach and Remote
+Control retain their existing default-login behavior. Scheduled quota reminders
+and anchor plans still measure that default login. Tokens remain with cswap
+and Claude Code; Herald does not read credentials or call a model API.
+
 A Telegram turn stopped by quota pauses with a card showing the current
 request, latest progress when available, reset time and remaining quota on the
 other enabled engine. Its buttons offer switching to that engine's configured

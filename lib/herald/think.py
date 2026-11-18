@@ -99,6 +99,12 @@ def _spawn(engine: str, cmd: list[str], **kwargs) -> subprocess.Popen:
     if trace:
         trace.emit("command", {"argv": cmd, "cwd": kwargs.get("cwd")})
     env = config.agent_env()
+    if engine == "claude" and cmd[0] == config.get("engines.claude.accounts.cmd", "cswap"):
+        # cswap's active-default fast path preserves its environment. An
+        # inherited token must not override the account we selected.
+        for name in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                     "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR"):
+            env.pop(name, None)
     for name in ('NOTIFY_SOCKET', 'WATCHDOG_PID', 'WATCHDOG_USEC'):
         env.pop(name, None)
     # Opaque invocation correlation for additional context lookups. Never a
@@ -940,6 +946,38 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
         return state["payload"], context_tokens
 
     try:
+        # Select only between turns. cswap's run mode keeps
+        # other terminals' login intact and shares native transcript history.
+        # Private sandboxes and quota-anchor probes keep their existing login.
+        from . import claude_accounts
+        if claude_accounts.enabled() and _private_scratch() is None and not lean:
+            try:
+                if cmd[0] not in ("claude", shutil.which("claude")):
+                    raise claude_accounts.AccountError("Claude account routing requires the standard claude command on PATH")
+                account = claude_accounts.select(resume, model, allow_move=True)
+                # Email is stable across cswap slot renumbering. Refuse
+                # ambiguous identities rather than accidentally charge another.
+                email = account["email"]
+                cmd = [config.get("engines.claude.accounts.cmd", "cswap"),
+                       "run", email, "--share-history", "--", *cmd[1:]]
+                downstream = on_progress
+                move = account.get("_herald_move")
+                if move and downstream:
+                    downstream(Progress("interim", f"Continuing on your Claude account {email}: "
+                        f"the previous account is at {move['current']:g}% and this one is at {move['target']:g}%."))
+
+                def account_progress(progress):
+                    if progress.kind == "session":
+                        # Save before the bridge checkpoints the native ID,
+                        # so interrupted work resumes under its original login.
+                        claude_accounts.bind(progress.text, account)
+                    if downstream:
+                        return downstream(progress)
+
+                on_progress = account_progress
+            except (claude_accounts.AccountError, OSError, ValueError, KeyError) as exc:
+                return (1, {"is_error": True, "result": str(exc), "session_id": resume},
+                        None, "", "", False)
         return _run_process("claude", cmd, staged, write=_write, steerable=True,
                             handler=_handle_stream_line, finish=_finish,
                             cwd=cwd, timeout=timeout, idle_timeout=idle_timeout,

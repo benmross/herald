@@ -23,6 +23,9 @@ def enabled(ts: dict) -> bool:
 
 def _limit_until(con, engine: str, now: float) -> float | None:
     """When a saved reading says this provider's limit lifts, if it is at one."""
+    from . import claude_accounts
+    if engine == "claude" and claude_accounts.enabled():
+        return None  # The provider snapshot measures only the default login.
     row = con.execute("SELECT data FROM facts WHERE source=? AND kind='snapshot' AND external_id=?",
                       (usage.SOURCE, engine)).fetchone()
     if not row:
@@ -43,6 +46,13 @@ def alternative(con, engine: str) -> str | None:
 
 
 def _eligible(con, engine, now):
+    from . import claude_accounts
+    if engine == "claude" and claude_accounts.enabled():
+        try:
+            claude_accounts.select(None, config.get("engines.claude.model"))
+            return True
+        except (claude_accounts.AccountError, OSError, ValueError):
+            return False
     if engine != "kiro":
         return True
     # A newly enabled credit plan must be sampled before Auto can use it.
@@ -58,6 +68,12 @@ def _eligible(con, engine, now):
 
 def before_turn(con, engine: str) -> tuple[str, float] | None:
     """(Provider to move to, when the limit lifts), or None to stay."""
+    from . import claude_accounts
+    if engine == "claude" and claude_accounts.enabled():
+        # The old snapshot measures the default login, which may not own this
+        # conversation. Let the selected account run; a real quota failure
+        # still offers the normal switch/wait/stop choice.
+        return None
     until = _limit_until(con, engine, dt.datetime.now(config.tz()).timestamp())
     other = alternative(con, engine) if until else None
     return (other, until) if other else None
