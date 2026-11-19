@@ -45,12 +45,13 @@
     "claude": {
       "cmd": "claude",
       "accounts": {
-        "_comment": "Optional claude-swap integration. New conversations balance available five-hour usage, then weekly usage. Existing conversations keep their account unless its applicable quota pressure reaches switch_threshold and another account is at least switch_margin percentage points lower, with a per-session cooldown. Moves happen only between turns, retain native history and are announced. Uses cswap run with shared history, never global switch/auto. Existing unbound sessions adopt the default login before evaluating a move. Private sessions and lean quota-anchor probes use the default login. Install cswap and add subscription accounts before enabling.",
+        "_comment": "Optional claude-swap integration. New conversations balance five-hour usage, then weekly usage. Existing conversations require the shared Telegram limit card before moving. Near-quota warnings require a choice; confirmed hard quota failures can default after one minute to another account only when a freshly rechecked cold-resume estimate plus reserve fits. Otherwise wait for a verified reset and reconsider. A model/effort/conversation is preserved across account changes. switch_threshold and switch_margin govern suggestions; cooldown_seconds applies to warnings, with hard-quota recovery exempt. Native usage calibration is conservative and may decline moves when evidence is insufficient. Uses cswap run, never global switch/auto. Private sessions and lean probes retain their default login.",
         "enabled": false,
         "cmd": "cswap",
         "switch_threshold": 90,
         "switch_margin": 20,
-        "cooldown_seconds": 1800
+        "cooldown_seconds": 1800,
+        "resume_reserve_percent": 20
       },
       "model": null,
       "effort": null,

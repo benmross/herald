@@ -295,66 +295,87 @@ are excluded. A missing reading never means zero usage. cswap manages its own
 usage polling cache; Herald also rejects readings older than 15 minutes.
 
 Once Claude reports a native session ID, Herald saves its account ownership
-before checkpointing that ID. Replies, retries, recovery after interruption and
-replies to old messages normally retain that account, preserving the chance of
-a cache hit. At a turn boundary, Herald may move the session if the account's
-maximum applicable usage reaches `switch_threshold` and another subscription
-is at least `switch_margin` percentage points lower. Each session has its own
-`cooldown_seconds` between moves. The move is saved atomically and announced;
-it retains the native transcript and may rebuild its first-request cache.
-Usage inspection and quota-choice cards never move an account. Existing
-conversations without a binding adopt the default login before evaluating a
-move. Do not globally switch that login before those conversations have been
-bound. A missing bound account pauses the conversation. Bindings, moves and a
-usage cache live in the new additive
-`$HERALD_HOME/ledger/raw/claude-accounts.sqlite3` store; no existing data moves.
+before checkpointing it. Replies and recovery retain that account. For an
+existing conversation, the launcher never silently changes accounts.
+
+Telegram uses the normal quota-choice card for two situations:
+
+- Near quota, a safe account change may be suggested before starting the next
+  turn. The source must reach `switch_threshold`, the target must improve
+  applicable usage by `switch_margin`, and the conversation's
+  `cooldown_seconds` must have elapsed. The card offers switching accounts,
+  continuing on the current account, waiting for that account's reset, the
+  ordinary provider/model choices, and stopping. This warning requires a choice;
+  it has no automatic account-switch timeout. The original request, including
+  attachments and grouped messages, remains in the turn journal until continued.
+- A confirmed hard Claude quota failure with multiple accounts arms a one-minute
+  default after the card has been delivered. If unanswered, Herald rechecks the
+  best account and queues a same-model, same-effort, same-native-session
+  continuation only when its cold-resume budget fits. Capacity is checked again
+  after acquiring a model slot, immediately before moving the binding. A hard
+  failure can bypass the warning's cooldown. Overloads, authentication errors,
+  unknown models and ordinary network failures do not arm this default.
+
+If no account passes the resume check, the automatic path waits for the earliest
+plausible reset that can restore enough capacity, considering all applicable
+five-hour, weekly and model-specific windows. It checks again when that time
+arrives, preferring the current account if recovered. A failed check defers work
+without starting a model. The explicit wait button keeps the current account.
+Resets include a 90-second grace period; an unknown reset uses a 15-minute retry.
+
+The cold-resume check assumes the whole prefix must be written on the target.
+It pads the latest observed prompt by 25% plus 32,768 tokens, includes an
+8,192-token first-response allowance, and keeps
+`engines.claude.accounts.resume_reserve_percent` (20 by default) as working room.
+The estimate uses the upper 95th-percentile native-usage/work ratio from at least
+five recent completed model-dominated windows, plus a twofold safety factor.
+Partial, saturated and sparsely sampled windows are excluded. These weights are
+an empirical estimate, not an advertised tokens-to-subscription-percent conversion.
+Unknown context or insufficient history blocks the account option. The check
+requires a target reading no older than five minutes, the same verified plan
+tier, room in every applicable window, and allowance for reading age and other
+in-flight reservations. It may decline a large context even on an empty account.
+
+Labeled account samples and ownership-at-run-time keep the calibration from
+mixing two accounts' work with one account's quota. Anonymous legacy samples
+use only unbound legacy sessions. A short-lived reservation protects the cold
+resume against other topics racing for the same capacity. The reservation is
+released when the turn ends and expires after 15 minutes if the bridge stops.
+The move itself is atomic; it retains the native transcript. A continuation
+checks prior effects rather than replaying commands. Earlier red-action
+approvals never carry over.
+
+Bindings, move history, usage samples and reservations are additive tables in
+`$HERALD_HOME/ledger/raw/claude-accounts.sqlite3`; existing rows are preserved.
+Existing conversations without a binding adopt the default login before
+considering a move. A missing bound account pauses the conversation.
 
 `/usage` and `herald usage claude` show each account. `--cached` makes no cswap
-call. Quota-limit choices use the conversation's account to find its reset;
-provider Auto does not move a Claude conversation based on the default login's
-unrelated quota reading. A real quota failure still offers the existing
-provider-switch, wait or stop choices. An account never changes inside a turn.
+call. Quota choices use the owning account, not the unrelated default login.
+Provider switches remain explicit choices and start a new native session from
+the saved work. A provider-default model option can also queue a fresh session
+after reset. Account switches preserve the current model and native session.
 
-This covers Telegram and non-lean `think()` calls, including scheduled cycles.
-Private conversations, lean quota-anchor probes, terminal attach and Remote
-Control retain their existing default-login behavior. Scheduled quota reminders
-and anchor plans still measure that default login. Tokens remain with cswap
-and Claude Code; Herald does not read credentials or call a model API.
+A new owner message or `/stop` invalidates the previous card and its timeout,
+including while a quota read is in flight. Duplicate, foreign and stale taps
+cannot start work. Choices and queued continuations survive bridge restarts.
+Old saved cards without the new optional fields retain their original
+wait-until-reset default. Already queued continuations keep their meaning.
+Only a successfully delivered new hard-limit card arms the one-minute default.
 
-A Telegram turn stopped by quota pauses with a card showing the current
-request, latest progress when available, reset time and remaining quota on the
-other enabled engine. Its buttons offer switching to that engine's configured
-default model and effort, continuing on the same engine after reset, or stopping.
-The switch appears only after a successful fresh quota reading confirms remaining
-capacity in every reported window. The tap checks capacity again. A failed,
-missing, stale or exhausted reading hides the switch.
-
-A card nobody answers by the reset counts as "continue when limit resets":
-the same session continues on the same engine, through the same queued
-continuation and attempt cap as the button, and the card says so. It never
-switches or stops on its own. Waiting queues one continuation,
-90 seconds after the last exhausted window resets. Without a verified reset it
-queues a retry in 15 minutes; another limit presents a new choice. A new message
-or `/stop` cancels the pending continuation and invalidates the old card. Choices
-and queued continuations survive bridge restarts. Switching carries saved work
-and the previous transcript into a new native session. Approvals never carry
-over. Private sessions retain their existing read-only failure behavior.
-
-If a topic uses a model other than its provider's configured default, the card
-also offers continuing on that default after reset. This queues the model and
-effort shown on the card without starting inference. At the reset it starts a
-fresh native session on the same provider, with the saved work and previous
-transcript carried over. The ordinary wait button and unanswered cards still
-resume the original model. `/stop` and newer messages cancel either choice.
-
-The optional `limit_choice` topic field is additive; existing saved topic cursors
-and `limit_resume` records keep their meaning and need no conversion. Already
-queued continuations still run, including ones queued before this change.
+New Claude conversations and scheduled cycles still use available-account
+selection. Resumed non-Telegram calls retain their bound account and do not
+start a confirmation flow. Private sessions, lean quota-anchor probes, terminal
+attach and Remote Control retain their existing default-login behavior.
+Scheduled reminders and anchor planning still measure that default login.
+The feature remains off by default; single-account installs need no cswap.
+Tokens remain with cswap and Claude Code; Herald does not read credentials or
+call a model API.
 
 For a session stopped before this setting was loaded, local maintenance code
 can call `limitresume.request(topic, saved_topic_state, at)` to queue the same
 continuation. It writes a one-shot request under `logs/limit-resume-requests/`;
-the bridge imports it within 30 seconds. A changed session, provider or last
+the bridge imports it within a few seconds. A changed session, provider or last
 turn makes it stale. Do not edit the saved bridge cursor to queue work: the
 running bridge would overwrite that edit at its next checkpoint.
 

@@ -20,7 +20,7 @@ from unittest import mock
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 
-from herald import db, tgsessions  # noqa: E402
+from herald import db, tgsessions, claude_accounts  # noqa: E402
 
 CHAT, TOPIC = -100, 5
 KEY = f"{CHAT}:{TOPIC}"
@@ -73,6 +73,7 @@ class ReplyResume(unittest.TestCase):
                 session_id=sid, cost_usd=0.0, error=None)
 
         patches = [
+            mock.patch.object(claude_accounts, 'enabled', return_value=False),
             mock.patch.object(self.tg.config, "default_engine", return_value="claude"),
             # Auto is off unless a test turns it on; the machine's config must
             # not decide which path these take.

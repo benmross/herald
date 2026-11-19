@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
+import time
 import pathlib
 import sys
 import tempfile
@@ -10,7 +12,7 @@ from zoneinfo import ZoneInfo
 from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
-from herald import claude_accounts as ca, config, think, routing, usage, limitchoice
+from herald import claude_accounts as ca, claude_budget, config, think, routing, usage, limitchoice
 
 
 def account(number, pct, *, active=False, week=10):
@@ -29,6 +31,14 @@ class Accounts(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
         self.rows = [account(1, 98, active=True, week=57), account(2, 0)]
+        self.budget = {'cold_tokens':100000,'estimated_percent':10,'required_percent':30,'calibration_windows':6}
+        estimator = mock.patch.object(claude_budget, 'estimate', return_value=(self.budget,''))
+        estimator.start()
+        self.addCleanup(estimator.stop)
+
+    def plan(self, hard=False):
+        with mock.patch.object(ca, 'accounts', return_value=self.rows):
+            return ca.switch_plan(None, {'engine':'claude','model':'opus','session_id':'native-session','context_tokens':100000}, hard=hard)
 
     def choose(self, resume=None, model="opus"):
         with mock.patch.object(ca, "accounts", return_value=self.rows):
@@ -76,44 +86,105 @@ class Accounts(unittest.TestCase):
         with self.assertRaises(ca.AccountError):
             ca.bind("native-session", self.rows[1])
 
-    def test_only_turn_launch_can_move_near_quota(self):
+    def test_inspection_cannot_move_and_commit_requires_the_original_binding(self):
         ca.bind("native-session", self.rows[0])
-        with mock.patch.object(ca, "accounts", return_value=self.rows):
-            self.assertEqual(ca.select("native-session", "opus")["number"], 1)
-            other = ca.select("native-session", "opus", allow_move=True)
-        self.assertEqual(other["number"], 2)
-        self.assertIn("_herald_move", other)
+        candidate = self.plan()['candidate']
+        self.assertEqual(self.choose('native-session')['number'],1)
+        ca.commit_switch('native-session',candidate,'test-token')
         self.assertEqual(ca.binding("native-session")["email"], self.rows[1]["email"])
+        with self.assertRaises(ca.AccountError):
+            ca.commit_switch('native-session',candidate,'duplicate')
 
     def test_no_move_below_90_or_without_20_point_improvement(self):
         ca.bind("native-session", self.rows[0])
-        with mock.patch.object(ca, "accounts", return_value=self.rows):
-            self.rows[0]["usage"]["fiveHour"]["pct"] = 89
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 1)
-            self.rows[0]["usage"]["fiveHour"]["pct"] = 90
-            self.rows[1]["usage"]["fiveHour"]["pct"] = 71
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 1)
-            self.rows[1]["usage"]["fiveHour"]["pct"] = 70
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 2)
+        self.rows[0]["usage"]["fiveHour"]["pct"] = 89
+        self.assertIsNone(self.plan()['candidate'])
+        self.rows[0]["usage"]["fiveHour"]["pct"] = 90
+        self.rows[1]["usage"]["fiveHour"]["pct"] = 71
+        self.assertIsNone(self.plan()['candidate'])
+        self.rows[1]["usage"]["fiveHour"]["pct"] = 69
+        self.assertIsNotNone(self.plan()['candidate'])
 
     def test_move_cooldown_survives_next_selection(self):
         ca.bind("native-session", self.rows[0])
-        with mock.patch.object(ca, "accounts", return_value=self.rows), \
-             mock.patch.object(ca.time, "time", return_value=1_800_000_000) as now:
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 2)
+        with mock.patch.object(ca.time, "time", return_value=1_800_000_000) as now:
+            ca.commit_switch('native-session',self.plan()['candidate'],'first')
             self.rows[1]["usage"]["fiveHour"]["pct"] = 98
             self.rows[0]["usage"]["fiveHour"]["pct"] = 0
             self.rows[0]["usage"]["sevenDay"]["pct"] = 10
             now.return_value += 60
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 2)
+            self.assertIsNone(self.plan()['candidate'])
+            self.assertIsNotNone(self.plan(hard=True)['candidate'])
             now.return_value += 1800
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 1)
+            self.assertIsNotNone(self.plan()['candidate'])
 
     def test_stale_owner_never_triggers_cache_move(self):
         ca.bind("native-session", self.rows[0])
         self.rows[0]["usageStatus"] = "error"
-        with mock.patch.object(ca, "accounts", return_value=self.rows):
-            self.assertEqual(ca.select("native-session", "opus", allow_move=True)["number"], 1)
+        self.assertIsNone(self.plan()['candidate'])
+
+    def test_reload_budget_and_stale_readings_can_block_an_apparently_less_used_account(self):
+        ca.bind('native-session',self.rows[0])
+        self.rows[1]['usage']['fiveHour']['pct']=78
+        self.assertIsNone(self.plan(hard=True)['candidate'])
+        self.rows[1]['usage']['fiveHour']['pct']=0
+        self.rows[1]['usageAgeSeconds']=301
+        self.assertIsNone(self.plan(hard=True)['candidate'])
+        self.rows[1]['usageAgeSeconds']=1
+        self.budget['required_percent']=101
+        self.assertIsNone(self.plan(hard=True)['candidate'])
+
+    def test_a_newer_reading_can_clear_the_previous_hard_limit_without_a_switch(self):
+        ca.bind('native-session',self.rows[0])
+        self.rows[0]['usage']['fiveHour']['pct']=0
+        self.rows[0]['usage']['sevenDay']['pct']=0
+        self.rows[0]['usageFetchedAt']=dt.datetime.now(dt.timezone.utc).isoformat()
+        ts={'model':'opus','session_id':'native-session','context_tokens':100000,'last_ts':time.time()-60}
+        with mock.patch.object(ca,'accounts',return_value=self.rows):
+            inspected=ca.switch_plan(None,ts,hard=True)
+            self.assertTrue(inspected['current_ready'])
+            self.assertIsNone(inspected['candidate'])
+
+    def test_two_topics_cannot_reserve_the_same_remaining_budget(self):
+        ca.bind('native-session',self.rows[0])
+        ca.bind('second-session',self.rows[0])
+        self.budget['required_percent']=60
+        first=self.plan(hard=True)['candidate']
+        second=dict(first)
+        ca.commit_switch('native-session',first,'first',hard=True)
+        with self.assertRaises(ca.AccountError):
+            ca.commit_switch('second-session',second,'second',hard=True)
+        self.assertIsNone(self.plan(hard=True)['candidate'])
+        self.rows[0]['usage']['fiveHour']['pct']=20
+        self.rows[0]['usage']['sevenDay']['pct']=10
+        self.assertEqual(self.choose()['number'],1)
+        ca.release('first')
+        ca.commit_switch('second-session',second,'second',hard=True)
+
+    def test_quota_failure_keeps_latest_context_and_is_not_hidden_by_launch_stderr(self):
+        payload={'session_id':'failed-session','is_error':True,'result':"You've hit your session limit",'usage':{
+            'input_tokens':10,'cache_read_input_tokens':60000,'cache_creation_input_tokens':40000,'output_tokens':300}}
+        with mock.patch.object(think,'_run_claude',return_value=(1,payload,100000,'','Launching Account-2',False)), \
+             mock.patch.object(think,'_record') as record:
+            result=think.think('test-only',label='test',engine='claude',model='opus')
+        self.assertTrue(result.rate_limited)
+        self.assertTrue(limitchoice.hard_quota(result.error))
+        self.assertEqual(result.context_tokens,100000)
+        self.assertEqual(record.call_args.kwargs['context_tokens'],100000)
+        self.assertEqual(record.call_args.kwargs['session_id'],'failed-session')
+        self.assertEqual(record.call_args.kwargs['cache_write'],40000)
+
+    def test_default_wait_can_use_an_earlier_safe_reset_but_manual_wait_keeps_owner(self):
+        now=time.time()
+        ca.bind('native-session',self.rows[0])
+        self.rows[0]['usage']['fiveHour']={'pct':100,'resetsAt':dt.datetime.fromtimestamp(now+3600,dt.timezone.utc).isoformat()}
+        self.rows[1]['usage']['fiveHour']={'pct':100,'resetsAt':dt.datetime.fromtimestamp(now+600,dt.timezone.utc).isoformat()}
+        ts={'engine':'claude','session_id':'native-session','model':'opus','context_tokens':100000}
+        with mock.patch.object(ca,'enabled',return_value=True),mock.patch.object(ca,'accounts',return_value=self.rows):
+            self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now),now+3600+90,places=3)
+            self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now,earliest=True),now+600+90,places=3)
+            self.rows[1]['usage']['sevenDay']={'pct':100,'resetsAt':dt.datetime.fromtimestamp(now+7200,dt.timezone.utc).isoformat()}
+            self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now,earliest=True),now+3600+90,places=3)
 
     def test_stale_unknown_disabled_expired_and_invalid_not_selected(self):
         bad_values = [{"usageStatus": "error"}, {"usageAgeSeconds": 901},
@@ -145,6 +216,11 @@ class Accounts(unittest.TestCase):
             text, failed = ca.report(cached_only=True)
         self.assertFalse(failed)
         self.assertIn("account2@example.com", text)
+
+    def test_cached_only_report_does_not_create_state_for_a_private_topic(self):
+        with self.assertRaises(ca.AccountError):
+            ca.accounts(cached_only=True)
+        self.assertEqual(list(pathlib.Path(self.tmp.name).iterdir()),[])
 
     def test_report_converts_reset_to_local_time(self):
         with mock.patch.object(ca, "accounts", return_value=self.rows), \

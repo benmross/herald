@@ -954,17 +954,15 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
             try:
                 if cmd[0] not in ("claude", shutil.which("claude")):
                     raise claude_accounts.AccountError("Claude account routing requires the standard claude command on PATH")
-                account = claude_accounts.select(resume, model, allow_move=True)
+                # Existing conversations move only through the surface's
+                # confirmation/timeout flow, never silently inside a launch.
+                account = claude_accounts.select(resume, model)
                 # Email is stable across cswap slot renumbering. Refuse
                 # ambiguous identities rather than accidentally charge another.
                 email = account["email"]
                 cmd = [config.get("engines.claude.accounts.cmd", "cswap"),
                        "run", email, "--share-history", "--", *cmd[1:]]
                 downstream = on_progress
-                move = account.get("_herald_move")
-                if move and downstream:
-                    downstream(Progress("interim", f"Continuing on your Claude account {email}: "
-                        f"the previous account is at {move['current']:g}% and this one is at {move['target']:g}%."))
 
                 def account_progress(progress):
                     if progress.kind == "session":
@@ -2485,13 +2483,21 @@ def think(prompt: str, *, label: str,
                    "should still have happened; check the session transcript "
                    "or git log directly."))
 
-    engine_error = (stderr or "").strip() or (payload or {}).get("result") or f"exit {code}"
+    # cswap emits a launch notice on stderr even when Claude returns a
+    # structured failure. Do not let that notice hide the actual quota error.
+    engine_error = (payload or {}).get("result") or (stderr or "").strip() or f"exit {code}"
     limited = _looks_rate_limited(code, payload, stderr)
     if limited:
         engine_error = f"{engine.capitalize()} is rate limited or out of quota: {engine_error}"
 
+    failed_session = (payload or {}).get('session_id') or _session_from_stream(out) or resume
     _record(timing=timing, label=label, engine=engine, model=model,
-            duration_ms=elapsed, exit_code=code,
+            duration_ms=elapsed, exit_code=code, session_id=failed_session,
+            context_tokens=context_tokens,
+            input_tokens=((payload or {}).get('usage') or {}).get('input_tokens'),
+            output_tokens=((payload or {}).get('usage') or {}).get('output_tokens'),
+            cache_read=((payload or {}).get('usage') or {}).get('cache_read_input_tokens'),
+            cache_write=((payload or {}).get('usage') or {}).get('cache_creation_input_tokens'),
             error=engine_error[:2000])
     # Carry the session id even though this failed. A timeout kills the
     # process, not the transcript -- the hours of work it did are still
@@ -2499,8 +2505,8 @@ def think(prompt: str, *, label: str,
     # of starting over on top of half-finished files.
     return Result(ok=False, engine=engine, model=model, duration_ms=elapsed,
                   credits_used=kiro_credits,
-                  session_id=(payload or {}).get("session_id") or _session_from_stream(out) or resume,
-                  rate_limited=limited, error=engine_error)
+                  session_id=failed_session,
+                  rate_limited=limited, error=engine_error, context_tokens=context_tokens)
 
 
 

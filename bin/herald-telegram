@@ -55,12 +55,14 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
 from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, tgturns, topicstatus, usage  # noqa: E402
+from herald import claude_accounts as accounts_mod  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from cycles import _snapshot  # noqa: E402
@@ -1612,9 +1614,26 @@ def handle(update: dict, state: dict) -> None:
     if pv is None:
         _sync_topic_name(ts, key)
         handoff.begin(ts, text or "(a file)")
-    model = ts.get("model") or config.get(f"engines.{engine}.model")
-    effort = ts.get("effort")
+    frozen = update.get('_model_snapshot') or {}
+    model = frozen.get('model', ts.get("model") or config.get(f"engines.{engine}.model"))
+    effort = frozen.get('effort', ts.get("effort"))
     journal_root = None
+
+    if (pv is None and engine == 'claude' and resume and not reason
+            and not update.get('_limit_resume') and not update.get('_account_checked')):
+        with db.session() as con:
+            inspection = limitchoice.account_plan(con, dict(ts, model=model))
+        if inspection.get('candidate'):
+            ts['last_ts'] = time.time()
+            root = tgturns.begin(update, key, dict(ts, engine=engine, model=model))
+            tgturns.pause(root, 'Awaiting account confirmation before the turn')
+            shown = _offer_limit_choice(ts, chat_id, thread_id, request=text, warning=True,
+                                        inspection=inspection, pending_turn=root)
+            _checkpoint(state)
+            _remember_turn(chat_id, key, resume, ts, [*(m.get('message_id') for m in parts), *notices, *shown],
+                           turns=ts.get('turns', 0))
+            _checkpoint(state)
+            return
 
     def save_progress(event, working):
         if getattr(event, 'kind', None) == 'session':
@@ -1640,13 +1659,40 @@ def handle(update: dict, state: dict) -> None:
         with _model_slots:
             if journal_root and tgturns.get(journal_root)['status'] == 'done':
                 return think.Result(ok=False, engine=engine, cancelled=True, session_id=resume_id)
-            return think.think(
-                prompt, label=label, model=model, cwd=config.ROOT, resume=resume_id,
-                engine=engine, effort=effort, codex_transport="app-server",
-                permission_mode=None, allowed_tools=interactive_tools(engine),
-                append_system_prompt=system_card,
-                on_progress=lambda event: save_progress(event, working), cancel_key=key,
-                private=pv["scratch"] if pv else None)
+            lease = None
+            try:
+                requested_account = update.get('_account_request')
+                if requested_account and pv is None and engine == 'claude':
+                    from herald import claude_accounts
+                    lease = requested_account['token']
+                    if claude_accounts.binding(resume_id) != requested_account['target']:
+                        with db.session() as con:
+                            inspected = limitchoice.account_plan(con, dict(ts, model=model), hard=requested_account.get('hard', False))
+                        candidate = inspected.get('candidate')
+                        if not candidate or candidate['target'] != requested_account['target']:
+                            return think.Result(ok=False, engine=engine, rate_limited=True, session_id=resume_id,
+                                                error='Account continuation paused: the cold-resume capacity check no longer passes.')
+                        if journal_root and tgturns.get(journal_root)['status'] == 'done':
+                            return think.Result(ok=False, engine=engine, cancelled=True, session_id=resume_id)
+                        try:
+                            claude_accounts.commit_switch(resume_id, candidate, lease, hard=requested_account.get('hard', False))
+                        except claude_accounts.AccountError as exc:
+                            return think.Result(ok=False, engine=engine, rate_limited=True, session_id=resume_id,
+                                                error='Account continuation paused: ' + str(exc))
+                        working.on_progress(think.Progress('interim', f"Continuing on your Claude account {candidate['target_label']} with the same model and conversation."))
+                    if journal_root and tgturns.get(journal_root)['status'] == 'done':
+                        return think.Result(ok=False, engine=engine, cancelled=True, session_id=resume_id)
+                return think.think(
+                    prompt, label=label, model=model, cwd=config.ROOT, resume=resume_id,
+                    engine=engine, effort=effort, codex_transport="app-server",
+                    permission_mode=None, allowed_tools=interactive_tools(engine),
+                    append_system_prompt=system_card,
+                    on_progress=lambda event: save_progress(event, working), cancel_key=key,
+                    private=pv["scratch"] if pv else None)
+            finally:
+                if lease:
+                    from herald import claude_accounts
+                    claude_accounts.release(lease)
 
     with activity.Turn("telegram", key):
         posted: list[int] = [*(m.get("message_id") for m in parts), *notices]
@@ -1680,7 +1726,8 @@ def handle(update: dict, state: dict) -> None:
         if journal_root:
             with _journal_lock:
                 record = {name: getattr(result, name, None) for name in
-                          ('ok', 'text', 'session_id', 'model', 'error', 'cancelled', 'rate_limited')}
+                          ('ok', 'text', 'session_id', 'model', 'error', 'cancelled', 'rate_limited',
+                           'context_tokens', 'context_window')}
                 tgturns.answer(journal_root, record, dict(ts,
                     engine=engine, model=getattr(result, 'model', None) or model,
                     effort=effort if effort is not None else config.get(f'engines.{engine}.effort')))
@@ -1730,9 +1777,17 @@ def handle(update: dict, state: dict) -> None:
                 ts["session_id"] = None
         ts["last_ts"] = time.time()
         if not result.ok and not result.cancelled and result.rate_limited and pv is None:
+            if getattr(result, 'context_tokens', None):
+                ts['context_tokens'] = result.context_tokens
+            elif limitchoice.hard_quota(result.error):
+                # A stale pre-run size cannot authorize a cold replay of work
+                # that grew during this failed turn.
+                ts['context_tokens'] = None
             progress = (getattr(working, "_sent_replies", []) or [result.text])[-1]
             posted += _offer_limit_choice(ts, chat_id, thread_id, progress,
-                                          "" if update.get("_limit_resume") else text)
+                                          "" if update.get("_limit_resume") else text,
+                                          hard_limit=limitchoice.hard_quota(result.error))
+            _checkpoint(state)
         # Filed under the session the turn ran in, whatever became of the
         # topic's pointer: a cancelled or failed turn still left a transcript.
         # A private turn is filed nowhere.
@@ -1765,15 +1820,21 @@ def _lock_for(key: str) -> threading.Lock:
 
 
 def _offer_limit_choice(ts: dict, chat_id: int, thread_id: int | None,
-                        progress: str = "", request: str = "") -> list[int]:
+                        progress: str = "", request: str = "", *, warning=False,
+                        hard_limit=False, inspection=None, pending_turn=None) -> list[int]:
     with db.session() as con:
-        record, text, keyboard = limitchoice.make(con, ts, progress, request)
+        record, text, keyboard = limitchoice.make(con, ts, progress, request, warning=warning,
+                                                hard_limit=hard_limit, inspection=inspection)
     response = api("sendMessage", chat_id=chat_id, text=text,
                    reply_markup={"inline_keyboard": keyboard},
                    **({"message_thread_id": thread_id} if thread_id else {}))
     if response and response.get("ok"):
         mid = response["result"]["message_id"]
+        if record.get('default_action') == 'account_or_wait':
+            record['default_at'] = time.time() + 60
         record.update(message_id=mid, chat_id=chat_id, thread_id=thread_id, text=text)
+        if pending_turn:
+            record['pending_turn'] = pending_turn
         ts[limitchoice.KEY] = record
         return [mid]
     return send(chat_id, "The usage limit paused this task, but the choice buttons "
@@ -1790,6 +1851,86 @@ def _limit_update(chat_id: int, thread_id: int | None, text: str) -> dict:
     return {"update_id": -1, "message": msg, "_limit_resume": True}
 
 
+def _choice_update(record, text):
+    pending = tgturns.get(record['pending_turn']) if record.get('pending_turn') else None
+    if pending:
+        if pending['status'] == 'done':
+            return None
+        update = json.loads(pending['payload'])
+        update.update(_turn_ids=list(dict.fromkeys([pending['id'], *update.get('_turn_ids',[])])),
+                      _limit_resume=True, _account_checked=True)
+        return update
+    return _limit_update(record['chat_id'], record.get('thread_id'), text)
+
+
+def _account_limit_choice(state, key, ts, record, action, *, automatic=False):
+    """Resolve the account part of the shared limit card under its topic lock."""
+    if action == 'keep' and not (automatic or record.get('mode') == 'warning' or record.get('current_ready')):
+        return
+    if action == 'account' and not automatic and not record.get('account'):
+        return
+    candidate = None
+    if action == 'account':
+        frozen = record.get('model_snapshot') or {}
+        with db.session() as con:
+            inspected = limitchoice.account_plan(con, dict(ts,**frozen), hard=record.get('hard_limit', False))
+        if key in _private or key in _ingress_private or not limitchoice.current(ts, record):
+            return
+        if automatic and inspected.get('current_ready'):
+            _account_limit_choice(state,key,ts,record,'keep',automatic=True)
+            return
+        candidate = inspected.get('candidate')
+        if candidate and not automatic and candidate['target'] != record['account']['target']:
+            candidate = None
+        if not candidate:
+            if automatic:
+                with db.session() as con:
+                    at = limitchoice.wait_at(con, dict(ts,**frozen), earliest=True)
+                if key in _private or key in _ingress_private or not limitchoice.current(ts, record):
+                    return
+                ts.pop(limitchoice.KEY, None)
+                queued = limitresume.schedule(ts, at, record['engine'], record['chat_id'], record.get('thread_id'))
+                if queued and record.get('pending_turn'):
+                    ts[limitresume.KEY]['pending_turn'] = record['pending_turn']
+                if queued:
+                    ts[limitresume.KEY]['reconsider_accounts'] = True
+                    ts[limitresume.KEY]['source_ready_at'] = record['at']
+                    if record.get('model_snapshot'):
+                        ts[limitresume.KEY]['model_snapshot'] = record['model_snapshot']
+                note = (f"No safe account switch is available, so I'll wait until {limitchoice.clock(at)}. Send /stop to cancel."
+                        if queued else 'The continuation attempt limit was reached. Nothing is scheduled.')
+                _replace_picker({'chat':{'id':record['chat_id']},'message_id':record['message_id']},record.get('text','')+'\n\n'+note)
+                _checkpoint(state)
+                return
+            ts.pop(limitchoice.KEY, None)
+            _replace_picker({'chat':{'id':record['chat_id']},'message_id':record['message_id']},
+                            record.get('text','')+'\n\nThat account switch no longer passes the resume check.')
+            _offer_limit_choice(ts, record['chat_id'], record.get('thread_id'), request=record.get('request',''),
+                                warning=record.get('mode')=='warning', hard_limit=record.get('hard_limit',False),
+                                pending_turn=record.get('pending_turn'))
+            _checkpoint(state)
+            return
+    if key in _private or key in _ingress_private or not limitchoice.current(ts, record):
+        return
+    ts.pop(limitchoice.KEY, None)
+    queued = limitresume.schedule(ts, time.time(), record['engine'], record['chat_id'], record.get('thread_id'))
+    if queued:
+        continuation = ts[limitresume.KEY]
+        if record.get('pending_turn'):
+            continuation['pending_turn'] = record['pending_turn']
+        if candidate:
+            continuation['account_request'] = {'target':candidate['target'], 'token':record['token'],
+                                               'hard':record.get('hard_limit',False)}
+        if record.get('model_snapshot'):
+            continuation['model_snapshot'] = record['model_snapshot']
+        note = (f"{'One minute passed. ' if automatic else ''}Queued continuation on Claude account {candidate['target_label']}; "
+                "I'll check capacity again just before starting." if candidate else 'Queued continuation on the current account.')
+    else:
+        note = 'The continuation attempt limit was reached. Nothing is scheduled.'
+    _replace_picker({'chat':{'id':record['chat_id']},'message_id':record['message_id']}, record.get('text','')+'\n\n'+note)
+    _checkpoint(state)
+
+
 def _handle_limit_callback(update: dict, state: dict) -> None:
     cq = update["callback_query"]
     if (cq.get("from") or {}).get("id") != config.secret("telegram.user_id"):
@@ -1797,7 +1938,7 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
         return
     msg = cq.get("message") or {}
     key = _topic_key({"message": msg})
-    match = re.fullmatch(r"limit:([0-9a-f]{16}):(switch|wait|defaultwait|stop)", cq.get("data") or "")
+    match = re.fullmatch(r"limit:([0-9a-f]{16}):(switch|account|keep|wait|defaultwait|stop)", cq.get("data") or "")
     api("answerCallbackQuery", callback_query_id=cq["id"])
     if not key or not match:
         return
@@ -1812,6 +1953,9 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
             return
         chat_id, thread_id = record["chat_id"], record.get("thread_id")
         action = match[2]
+        if action in ('account', 'keep'):
+            _account_limit_choice(state, key, ts, record, action)
+            return
         if action == "defaultwait" and not record.get("default_target"):
             return
         if action == "switch":
@@ -1830,7 +1974,8 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
         at = None
         if action in ("wait", "defaultwait"):
             with db.session() as con:
-                at = limitresume.when(con, record["engine"], time.time())
+                at = limitchoice.wait_at(con, dict(ts, **(record.get('model_snapshot') or {}),
+                                                   _account_warning=record.get('mode')=='warning'))
         # /stop can cancel without acquiring the lock while a quota read runs.
         if not limitchoice.current(ts, record):
             return
@@ -1845,6 +1990,10 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
             target = record.get("default_target") if action == "defaultwait" else None
             if queued and target:
                 ts[limitresume.KEY]["target"] = dict(target)
+            elif queued and record.get('model_snapshot'):
+                ts[limitresume.KEY]['model_snapshot'] = record['model_snapshot']
+            if queued and record.get('pending_turn'):
+                ts[limitresume.KEY]['pending_turn'] = record['pending_turn']
             shown = f" / {target['model']} in a new session" if target else ""
             note = (f"I'll continue on {record['engine'].capitalize()}{shown} "
                     f"{limitchoice.clock(at)}. Send /stop to cancel." if queued else
@@ -1857,7 +2006,9 @@ def _handle_limit_callback(update: dict, state: dict) -> None:
                             f"\n\nContinuing on {other.capitalize()}'s default model.")
         _checkpoint(state)
         if action == "switch" and ts.get("last_ts") == record["last_ts"]:
-            handle(_limit_update(chat_id, thread_id, limitchoice.CONTINUE), state)
+            continuation = _choice_update(record, limitchoice.CONTINUE)
+            if continuation:
+                handle(continuation, state)
 
 
 def _select_model(ts: dict, engine: str, model: str, adjust=None) -> str:
@@ -2789,42 +2940,63 @@ def _resume_after_limits(state: dict) -> None:
     lib/herald/limitresume.py.
     """
     while True:
-        time.sleep(30)
+        time.sleep(1)
         try:
             if limitresume.import_requests(state.get("threads", {})):
                 _checkpoint(state)
             for key, ts in list(state.get("threads", {}).items()):
                 record = ts.get(limitresume.KEY)
                 if isinstance(record, dict) and record.get("at", 0) <= time.time():
-                    threading.Thread(target=_run_limit_resume,
-                                     args=(state, key, record), daemon=True).start()
+                    _start_limit_worker(_run_limit_resume, state, key, record)
                 choice = ts.get(limitchoice.KEY)
-                if (isinstance(choice, dict) and choice.get("message_id")
-                        and choice.get("at", 0) <= time.time()):
-                    threading.Thread(target=_default_limit_choice,
-                                     args=(state, key, choice), daemon=True).start()
+                if isinstance(choice, dict) and choice.get('message_id'):
+                    due = choice.get('default_at', choice.get('at'))
+                    if isinstance(due, (int,float)) and due <= time.time():
+                        _start_limit_worker(_default_limit_choice, state, key, choice)
         except Exception as e:                                # noqa: BLE001
             print(f"limit continuation loop error: {e}", file=sys.stderr)
 
 
-def _default_limit_choice(state: dict, key: str, record: dict) -> None:
-    """A limit card nobody answered by the reset: continue the same session.
+_limit_workers = set()
+_limit_workers_lock = threading.Lock()
 
-    The user's rule (13 Nov 2026): an untouched card means "continue when the
-    limit resets", never a switch and never a stop. It goes through the same
-    queued continuation as a tap on that button, so /stop, a new message and
-    the attempt cap all still apply, and a card answered meanwhile wins.
-    """
+
+def _start_limit_worker(function, state, key, record):
+    marker = function.__name__, key
+    with _limit_workers_lock:
+        if marker in _limit_workers:
+            return
+        _limit_workers.add(marker)
+    def run():
+        try:
+            function(state, key, record)
+        finally:
+            with _limit_workers_lock:
+                _limit_workers.discard(marker)
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _default_limit_choice(state: dict, key: str, record: dict) -> None:
+    """Honor this card's declared default; old saved cards keep reset/wait."""
     try:
         with _lock_for(key):
             ts = thread_state(state, key)
-            if key in _private or not limitchoice.current(ts, record):
+            if key in _private or key in _ingress_private or not limitchoice.current(ts, record):
+                return
+            if record.get('mode') == 'warning':
+                return  # Silence is not a near-limit account choice.
+            if record.get('default_action') == 'account_or_wait':
+                if time.time() < record['default_at']:
+                    return
+                _account_limit_choice(state, key, ts, record, 'account', automatic=True)
                 return
             ts.pop(limitchoice.KEY, None)
             chat_id, thread_id = record["chat_id"], record.get("thread_id")
             if not limitresume.schedule(ts, time.time(), record["engine"], chat_id, thread_id):
                 note = "\n\nNo choice was made, and this task has already stopped at the limit too many times in a row. Nothing is scheduled."
             else:
+                if record.get('pending_turn'):
+                    ts[limitresume.KEY]['pending_turn'] = record['pending_turn']
                 note = (f"\n\nNo choice was made by the reset, so I'm continuing on "
                         f"{record['engine'].capitalize()} in the same session. Send /stop to cancel.")
             _checkpoint(state)
@@ -2843,9 +3015,29 @@ def _run_limit_resume(state: dict, key: str, record: dict) -> None:
             ts = thread_state(state, key)
             # /stop or a new message can win while the worker waits for this
             # lock. Check the live record here, before consuming it.
-            if ts.get(limitresume.KEY) is not record or key in _private:
+            if ts.get(limitresume.KEY) is not record or key in _private or key in _ingress_private:
                 return
             ts.pop(limitresume.KEY)
+            if record.get('reconsider_accounts') and ts.get('engine')=='claude' and accounts_mod.enabled():
+                from herald import claude_accounts
+                decision = dict(ts,**(record.get('model_snapshot') or {}))
+                try:
+                    owner = claude_accounts.select(ts.get('session_id'), decision.get('model') or config.get('engines.claude.model'))
+                    pct = claude_accounts.pressure(owner, decision.get('model') or config.get('engines.claude.model'))
+                    recovered = pct is not None and pct < 100 and time.time()>=record.get('source_ready_at',float('inf'))
+                    current_ready = (pct is not None and (pct < 90 or recovered) and owner.get('usageAgeSeconds',1e9)<=300)
+                except (claude_accounts.AccountError, OSError, ValueError):
+                    current_ready = False
+                if not current_ready:
+                    with db.session() as con:
+                        candidate = limitchoice.account_plan(con, decision, hard=True).get('candidate')
+                        retry_at = limitchoice.wait_at(con, decision, earliest=True) if not candidate else None
+                    if candidate:
+                        record['account_request'] = {'target':candidate['target'],'token':uuid.uuid4().hex,
+                                                      'hard':True}
+                    else:
+                        ts[limitresume.KEY] = dict(record, at=retry_at)
+                        return
             target = record.get("target")
             if target:
                 if ts.get("engine") != record["engine"]:
@@ -2860,7 +3052,14 @@ def _run_limit_resume(state: dict, key: str, record: dict) -> None:
             send(chat_id, "The scheduled continuation is starting. I'll check where the work stopped.",
                  thread_id)
             if ts.get("last_ts") == last_ts:
-                handle(_limit_update(chat_id, thread_id, limitresume.PROMPT), state)
+                update = _choice_update(record, limitchoice.ACCOUNT_CONTINUE if record.get('account_request') else limitresume.PROMPT)
+                if update:
+                    update['_account_checked'] = True
+                    if record.get('model_snapshot'):
+                        update['_model_snapshot'] = record['model_snapshot']
+                    if record.get('account_request'):
+                        update['_account_request'] = record['account_request']
+                    handle(update, state)
     except Exception as e:                                    # noqa: BLE001
         print(f"limit continuation error: {e}", file=sys.stderr)
     finally:
@@ -2876,6 +3075,13 @@ def _dispatch(update: dict, state: dict) -> None:
         msg = update.get("message") or update.get("edited_message") or {}
         if (msg.get("from") or {}).get("id") == config.secret("telegram.user_id"):
             _observe_topic_name(state, msg)
+            if (key not in _private and key not in _ingress_private and not update.get('_limit_resume')
+                    and not _is_stop_command(update)):
+                # Cancel at ingress, before waiting on a topic lock or quota
+                # read. Otherwise the timeout can beat a reply already here.
+                existing = state.get('threads',{}).get(key)
+                if existing:
+                    limitresume.cancel(existing)
         if update.get("callback_query"):
             if (update["callback_query"].get("data") or "").startswith("limit:"):
                 _handle_limit_callback(update, state)
@@ -2982,10 +3188,19 @@ def _saved_answer(row: dict, state: dict) -> bool:
     ts = thread_state(state, row['topic'])
     ts.update(json.loads(row['snapshot']))
     ts.update(session_id=result.get('session_id') or row['session_id'], last_ts=time.time())
+    if result.get('context_tokens'):
+        ts['context_tokens'] = result['context_tokens']
+    elif not result.get('ok') and limitchoice.hard_quota(result.get('error')):
+        ts['context_tokens'] = None
     _checkpoint(state)
     if result.get('cancelled'):
         with db.session() as con:
             tgturns.finish_in(con, row['id'])
+    elif not result.get('ok') and result.get('rate_limited'):
+        tgturns.pause(row['id'], result.get('error') or 'Usage limit')
+        _offer_limit_choice(ts,int(chat),None if thread=='main' else int(thread),
+                            progress=result.get('text') or '',hard_limit=limitchoice.hard_quota(result.get('error')))
+        _checkpoint(state)
     else:
         text = (result.get('text') or '(no reply)') if result.get('ok') else 'That failed: ' + (result.get('error') or 'unknown')[:300]
         send(int(chat), text, None if thread == 'main' else int(thread), durable=True,
