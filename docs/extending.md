@@ -231,6 +231,14 @@ shape there.
 `notify.tell(title, body)` reaches the user once, on Telegram, and returns
 `"nowhere"` if that failed. `notify.push` does the same and returns a bool.
 
+`notify.telegram_document(path)` sends an attachment to the active topic.
+For UTF-8 `.md` and `.markdown` files, it adapts the upload for Telegram's
+built-in viewer: deeper headings become level two, checkboxes become visible
+symbols, HTML tags become visible source, and display math becomes a code block.
+The source file stays unchanged. Code examples and comments are preserved;
+tables, links and ordinary formatting pass through. Exact file transfers use
+`verbatim=True`, or `herald notify --file <path> --verbatim`.
+
 ## Things that will bite
 
 - **Telegram allows one `getUpdates` consumer per bot.** Anything else gets 409.

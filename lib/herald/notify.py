@@ -293,7 +293,8 @@ def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = 
 
 
 def telegram_document(path, *, caption: str | None = None,
-                      thread_id: int | None = None, record: bool = True) -> bool:
+                      thread_id: int | None = None, record: bool = True,
+                      verbatim: bool = False) -> bool:
     """Send a file to the user as a document. Returns whether it landed.
 
     The user reads Herald from a phone, and the ledger lives on a machine
@@ -305,6 +306,9 @@ def telegram_document(path, *, caption: str | None = None,
 
     Goes to the topic that is asking when one is live, otherwise to Updates,
     for the same reason images do.
+
+    Markdown gets a delivery-only compatibility copy for the built-in viewer.
+    Set `verbatim=True` when exact original bytes are required.
     """
     chat_id = _telegram_chat_id()
     if not chat_id:
@@ -313,6 +317,9 @@ def telegram_document(path, *, caption: str | None = None,
         thread_id = _resolve(_live_topic_thread())
     path = pathlib.Path(path)
     blob = path.read_bytes()
+    if not verbatim and path.suffix.lower() in (".md", ".markdown"):
+        from . import tgmarkdown
+        blob = tgmarkdown.attachment(blob)
     common = {"chat_id": chat_id}
     if thread_id:
         common["message_thread_id"] = thread_id

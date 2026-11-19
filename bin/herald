@@ -592,7 +592,7 @@ def cmd_notify(args) -> int:
             print(f"no such file: {path}", file=sys.stderr)
             return 1
         caption = args.title if not args.body else f"{args.title}\n{args.body}"
-        ok = notify.telegram_document(path, caption=caption)
+        ok = notify.telegram_document(path, caption=caption, verbatim=args.verbatim)
         if not ok:
             print("document send failed", file=sys.stderr)
         return 0 if ok else 1
@@ -3109,6 +3109,8 @@ def main() -> int:
     n.add_argument("body", nargs="?", default="")
     n.add_argument("--file", help="send this file to Telegram as a document; "
                    "title and body become its caption")
+    n.add_argument("--verbatim", action="store_true",
+                   help="send original file bytes without Markdown viewer compatibility changes")
     n.add_argument("--priority", default="default")
     n.add_argument("--tags")
     n.add_argument("--click")
