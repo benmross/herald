@@ -8,7 +8,7 @@ from unittest import mock
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
-from herald import anchors, think  # noqa: E402
+from herald import anchors, think, claude_accounts  # noqa: E402
 
 TZ = ZoneInfo("America/New_York")
 NOW = dt.datetime(2026, 10, 30, 12, 2, tzinfo=TZ)
@@ -62,6 +62,7 @@ class Windows(unittest.TestCase):
 
     def setUp(self):
         self.con = sqlite3.connect(":memory:")
+        self.addCleanup(self.con.close)
         self.con.row_factory = sqlite3.Row
         self.con.execute("CREATE TABLE runs (ts TEXT, label TEXT, engine TEXT)")
         self.con.execute("INSERT INTO runs VALUES (?,?,?)",
@@ -101,6 +102,78 @@ class Windows(unittest.TestCase):
 
     def test_nobody_using_herald_means_no_calls(self):
         self.assertFalse(self._maintain(now=NOW + dt.timedelta(days=9))[1].called)
+
+
+class AccountWindows(Windows):
+    def setUp(self):
+        super().setUp()
+        self.schedules = {"first@example.com": "claude", "second@example.com": "codex"}
+        self.rows = [self.account(email) for email in self.schedules]
+
+    def account(self, email):
+        return {"email": email, "usageStatus": "ok", "usageAgeSeconds": 1,
+                "plan": {"label": "Pro", "expired": False},
+                "usage": {"fiveHour": {"pct": 0, "resetsAt": None},
+                          "sevenDay": {"pct": 10, "resetsAt": "2099-01-07T12:00:00Z"}}}
+
+    def maintain_accounts(self, now=NOW, enabled=True, error=None, snapshots=None):
+        def settings(key, default=None):
+            return self.schedules if key == "usage.anchors.claude_accounts" else default
+        with mock.patch.object(anchors.config, "get", side_effect=settings), \
+             mock.patch.object(anchors.config, "enabled_engines", return_value=("claude", "codex")), \
+             mock.patch.object(claude_accounts, "enabled", return_value=enabled), \
+             mock.patch.object(claude_accounts, "accounts", return_value=self.rows, side_effect=error), \
+             mock.patch.object(anchors, "_ping", return_value=think.Result(ok=True)) as ping, \
+             mock.patch.object(anchors.db, "put_fact", self._put):
+            count = anchors.maintain(self.con, snapshots if snapshots is not None else
+                                     {"claude": self.snap, "codex": self.snap}, self.plan, now)
+        return count, ping
+
+    def test_account_uses_codex_schedule_and_deduplicates_independently(self):
+        now = NOW.replace(hour=9, minute=32)  # Codex target 9:30 AM, Claude noon.
+        count, ping = self.maintain_accounts(now)
+        self.assertEqual(count, 2)
+        self.assertEqual(ping.call_args_list, [mock.call("codex"),
+                         mock.call("claude", account="second@example.com")])
+        self.assertEqual(self.maintain_accounts(now)[0], 0)
+        count, ping = self.maintain_accounts()  # Only first account is due now.
+        self.assertEqual(count, 1)
+        ping.assert_called_once_with("claude", account="first@example.com")
+
+    def test_account_schedule_survives_a_failed_default_usage_probe(self):
+        count, ping = self.maintain_accounts(NOW.replace(hour=9, minute=32), snapshots={})
+        self.assertEqual(count, 1)
+        ping.assert_called_once_with("claude", account="second@example.com")
+
+    def test_busy_weekly_full_stale_disabled_and_ambiguous_accounts_are_skipped(self):
+        cases = [
+            {"usage": {"fiveHour": {"pct": 10, "resetsAt": "2099-01-01T12:00:00Z"},
+                       "sevenDay": {"pct": 10, "resetsAt": "2099-01-07T12:00:00Z"}}},
+            {"usage": {"fiveHour": {"pct": 0, "resetsAt": None},
+                       "sevenDay": {"pct": 95, "resetsAt": "2099-01-07T12:00:00Z"}}},
+            {"usageAgeSeconds": 901}, {"disabled": True},
+            {"plan": {"label": "Pro", "expired": True}},
+        ]
+        for change in cases:
+            with self.subTest(change=change):
+                self.rows[0] = {**self.account("first@example.com"), **change}
+                self.assertEqual(self.maintain_accounts()[0], 0)
+        self.rows = []
+        self.assertEqual(self.maintain_accounts()[0], 0)
+        self.rows = [self.account("first@example.com")] * 2
+        self.assertEqual(self.maintain_accounts()[0], 0)
+
+    def test_account_errors_or_disabled_routing_never_ping_default(self):
+        self.assertEqual(self.maintain_accounts(enabled=False)[0], 0)
+        self.assertEqual(self.maintain_accounts(error=claude_accounts.AccountError("unavailable"))[0], 0)
+
+    def test_lean_ping_targets_same_account_even_on_model_fallback(self):
+        with mock.patch.object(anchors.think, "think", side_effect=[think.Result(ok=False), think.Result(ok=True)]) as call:
+            self.assertTrue(anchors._ping("claude", account="second@example.com").ok)
+        self.assertEqual(len(call.call_args_list), 2)
+        for invocation in call.call_args_list:
+            self.assertEqual(invocation.kwargs["claude_account"], "second@example.com")
+            self.assertTrue(invocation.kwargs["lean"])
 
 
 if __name__ == "__main__":

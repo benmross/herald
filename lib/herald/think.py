@@ -874,6 +874,7 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
                 on_progress=None, cancel_key: str | None = None,
                 submitted: list[str] | None = None,
                 timing: dict | None = None, lean: bool = False,
+                claude_account: str | None = None,
                ) -> tuple[int, dict | None, int | None, str, str, bool]:
     staged, tmp = _stage_prompt(prompt, cwd)
 
@@ -948,15 +949,29 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
     try:
         # Select only between turns. cswap's run mode keeps
         # other terminals' login intact and shares native transcript history.
-        # Private sandboxes and quota-anchor probes keep their existing login.
+        # Private sandboxes and untargeted lean probes keep their existing login.
         from . import claude_accounts
-        if claude_accounts.enabled() and _private_scratch() is None and not lean:
+        if claude_account is not None or (claude_accounts.enabled() and _private_scratch() is None and not lean):
             try:
                 if cmd[0] not in ("claude", shutil.which("claude")):
                     raise claude_accounts.AccountError("Claude account routing requires the standard claude command on PATH")
                 # Existing conversations move only through the surface's
                 # confirmation/timeout flow, never silently inside a launch.
-                account = claude_accounts.select(resume, model)
+                if claude_account is not None:
+                    if not lean or resume or _private_scratch() is not None or not claude_accounts.enabled():
+                        raise claude_accounts.AccountError("An explicit Claude probe account requires a non-private, fresh lean call and enabled account routing")
+                    matches = [row for row in claude_accounts.accounts() if row.get("email") == claude_account]
+                    if len(matches) != 1 or claude_accounts.pressure(matches[0], model) is None:
+                        raise claude_accounts.AccountError("The Claude probe account is missing, ambiguous or has no verified capacity reading")
+                    account = matches[0]
+                    five = (account.get("usage") or {}).get("fiveHour") or {}
+                    limit = float(config.get("usage.anchors.weekly_limit_percent", 90))
+                    if (five.get("pct") != 0 or five.get("resetsAt")
+                            or any(float(w["pct"]) >= limit for key, w in claude_accounts.windows(account, model)
+                                   if key != "fiveHour")):
+                        raise claude_accounts.AccountError("The Claude anchor account is no longer idle or has reached its weekly guard")
+                else:
+                    account = claude_accounts.select(resume, model)
                 # Email is stable across cswap slot renumbering. Refuse
                 # ambiguous identities rather than accidentally charge another.
                 email = account["email"]
@@ -965,7 +980,7 @@ def _run_claude(prompt: str, *, model: str | None, effort: str | None, cwd: Path
                 downstream = on_progress
 
                 def account_progress(progress):
-                    if progress.kind == "session":
+                    if progress.kind == "session" and not lean:
                         # Save before the bridge checkpoints the native ID,
                         # so interrupted work resumes under its original login.
                         claude_accounts.bind(progress.text, account)
@@ -2200,7 +2215,8 @@ def think(prompt: str, *, label: str,
           on_progress=None,
           engine: str | None = None, effort: str | None = None,
           codex_transport: str = "exec",
-          private: Path | str | None = None, lean: bool = False) -> Result:
+          private: Path | str | None = None, lean: bool = False,
+          claude_account: str | None = None) -> Result:
     """Run one metered agent invocation.
 
     `label` is what shows up in the runs table — use `cycle:dawn`,
@@ -2231,7 +2247,9 @@ def think(prompt: str, *, label: str,
 
     `lean` strips the run to a reply with no tools, project instructions or
     saved session, for a call whose only purpose is to reach the provider.
-    Pass an empty `cwd` with it.
+    Pass an empty `cwd` with it. `claude_account` targets an exact cswap email
+    for a fresh, non-private Claude lean probe only; it never changes the
+    default login or a conversation's account.
 
     `cancel_key`, if given, registers the underlying subprocess with
     `cancel()` under that key for exactly as long as this call is running --
@@ -2244,6 +2262,11 @@ def think(prompt: str, *, label: str,
     over on top of half-finished files -- on the same engine, since a
     session id means nothing to the other one.
     """
+    if claude_account is not None and (
+            resolve_engine(engine) != "claude" or not lean or resume
+            or private is not None or _private_scratch() is not None):
+        return Result(ok=False, engine=resolve_engine(engine), model=model,
+                      error="An explicit Claude probe account requires a fresh, non-private Claude lean call")
     if private is not None:
         if resolve_engine(engine) == "kiro":
             return Result(ok=False, engine="kiro", model=model,
@@ -2335,7 +2358,8 @@ def think(prompt: str, *, label: str,
             timeout=timeout, idle_timeout=idle_timeout, allowed_tools=allowed_tools,
             append_system_prompt=append_system_prompt, json_schema=json_schema,
             resume=resume_id, permission_mode=permission_mode, add_dirs=add_dirs,
-            on_progress=on_progress, cancel_key=cancel_key, timing=timing, lean=lean)
+            on_progress=on_progress, cancel_key=cancel_key, timing=timing, lean=lean,
+            **({"claude_account": claude_account} if claude_account is not None else {}))
 
     def _launch(text: str, resume_id: str | None, timing: dict):
         from .debugtrace import Trace  # noqa: PLC0415

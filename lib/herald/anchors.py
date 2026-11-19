@@ -160,14 +160,15 @@ def idle(engine: str, window: dict, sampled_at: float) -> bool:
             and window["resets_at"] - sampled_at >= (WINDOW - 1) * 60)
 
 
-def _ping(engine: str) -> think.Result:
+def _ping(engine: str, *, account: str | None = None) -> think.Result:
     model = (config.get("usage.anchors.models") or {}).get(engine)
 
     def call(chosen: str | None) -> think.Result:
         with tempfile.TemporaryDirectory(prefix="herald-anchor-") as empty:
             return think.think("Reply with OK.", label=LABEL, engine=engine, model=chosen,
                                effort="low", cwd=Path(empty), permission_mode="plan",
-                               timeout=120, lean=True)
+                               timeout=120, lean=True,
+                               **({"claude_account": account} if account is not None else {}))
 
     result = call(model)
     # A plan may not offer the cheap model. Its usual one opens the window too.
@@ -187,8 +188,38 @@ def maintain(con, snapshots: dict[str, dict], plan: dict | None,
                     ).total_seconds() > idle_days * 86400:
         return 0
     opened = 0
-    for engine, snapshot in snapshots.items():
-        anchor = due(plan, engine, now)
+    targets = [(engine, engine, snapshot, None) for engine, snapshot in snapshots.items()]
+    schedules = config.get("usage.anchors.claude_accounts", {})
+    if schedules and "claude" in config.enabled_engines():
+        # Explicit account schedules replace the default-login Claude target.
+        # Never let a failed lookup ping the unrelated default account instead.
+        targets = [target for target in targets if target[0] != "claude"]
+        from . import claude_accounts
+        if claude_accounts.enabled():
+            try:
+                rows = claude_accounts.accounts()
+            except (claude_accounts.AccountError, OSError, ValueError):
+                rows = []
+            model = (config.get("usage.anchors.models") or {}).get("claude")
+            for email, schedule in schedules.items():
+                if schedule not in plan["anchors"] or due(plan, schedule, now) is None:
+                    continue
+                matches = [row for row in rows if row.get("email") == email]
+                if len(matches) != 1 or claude_accounts.pressure(matches[0], model) is None:
+                    continue
+                row = matches[0]
+                windows = []
+                for key, window in claude_accounts.windows(row, model):
+                    reset = window.get("resetsAt")
+                    windows.append({"window_minutes": WINDOW if key == "fiveHour" else 10080,
+                                    "used_percent": float(window["pct"]),
+                                    "resets_at": dt.datetime.fromisoformat(reset.replace("Z", "+00:00")).timestamp()
+                                    if reset else None})
+                targets.append(("claude", schedule,
+                                {"sampled_at": now.timestamp() - row["usageAgeSeconds"],
+                                 "windows": windows}, email))
+    for engine, schedule, snapshot, account in targets:
+        anchor = due(plan, schedule, now)
         windows = snapshot["windows"]
         five = next((w for w in windows if w["window_minutes"] == WINDOW), None)
         if anchor is None or five is None or not idle(engine, five, snapshot["sampled_at"]):
@@ -197,11 +228,13 @@ def maintain(con, snapshots: dict[str, dict], plan: dict | None,
         if any(w["window_minutes"] > WINDOW and w["used_percent"] >= limit for w in windows):
             continue
         key = f"{(now - dt.timedelta(minutes=LATE)).date()}:{anchor}"
-        state = _saved(con, "anchor_state", engine) or {}
+        kind = "anchor_account_state" if account is not None else "anchor_state"
+        state_key = account if account is not None else engine
+        state = _saved(con, kind, state_key) or {}
         if state.get("last") == key:
             continue
-        result = _ping(engine)
-        db.put_fact(con, SOURCE, "anchor_state", external_id=engine, ts=db.now(),
+        result = _ping(engine, account=account) if account is not None else _ping(engine)
+        db.put_fact(con, SOURCE, kind, external_id=state_key, ts=db.now(),
                     data={"last": key, "ok": result.ok, "at": now.timestamp(),
                           "error": None if result.ok else (result.error or "")[:200]})
         con.commit()
@@ -217,4 +250,8 @@ def describe(con) -> str:
     clock = lambda m: config.clock(day + dt.timedelta(minutes=m))  # noqa: E731
     parts = [f"{engine} at {', '.join(clock(a) for a in sorted(anchors))}"
              for engine, anchors in plan["anchors"].items()]
+    schedules = config.get("usage.anchors.claude_accounts", {})
+    for account, schedule in schedules.items():
+        if schedule in plan["anchors"]:
+            parts.append(f"Claude account {account} follows {schedule}")
     return (f"Windows open for a usual start of {clock(plan['start'])}: " + "; ".join(parts))

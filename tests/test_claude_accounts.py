@@ -273,11 +273,47 @@ class Accounts(unittest.TestCase):
         self.assertEqual(result[0], 0)
         self.assertEqual(seen[0]["email"], "account2@example.com")
 
-    def launch(self, on_progress=None, lean=False):
+    def launch(self, on_progress=None, lean=False, claude_account=None):
         return think._run_claude("hello", model="haiku", effort="low", cwd=pathlib.Path(self.tmp.name),
             timeout=20, idle_timeout=20, allowed_tools=None, append_system_prompt=None,
             json_schema=None, resume=None, permission_mode="plan", add_dirs=None,
-            on_progress=on_progress, lean=lean)
+            on_progress=on_progress, lean=lean, claude_account=claude_account)
+
+    def test_explicit_anchor_uses_exact_account_without_binding_a_session(self):
+        self.rows[1]["usage"]["fiveHour"] = {"pct": 0, "resetsAt": None}
+        with mock.patch.object(ca, "enabled", return_value=True), \
+             mock.patch.object(ca, "accounts", return_value=self.rows), \
+             mock.patch.object(ca, "bind", side_effect=AssertionError("probe bound a conversation")), \
+             mock.patch.object(think, "_run_process", return_value=(0, {}, None, "", "", False)) as run:
+            result = self.launch(lean=True, claude_account="account2@example.com")
+            self.assertEqual(result[0], 0)
+            self.assertEqual(run.call_args.args[1][:5],
+                             ["cswap", "run", "account2@example.com", "--share-history", "--"])
+            self.assertIn("--no-session-persistence", run.call_args.args[1])
+            run.call_args.kwargs["on_progress"](think.Progress("session", "probe-session"))
+
+    def test_explicit_anchor_refuses_missing_busy_or_unknown_accounts(self):
+        for email in ("missing@example.com", "account1@example.com", "account2@example.com"):
+            with self.subTest(email=email), mock.patch.object(ca, "enabled", return_value=True), \
+                 mock.patch.object(ca, "accounts", return_value=self.rows), \
+                 mock.patch.object(think, "_run_process") as run:
+                self.assertNotEqual(self.launch(lean=True, claude_account=email)[0], 0)
+                run.assert_not_called()
+
+    def test_explicit_account_cannot_redirect_a_normal_turn(self):
+        with mock.patch.object(ca, "enabled", return_value=True), \
+             mock.patch.object(think, "_run_process") as run:
+            self.assertNotEqual(self.launch(claude_account="account2@example.com")[0], 0)
+            run.assert_not_called()
+
+    def test_public_probe_argument_rejects_private_resume_and_other_engines(self):
+        for kwargs in ({"private": self.tmp.name}, {"resume": "existing"},
+                       {"engine": "codex"}, {"lean": False}):
+            args = {"label": "usage:anchor", "engine": "claude", "lean": True,
+                    "claude_account": "account2@example.com", **kwargs}
+            with self.subTest(kwargs=kwargs), mock.patch.object(think, "_run_claude") as run:
+                self.assertFalse(think.think("OK", **args).ok)
+                run.assert_not_called()
 
     def test_private_and_lean_calls_do_not_read_or_write_account_state(self):
         for private, lean in ((pathlib.Path(self.tmp.name), False), (None, True)):

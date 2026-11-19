@@ -266,6 +266,24 @@ it off with `herald config set usage.anchors.enabled false`. It costs about four
 calls a day per provider, recorded in `runs` as `usage:anchor`: about 2,100 tokens
 on Claude and 14,000 mostly cached on Codex, measured 30 October 2026.
 
+With Claude account routing enabled, `usage.anchors.claude_accounts` can map
+exact cswap account emails to an existing provider's schedule. For example,
+`{"first@example.com": "claude", "second@example.com": "codex"}` keeps the
+first account on the Claude schedule and opens the second at Codex's target
+times. A nonempty map replaces default-login Claude anchoring; include every
+Claude account you want anchored. The default empty map preserves existing
+single-account behavior. Account identities belong only in local settings.
+
+Each account is checked independently using fresh cswap quota readings. Missing,
+ambiguous, disabled, expired or stale accounts are skipped without falling back
+to another login. Running windows and weekly quotas at 90% are left alone.
+Account pings use a fresh lean Claude call through `cswap run`, without changing
+the default login or saving conversation ownership. Separate
+`anchor_account_state` facts preserve deduplication across collector restarts;
+existing provider plan/state facts are retained unchanged. A shared schedule
+means shared target times: an already running window cannot be moved, and
+the collector can open an idle window up to an hour after the target.
+
 ## Subscription usage
 
 ### Multiple Claude subscriptions
@@ -365,9 +383,11 @@ Only a successfully delivered new hard-limit card arms the one-minute default.
 
 New Claude conversations and scheduled cycles still use available-account
 selection. Resumed non-Telegram calls retain their bound account and do not
-start a confirmation flow. Private sessions, lean quota-anchor probes, terminal
+start a confirmation flow. Private sessions, untargeted lean quota-anchor probes, terminal
 attach and Remote Control retain their existing default-login behavior.
-Scheduled reminders and anchor planning still measure that default login.
+Scheduled reminders still measure that default login. Anchor planning remains
+provider-based; the optional account map above assigns Claude accounts to those
+schedules using their own quota readings.
 The feature remains off by default; single-account installs need no cswap.
 Tokens remain with cswap and Claude Code; Herald does not read credentials or
 call a model API.
