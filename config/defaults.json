@@ -47,6 +47,8 @@
       "accounts": {
         "_comment": "Optional claude-swap integration. New conversations balance five-hour usage, then weekly usage. Existing conversations require the shared Telegram limit card before moving. Near-quota warnings require a choice; confirmed hard quota failures can default after one minute to another account only when a freshly rechecked cold-resume estimate plus reserve fits. Otherwise wait for a verified reset and reconsider. A model/effort/conversation is preserved across account changes. switch_threshold and switch_margin govern suggestions; cooldown_seconds applies to warnings, with hard-quota recovery exempt. Native usage calibration is conservative and may decline moves when evidence is insufficient. Uses cswap run, never global switch/auto. Private sessions and untargeted lean probes retain their default login.",
         "enabled": false,
+        "_switching_comment": "Set switching_enabled false to preserve existing conversations on their owning account, including at hard quota limits. Keep accounts.enabled true so bindings remain honored. New conversations can still choose an account with capacity.",
+        "switching_enabled": true,
         "cmd": "cswap",
         "switch_threshold": 90,
         "switch_margin": 20,

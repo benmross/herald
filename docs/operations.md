@@ -316,6 +316,18 @@ Once Claude reports a native session ID, Herald saves its account ownership
 before checkpointing it. Replies and recovery retain that account. For an
 existing conversation, the launcher never silently changes accounts.
 
+To keep existing conversations on their account even at a hard quota limit:
+
+```bash
+herald config set engines.claude.accounts.switching_enabled false
+```
+
+Keep `accounts.enabled` true so saved bindings are honored. With switching
+disabled, conversations wait for their own account's reset, account-move
+suggestions stop, and previously offered moves cannot commit. New conversations
+can still choose an account with capacity because they have no existing cache.
+Set `switching_enabled` true to restore the account-move policy below.
+
 Telegram uses the normal quota-choice card for two situations:
 
 - Near quota, a safe account change may be suggested before starting the next

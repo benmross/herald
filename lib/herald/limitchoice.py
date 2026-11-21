@@ -114,7 +114,7 @@ def make(con, ts: dict, progress: str = "", request: str = "", *, warning=False,
         record['current_ready'] = True
     if warning:
         record['default_at'] = None
-    elif hard_limit and inspection.get('account_count', 0) > 1:
+    elif hard_limit and inspection.get('account_count', 0) > 1 and not inspection.get('switching_disabled'):
         record.update(default_at=now+60, default_action='account_or_wait')
     lines = [f"{engine.capitalize()} is near its usage limit. This task is paused before starting." if warning else
              f"{engine.capitalize()} hit its usage limit. This task is paused."]
@@ -183,7 +183,7 @@ def wait_at(con, ts, *, now=None, earliest=False):
             saved = claude_accounts.binding(ts.get('session_id'))
             model = ts.get('model') or config.get('engines.claude.model')
             source = next((r for r in rows if saved and all(r.get(k)==v for k,v in saved.items())),{})
-            budget, _ = claude_budget.estimate(con, ts) if earliest else (None, '')
+            budget, _ = claude_budget.estimate(con, ts) if earliest and claude_accounts.switching_enabled() else (None, '')
             times = []
             for row in rows:
                 owner = saved and all(row.get(k)==v for k,v in saved.items())

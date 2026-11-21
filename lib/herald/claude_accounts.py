@@ -24,6 +24,10 @@ def enabled() -> bool:
     return bool(config.get("engines.claude.accounts.enabled", False))
 
 
+def switching_enabled() -> bool:
+    return bool(config.get("engines.claude.accounts.switching_enabled", True))
+
+
 @contextmanager
 def _store(*, read_only=False):
     path = config.RAW / "claude-accounts.sqlite3"
@@ -191,7 +195,8 @@ def switch_plan(con, ts, *, hard=False):
     rows = accounts()
     saved = binding(ts.get('session_id'))
     source = next((r for r in rows if saved and all(r.get(k) == v for k, v in saved.items())), None)
-    result = {'candidate': None, 'reason': '', 'account_count': len(rows), 'source': source}
+    result = {'candidate': None, 'reason': '', 'account_count': len(rows), 'source': source,
+              'switching_disabled': not switching_enabled()}
     if source is None:
         result['reason'] = 'The conversation’s account is not known yet.'
         return result
@@ -206,6 +211,10 @@ def switch_plan(con, ts, *, hard=False):
         current = 100.  # An explicit quota failure is stronger evidence than a cached percentage.
     if current is None or current < threshold:
         result['reason'] = 'The current account is not near a confirmed quota limit.'
+        return result
+    if result['switching_disabled']:
+        result.update(switching_disabled=True,
+                      reason='Account switching is disabled to preserve this conversation’s cache.')
         return result
     if not hard:
         with _store() as store:
@@ -250,6 +259,8 @@ def switch_plan(con, ts, *, hard=False):
 
 def commit_switch(session, plan, token, *, hard=False):
     """Commit a freshly rechecked choice; reserve budget against racing topics."""
+    if not switching_enabled():
+        raise AccountError('Claude account switching is disabled; keep the current account.')
     now = time.time()
     previous, target = plan['source'], plan['target']
     with _store() as con:
@@ -309,7 +320,8 @@ def select(resume: str | None, model: str | None) -> dict:
 
 def report(*, cached_only: bool = False) -> tuple[str, bool]:
     rows = accounts(cached_only=cached_only)
-    lines = ["Claude accounts (conversations keep their account until near quota)"]
+    lines = ["Claude accounts (account switching enabled)" if switching_enabled() else
+             "Claude accounts (account switching disabled; conversations keep their account)"]
     failed = not rows
     for row in rows:
         known = pressure(row)

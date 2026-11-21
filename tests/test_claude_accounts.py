@@ -35,6 +35,9 @@ class Accounts(unittest.TestCase):
         estimator = mock.patch.object(claude_budget, 'estimate', return_value=(self.budget,''))
         estimator.start()
         self.addCleanup(estimator.stop)
+        switching = mock.patch.object(ca, 'switching_enabled', return_value=True)
+        switching.start()
+        self.addCleanup(switching.stop)
 
     def plan(self, hard=False):
         with mock.patch.object(ca, 'accounts', return_value=self.rows):
@@ -85,6 +88,38 @@ class Accounts(unittest.TestCase):
         ca.bind("native-session", self.rows[0])
         with self.assertRaises(ca.AccountError):
             ca.bind("native-session", self.rows[1])
+
+    def test_disabled_switching_keeps_ownership_at_warning_and_hard_limit(self):
+        ca.bind('native-session', self.rows[0])
+        with mock.patch.object(ca, 'switching_enabled', return_value=False):
+            for hard in (False, True):
+                inspected = self.plan(hard=hard)
+                self.assertIsNone(inspected['candidate'])
+                self.assertTrue(inspected['switching_disabled'])
+                self.assertEqual(self.choose('native-session')['number'], 1)
+            self.assertEqual(self.choose()['number'], 2)
+
+    def test_disabling_switching_rejects_a_previously_approved_plan(self):
+        ca.bind('native-session', self.rows[0])
+        candidate = self.plan(hard=True)['candidate']
+        with mock.patch.object(ca, 'switching_enabled', return_value=False):
+            with self.assertRaises(ca.AccountError):
+                ca.commit_switch('native-session', candidate, 'old-choice', hard=True)
+        self.assertEqual(ca.binding('native-session')['email'], self.rows[0]['email'])
+        self.assertEqual(ca.reserved(self.rows[1]), 0)
+
+    def test_disabled_switching_card_waits_without_an_account_timeout(self):
+        now = time.time()
+        ca.bind('native-session', self.rows[0])
+        ts = {'engine': 'claude', 'model': 'opus', 'session_id': 'native-session', 'last_ts': now}
+        with mock.patch.object(ca, 'switching_enabled', return_value=False), \
+                mock.patch.object(ca, 'enabled', return_value=False), \
+                mock.patch.object(limitchoice.limitresume, 'reset_at', return_value=now + 3600), \
+                mock.patch.object(limitchoice.config, 'enabled_engines', return_value=['claude']):
+            record, text, buttons = limitchoice.make(None, ts, hard_limit=True, inspection=self.plan(hard=True))
+        self.assertNotIn('default_action', record)
+        self.assertNotIn('Switch Claude account', str(buttons))
+        self.assertIn('switching is disabled', text)
 
     def test_inspection_cannot_move_and_commit_requires_the_original_binding(self):
         ca.bind("native-session", self.rows[0])
@@ -183,6 +218,8 @@ class Accounts(unittest.TestCase):
         with mock.patch.object(ca,'enabled',return_value=True),mock.patch.object(ca,'accounts',return_value=self.rows):
             self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now),now+3600+90,places=3)
             self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now,earliest=True),now+600+90,places=3)
+            with mock.patch.object(ca, 'switching_enabled', return_value=False):
+                self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now,earliest=True),now+3600+90,places=3)
             self.rows[1]['usage']['sevenDay']={'pct':100,'resetsAt':dt.datetime.fromtimestamp(now+7200,dt.timezone.utc).isoformat()}
             self.assertAlmostEqual(limitchoice.wait_at(None,ts,now=now,earliest=True),now+3600+90,places=3)
 
