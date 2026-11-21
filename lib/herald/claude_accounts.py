@@ -236,9 +236,11 @@ def switch_plan(con, ts, *, hard=False):
         pct = pressure(row, model)
         if pct is None or float(row.get('usageAgeSeconds', math.inf)) > 300:
             continue
-        # Historical calibration is transferable only between the same
-        # currently verified subscription tier, never Pro to a weaker plan.
-        if any((row.get('plan') or {}).get(k) != (source.get('plan') or {}).get(k) for k in ('label', 'tier')):
+        # Historical calibration is in the source plan's percentages, so it
+        # transfers to the same tier or, conservatively, to a larger plan;
+        # never to a smaller one.
+        same = all((row.get('plan') or {}).get(k) == (source.get('plan') or {}).get(k) for k in ('label', 'tier'))
+        if not same and capacity(row) <= capacity(source):
             continue
         committed = reserved(row, session=ts.get('session_id'))
         drift = max(0, float(row['usageAgeSeconds']) / 60)
@@ -312,10 +314,24 @@ def select(resume: str | None, model: str | None) -> dict:
     if not candidates:
         raise AccountError("No Claude subscription has verified capacity for a new conversation; check herald usage claude")
     # New conversations have no established conversation cache to preserve.
-    # Balance five-hour usage first, then weekly usage; both must have room.
+    # Give each the most absolute five-hour room: percentages scaled by plan
+    # size, so equal plans balance and a Max plan carries most new work
+    # until its remaining room falls to a smaller plan's. Weekly room must
+    # exist on both.
+    def room(item):
+        five = float(((item[1].get("usage") or {}).get("fiveHour") or {}).get("pct", 0))
+        return capacity(item[1]) * (100 - five - reserved(item[1], session=resume))
     return target(min(candidates, key=lambda item: (
-        float(((item[1].get("usage") or {}).get("fiveHour") or {}).get("pct", 0)) + reserved(item[1], session=resume),
-        item[0], not item[1].get("active", False), item[1]["number"]))[1])
+        -room(item), item[0], not item[1].get("active", False), item[1]["number"]))[1])
+
+
+# Usage limits relative to Pro. Only Anthropic's published multiples; an
+# unknown plan counts as Pro rather than as a guessed larger allowance.
+_CAPACITY = {"default_claude_max_5x": 5.0, "default_claude_max_20x": 20.0}
+
+
+def capacity(account: dict) -> float:
+    return _CAPACITY.get(str((account.get("plan") or {}).get("tier") or ""), 1.0)
 
 
 def report(*, cached_only: bool = False) -> tuple[str, bool]:
@@ -327,7 +343,8 @@ def report(*, cached_only: bool = False) -> tuple[str, bool]:
         known = pressure(row)
         failed |= known is None
         label = row.get("alias") or row.get("email") or "Unknown account"
-        lines.append(f"  {label}{' (default login)' if row.get('active') else ''}")
+        plan = (row.get("plan") or {}).get("label")
+        lines.append(f"  {label}{f' ({plan})' if plan else ''}{', default login' if row.get('active') and plan else ' (default login)' if row.get('active') else ''}")
         if known is None:
             lines.append("    Usage unavailable, stale, disabled or subscription inactive")
             continue

@@ -66,6 +66,24 @@ class Accounts(unittest.TestCase):
         self.assertEqual(self.choose(model="claude-opus-4-6")["number"], 2)
         self.assertEqual(self.choose(model="haiku")["number"], 1)
 
+    def test_larger_plan_takes_new_work_until_its_room_matches(self):
+        self.rows[0]["plan"].update(label="Max 5x", tier="default_claude_max_5x")
+        self.rows[0]["usage"]["fiveHour"]["pct"] = 60
+        self.rows[0]["usage"]["sevenDay"]["pct"] = 10
+        self.assertEqual(self.choose()["number"], 1)
+        self.rows[0]["usage"]["fiveHour"]["pct"] = 81
+        self.assertEqual(self.choose()["number"], 2)
+        self.rows[0]["usage"]["sevenDay"]["pct"] = 100
+        self.rows[0]["usage"]["fiveHour"]["pct"] = 0
+        self.assertEqual(self.choose()["number"], 2)
+
+    def test_moves_go_to_equal_or_larger_plans_only(self):
+        ca.bind("native-session", self.rows[0])
+        self.rows[1]["plan"].update(label="Max 5x", tier="default_claude_max_5x")
+        self.assertIsNotNone(self.plan()['candidate'])
+        self.rows[0]["plan"].update(label="Max 20x", tier="default_claude_max_20x")
+        self.assertIsNone(self.plan()['candidate'])
+
     def test_resumed_session_ignores_threshold_and_slot_move(self):
         ca.bind("native-session", self.rows[1])
         self.rows[1]["number"] = 9
