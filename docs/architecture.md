@@ -304,7 +304,13 @@ leave the choice to each CLI. `engines.primary` is accepted as a legacy Claude
 alias. Upgrades preserve previously effective choices through migration 0003.
 `herald attach` launches the chosen first-party terminal CLI; `--engine` can
 override it. Remote Control jobs are opt-in and never needed for Telegram or
-cycles. A session id belongs to the engine that made it; switching engines in a
+cycles. For long work the user wants to watch, `herald think --background NAME`
+starts a Claude Code background session that `claude agents` lists and,
+through Remote Control, the Claude app shows live and accepts typing into;
+`--exec` adds a shell job (a Codex run, a batch log) to the same view.
+`think.launch_terminal` hosts one long-lived conversation in tmux that a
+script can add messages to with `type_into_terminal`. These use the
+default Claude login, book no runs row, and are never used by cycles. A session id belongs to the engine that made it; switching engines in a
 topic starts a fresh session from the ledger, and says so.
 
 Where there is no systemd and no launchd, which is the Docker image

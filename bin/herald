@@ -365,6 +365,19 @@ def cmd_restart(args) -> int:
 
 
 def cmd_think(args) -> int:
+    if args.background or args.exec_cmd:
+        # A watchable session the caller does not wait for: see launch_background.
+        prompt = args.prompt or ("" if args.exec_cmd else sys.stdin.read())
+        try:
+            r = think_mod.launch_background(
+                prompt, name=args.background or args.label, cwd=args.cwd or os.getcwd(),
+                model=args.model, effort=args.effort, remote_control=not args.no_remote_control,
+                add_dirs=args.add_dir, resume=args.resume_session, exec_cmd=args.exec_cmd)
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(r["id"])
+        return 0
     prompt = args.prompt or sys.stdin.read()
     if not prompt.strip():
         print("nothing to think about", file=sys.stderr)
@@ -2946,6 +2959,16 @@ def main() -> int:
                    help="read anything, save and change nothing: a read-only "
                         "sandbox, no runs row, no transcript kept")
     t.add_argument("-v", "--verbose", action="store_true")
+    t.add_argument("--background", metavar="NAME",
+                   help="start a Claude background session with this name and return its id "
+                        "without waiting: listed by `claude agents`, and shown in the Claude "
+                        "app through Remote Control unless --no-remote-control")
+    t.add_argument("--no-remote-control", action="store_true")
+    t.add_argument("--resume-session", metavar="SESSION_ID",
+                   help="with --background: send the prompt to this idle session")
+    t.add_argument("--exec", dest="exec_cmd", metavar="COMMAND",
+                   help="run a shell command as a background job in agent view (named by --background or --label)")
+    t.add_argument("--add-dir", action="append", help="with --background: extra directory the session may use")
     t.set_defaults(fn=cmd_think)
 
     d = sub.add_parser("db", help="query the ledger")

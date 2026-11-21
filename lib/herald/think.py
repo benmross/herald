@@ -2204,6 +2204,140 @@ def _record(**fields) -> None:
               file=sys.stderr, flush=True)
 
 
+_BACKGROUNDED = re.compile(r"backgrounded\s*\S\s*([0-9a-f]{6,})")
+
+
+def launch_background(prompt: str = "", *, name: str, cwd: str | Path,
+                      model: str | None = None, effort: str | None = None,
+                      remote_control: bool = True, add_dirs: list[str] | None = None,
+                      resume: str | None = None, exec_cmd: str | None = None) -> dict:
+    """Start a Claude Code background session (`claude --bg`) the user can watch.
+
+    Unlike think(), nothing waits for it: the CLI's own daemon hosts the
+    session, `claude agents` lists it, `claude attach` opens it, and with
+    `remote_control` it also appears in the Claude app and claude.ai/code,
+    where the user can read it live and type into it. `resume` continues an
+    idle session with `prompt` as its next message. `exec_cmd` instead runs a
+    shell command as a background job, so non-Claude work (a Codex worker, a
+    long batch job's log) shows in the same agent view.
+
+    The daemon serves the machine's default Claude login, so a Claude session
+    is refused when account routing would choose a different account for it
+    rather than silently charging the default. No runs row is booked; the
+    native transcript is the record. Private sessions cannot use this.
+    Returns {"id": <short id>, "output": <CLI output>}; raises RuntimeError.
+    """
+    if _private_scratch() is not None:
+        raise RuntimeError("A private session cannot start background sessions")
+    claude = config.engine_settings("claude").get("cmd") or "claude"
+    if exec_cmd is not None:
+        cmd = [claude, "--bg", "--name", name, "--exec", exec_cmd]
+    else:
+        from . import claude_accounts
+        if claude_accounts.enabled():
+            active = next((row for row in claude_accounts.accounts() if row.get("active")), None)
+            if active is None:
+                raise RuntimeError("Cannot identify the default Claude login that hosts background sessions")
+            if resume:
+                owner = claude_accounts.binding(resume)
+                if owner and owner.get("email") != active.get("email"):
+                    raise RuntimeError("This session belongs to another Claude account; background resume would move it")
+        cmd = [claude, "--bg"]
+        if remote_control:
+            cmd += ["--remote-control", name]
+        cmd += ["--name", name, "--permission-mode", "bypassPermissions"]
+        if model:
+            cmd += ["--model", model]
+        if effort:
+            cmd += ["--effort", claude_effort(effort) or effort]
+        for d in add_dirs or []:
+            cmd += ["--add-dir", d]
+        if resume:
+            cmd += ["--resume", resume]
+        if not prompt.strip():
+            raise RuntimeError("A background Claude session needs a prompt")
+        cmd.append(prompt)
+    env = config.agent_env()
+    for var in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+                "CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR", "NOTIFY_SOCKET", "WATCHDOG_PID", "WATCHDOG_USEC"):
+        env.pop(var, None)
+    try:
+        r = subprocess.run(cmd, cwd=str(cwd), env=env, capture_output=True, text=True,
+                           timeout=90, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"background launch failed: {exc}") from exc
+    out = (r.stdout or "") + (r.stderr or "")
+    m = _BACKGROUNDED.search(out)
+    if r.returncode != 0 or not m:
+        raise RuntimeError(f"background launch failed: {out.strip()[-400:]}")
+    if exec_cmd is None and resume is None:
+        from . import claude_accounts
+        if claude_accounts.enabled():
+            with contextlib.suppress(Exception):
+                active = next(row for row in claude_accounts.accounts() if row.get("active"))
+                for row in background_sessions():
+                    if row.get("id") == m.group(1) and row.get("sessionId"):
+                        claude_accounts.bind(row["sessionId"], active)
+    return {"id": m.group(1), "output": out}
+
+
+def launch_terminal(prompt: str, *, name: str, target: str, cwd: str | Path,
+                    model: str | None = None, effort: str | None = None,
+                    remote_control: bool = True) -> str:
+    """Start an interactive Claude session in tmux window `target` ("session:window").
+
+    For a long-lived conversation that the user and a script both talk to:
+    Remote Control shows it in the Claude app, `tmux attach` shows it in a
+    terminal, and type_into_terminal() adds the script's messages to the same
+    conversation (a background session's resume forks a copy instead). Uses
+    the default Claude login, like launch_background. Returns the target.
+    """
+    if _private_scratch() is not None:
+        raise RuntimeError("A private session cannot start terminal sessions")
+    session, _, window = target.partition(":")
+    if not session or not window:
+        raise RuntimeError("target must be session:window")
+    claude = config.engine_settings("claude").get("cmd") or "claude"
+    cmd = [claude] + (["--remote-control", name] if remote_control else [])
+    cmd += ["--name", name, "--permission-mode", "bypassPermissions"]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", claude_effort(effort) or effort]
+    cmd.append(prompt)
+    env = config.agent_env()
+    shell = ("exec env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN "
+             f"PATH={shlex.quote(env['PATH'])} " + shlex.join(cmd))
+    has = subprocess.run(["tmux", "has-session", "-t", session], capture_output=True).returncode == 0
+    base = (["tmux", "new-window", "-d", "-t", session + ":", "-n", window] if has else
+            ["tmux", "new-session", "-d", "-s", session, "-n", window, "-x", "220", "-y", "50"])
+    r = subprocess.run(base + ["-c", str(cwd), shell], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(f"tmux launch failed: {(r.stdout + r.stderr).strip()[-300:]}")
+    return target
+
+
+def type_into_terminal(target: str, text: str) -> None:
+    """Send one message to the interactive session in tmux `target`, as if typed.
+    The session queues it if busy. Newlines would submit early, so they become spaces."""
+    flat = " ".join(text.split())
+    subprocess.run(["tmux", "send-keys", "-t", target, "-l", flat], check=True, timeout=15)
+    subprocess.run(["tmux", "send-keys", "-t", target, "Enter"], check=True, timeout=15)
+
+
+def background_sessions(include_done: bool = True) -> list[dict]:
+    """`claude agents --json`: every Claude session on this machine, background
+    and interactive, with state (working, blocked, done, failed, stopped)."""
+    claude = config.engine_settings("claude").get("cmd") or "claude"
+    cmd = [claude, "agents", "--json"] + (["--all"] if include_done else [])
+    r = subprocess.run(cmd, env=config.agent_env(), capture_output=True, text=True, timeout=60,
+                       stdin=subprocess.DEVNULL)
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"claude agents --json failed: {(r.stdout + r.stderr).strip()[-300:]}") from exc
+
+
 def think(prompt: str, *, label: str,
           model: str | None = None, cwd: Path | str | None = None,
           timeout: int | None = None, idle_timeout: int | None = None,
