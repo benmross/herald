@@ -178,7 +178,7 @@ def run_steps(page, steps: list[list[str]], *, approval: dict | None = None,
         try:
             if verb == "click":
                 label = _label(loc)
-                if approval and approval_covers(approval, label):
+                if approval and approval_covers(approval, label) and page_allowed(approval, page.url):
                     approval["used"] = label
                 else:
                     filled = sum(_safe_eval(fr, browse.FILLED_JS) for fr in page.frames)
@@ -288,13 +288,47 @@ def approval_for(question_id: int, covers: str) -> dict:
     if isinstance(answered, str):
         from datetime import datetime
         answered = datetime.fromisoformat(answered).timestamp()
-    if time.time() - float(answered) > 7200:
+    standing = standing_terms(row["question"])
+    if standing:
+        until, pages = standing
+        if float(answered) > until or until - float(answered) > 7 * 86400:
+            raise SystemExit(f"approval {question_id}: a standing approval may last at most seven days")
+        if time.time() > until:
+            raise SystemExit(f"standing approval {question_id} ended; ask again")
+    elif time.time() - float(answered) > 7200:
         raise SystemExit(f"approval {question_id} is more than two hours old; ask again")
     norm = lambda s: re.sub(r"\s+", " ", s or "").strip().lower()   # noqa: E731
     if not covers or norm(covers) not in norm(row["question"]):
         raise SystemExit("--covers must quote the approved text exactly")
     return {"id": question_id, "approval_id": row.get("approval_id"),
-            "covers": covers, "used": None}
+            "covers": covers, "used": None, "pages": standing[1] if standing else None}
+
+
+def standing_terms(text: str) -> tuple[float, list[str]] | None:
+    """A standing approval names when it ends and the pages it covers:
+
+        Standing until: 2026-11-22T11:00:00-05:00
+        Pages: https://example.org/a/, https://example.org/b/
+
+    It then covers repeated clicks the quote allows, on those pages only,
+    until that time, instead of one click within two hours. Without both
+    lines it is an ordinary one-click approval."""
+    from datetime import datetime
+    m = re.search(r"^\s*Standing until:\s*(\S+)\s*$", text or "", re.M | re.I)
+    p = re.search(r"^\s*Pages:\s*(.+?)\s*$", text or "", re.M | re.I)
+    if not m or not p:
+        return None
+    try:
+        until = datetime.fromisoformat(m.group(1)).timestamp()
+    except ValueError:
+        return None
+    pages = [u.strip() for u in p.group(1).split(",") if u.strip().startswith("https://")]
+    return (until, pages) if pages else None
+
+
+def page_allowed(approval: dict, url: str) -> bool:
+    pages = approval.get("pages")
+    return pages is None or any(url.startswith(prefix) for prefix in pages)
 
 
 def approval_covers(approval: dict, label: str) -> bool:

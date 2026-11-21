@@ -148,7 +148,15 @@ the exact action into a file and get it tapped with `herald ask --approval
 --file`. Then run that one click with `herald browse do <tab> 'click e20'
 --approval <id> --covers '<words quoted exactly from the approved text>'`.
 Every word of the button's label must appear in the quote. The approval must be
-under two hours old and covers one click. The click is logged as a red action.
+under two hours old and covers one click.
+
+A standing approval covers a repeated action the user asked for, such as
+submitting a competition entry every hour. Its text ends with two lines:
+`Standing until: <ISO time>` (at most seven days after the tap) and
+`Pages: <url prefix>, <url prefix>`. Each `do --approval <id> --covers '...'`
+then allows one matching click per call, only on those pages, until that
+time, and every click is still logged as a red action. Write the scope
+exactly; never stretch one to pages or buttons it does not name. The click is logged as a red action.
 Job applications are never covered.
 
 ## Crawling many pages
