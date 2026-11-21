@@ -2243,6 +2243,10 @@ def launch_background(prompt: str = "", *, name: str, cwd: str | Path,
                 if owner and owner.get("email") != active.get("email"):
                     raise RuntimeError("This session belongs to another Claude account; background resume would move it")
         cmd = [claude, "--bg"]
+        # --add-dir is variadic: it would swallow the prompt, so it goes first
+        # and a single-valued option always follows it.
+        for d in add_dirs or []:
+            cmd += ["--add-dir", d]
         if remote_control:
             cmd += ["--remote-control", name]
         cmd += ["--name", name, "--permission-mode", "bypassPermissions"]
@@ -2250,8 +2254,6 @@ def launch_background(prompt: str = "", *, name: str, cwd: str | Path,
             cmd += ["--model", model]
         if effort:
             cmd += ["--effort", claude_effort(effort) or effort]
-        for d in add_dirs or []:
-            cmd += ["--add-dir", d]
         if resume:
             cmd += ["--resume", resume]
         if not prompt.strip():
