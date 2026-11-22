@@ -1,7 +1,11 @@
 """Durable browser ownership. Separate displays let human review and filling coexist.
 
-The OS lock allows one Playwright client per worker. Human ownership is durable,
-so an expired link or a dead agent never makes review tabs available to refills.
+Agents share a workspace: their lease on it is a shared lock, and what keeps
+two writers off one page is the per-tab lock in browse_tabs. Until 21 Nov 2026
+the lease was exclusive, so one collector or one form fill made every other
+command in that browser fail as busy. A person's review still takes the
+workspace exclusively, and human ownership is durable, so an expired link or a
+dead agent never makes review tabs available to refills.
 The controller does not own the worker processes' lifetimes.
 """
 from __future__ import annotations
@@ -39,6 +43,9 @@ def name(value=None):
     value = value or os.environ.get('HERALD_BROWSER_WORKSPACE', 'default')
     if not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,39}', value):
         raise ValueError('invalid browser workspace name')
+    if value == 'clean':
+        # The daemon's headless, profile-less browser (`herald browse open --clean`).
+        raise ValueError('"clean" is the sign-in-free browser, not a workspace; use `--clean`')
     return value
 
 
@@ -192,19 +199,27 @@ def holder(fd) -> str:
         return 'holder unknown'
 
 
+def lock_path(workspace):
+    folder = config.HOME / 'run' / 'browser-locks'
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return str(folder / (name(workspace) + '.lock'))
+
+
 @contextlib.contextmanager
-def lease(workspace='default', *, human=False, timeout=8):
+def lease(workspace='default', *, human=False, timeout=8, exclusive=None):
+    """Hold a workspace. Agents hold it together; `human` (the review
+    controller) or `exclusive` (a check that nobody is writing) holds it
+    alone and waits for the agents in it to finish."""
     workspace = name(workspace)
     if not human:
         assert_agent(workspace)
-    folder = config.HOME / 'run' / 'browser-locks'
-    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(folder / (workspace + '.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    exclusive = human if exclusive is None else exclusive
+    fd = os.open(lock_path(workspace), os.O_CREAT | os.O_RDWR, 0o600)
     deadline = time.monotonic() + timeout
     try:
         while True:
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
                 if time.monotonic() >= deadline:
@@ -273,7 +288,7 @@ def ready_group(workspace, *, partial=False, app_ids=None):
     if not get(workspace) or get(workspace)['state'] != 'agent':
         return None
     try:
-        with lease(workspace,timeout=0):
+        with lease(workspace,timeout=0,exclusive=True):
             return _ready_group(workspace,partial=partial,app_ids=app_ids)
     except Busy:
         return None
@@ -365,13 +380,17 @@ def publish(group, minutes=240):
     return sent
 
 
-@contextlib.contextmanager
-def account_lease(url, timeout=8):
+def account_lock_path(url):
     import hashlib
     key=hashlib.sha256(account(url).encode()).hexdigest()
     folder=config.HOME/'run'/'browser-locks'
     folder.mkdir(parents=True,exist_ok=True,mode=0o700)
-    fd=os.open(folder/('account-'+key+'.lock'),os.O_CREAT|os.O_RDWR,0o600)
+    return str(folder/('account-'+key+'.lock'))
+
+
+@contextlib.contextmanager
+def account_lease(url, timeout=8):
+    fd=os.open(account_lock_path(url),os.O_CREAT|os.O_RDWR,0o600)
     deadline=time.monotonic()+timeout
     try:
         while True:

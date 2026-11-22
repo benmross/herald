@@ -83,9 +83,12 @@ swapping resumes on a filled form.
 ## Checkpoints and ownership
 
 `herald browse workspaces` shows ownership. Use `herald browse --workspace
-<name> ...` for a specific worker. A human review or sign-in reservation
-blocks automation until control is returned. Do not bypass it with raw CDP,
+<name> ...` for a specific worker. A human review reserves its whole
+workspace, and a sign-in link reserves its tab, until control is returned;
+automation is refused there meanwhile. Do not bypass it with raw CDP,
 another Playwright connection, forced clicks, or by changing ownership rows.
+A fill holds its tab while it runs, so a `herald browse` command on that tab
+waits and then says what holds it.
 Work on the same employer account is serialized, even in separate workspaces.
 
 Filling writes append-only checkpoints before and after field changes and at

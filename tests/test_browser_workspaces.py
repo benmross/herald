@@ -11,9 +11,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'lib'))
 from herald import apply, browser_workspaces as bw, config, db
 
 
-def try_lease(workspace, queue):
+def try_lease(workspace, queue, exclusive=None):
     try:
-        with bw.lease(workspace, timeout=0.1):
+        with bw.lease(workspace, timeout=0.1, exclusive=exclusive):
             queue.put('acquired')
     except bw.Busy:
         queue.put('busy')
@@ -51,16 +51,26 @@ class Workspaces(unittest.TestCase):
         bw.bind(aid, workspace, 'tab'+str(n))
         return aid
 
-    def test_workspace_process_lock_and_independent_workspace(self):
+    def test_agents_share_a_workspace_and_an_exclusive_holder_waits_for_them(self):
+        # Until 21 Nov 2026 one agent's lease kept every other out of the
+        # whole browser. Agents now hold it together (a tab has its own
+        # lock); only a holder that asks to be alone is refused.
         if 'fork' not in multiprocessing.get_all_start_methods():self.skipTest('flock/fork test')
         a = bw.create()['id'];b = bw.create()['id']
         ctx = multiprocessing.get_context('fork');q=ctx.Queue()
         with bw.lease(a):
             p=ctx.Process(target=try_lease,args=(a,q));p.start();p.join(3)
-            self.assertEqual(q.get(timeout=1),'busy')
-            p=ctx.Process(target=try_lease,args=(b,q));p.start();p.join(3)
             self.assertEqual(q.get(timeout=1),'acquired')
-        with bw.lease(a,timeout=0.1):pass
+            p=ctx.Process(target=try_lease,args=(a,q,True));p.start();p.join(3)
+            self.assertEqual(q.get(timeout=1),'busy')
+            p=ctx.Process(target=try_lease,args=(b,q,True));p.start();p.join(3)
+            self.assertEqual(q.get(timeout=1),'acquired')
+        with bw.lease(a,timeout=0.1,exclusive=True):
+            p=ctx.Process(target=try_lease,args=(a,q));p.start();p.join(3)
+            self.assertEqual(q.get(timeout=1),'busy')
+
+    def test_clean_is_not_a_workspace_name(self):
+        with self.assertRaises(ValueError):bw.name('clean')
 
     def test_human_reservation_survives_release_and_new_session(self):
         w=bw.create()['id'];bw.take_control(w,review=True)

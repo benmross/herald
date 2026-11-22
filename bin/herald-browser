@@ -9,9 +9,14 @@ Two jobs in one process, because the second needs the first:
    exits, it is started again.
 2. Serve the view page on 127.0.0.1 (`surfaces.browser_view.port`), which
    `tailscale serve` or similar puts in front of the user's phone. A
-   `herald browse login` link opens it: a live picture of one tab, and a box
-   whose taps and typing go straight to that tab. This is how the user signs
-   in to a site without a password passing through a model.
+   `herald browse login` link opens it: a live screen of the browser with that
+   tab in front, and a Done button that hands the tab back. This is how the
+   user signs in to a site without a password passing through a model.
+
+This process does not drive pages. Anything it needs from one (bring the tab
+to the front, size its window, a picture of it) it asks of the browse daemon,
+which is the only Playwright client. It used to keep a connection of its own,
+and a restart of either side left the other holding a dead one.
 
 Every route is keyed by an unguessable token that expires. An unknown,
 expired or closed token gets the same plain 404. Nothing typed is logged.
@@ -32,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "lib"))
 
-from herald import browse, config, db  # noqa: E402
+from herald import browse, browse_daemon, config, db  # noqa: E402
 
 HEADERS = {
     "Cache-Control": "no-store",
@@ -181,46 +186,14 @@ class Chrome:
 
 # --- the view page -------------------------------------------------------------
 
-class Driver:
-    """One CDP connection, used only from the server thread."""
-
-    def __init__(self):
-        self.s = None
-
-    def session(self) -> browse.Session:
-        if self.s is None:
-            self.s = browse.Session()
-        return self.s
-
-    def reset(self) -> None:
-        # Stop the old Playwright before making a new one: a sync Playwright
-        # left running keeps its event loop on this thread, and every later
-        # start fails with "using Playwright Sync API inside the asyncio loop".
-        if self.s is not None:
-            self.s.close()
-        self.s = None
-
-    def page(self, tab: str):
-        # Session.tab raises SystemExit for a missing tab, which is right for
-        # the CLI and fatal here: on 22 Oct 2026 one stale link took the whole
-        # service down. Turn it into an ordinary error.
-        for attempt in (1, 2):
-            try:
-                return self.session().tab(tab)
-            except SystemExit as e:
-                # A tab another connection opened a moment ago may not be in
-                # this one's list yet; reconnect once before giving up.
-                if attempt == 2:
-                    raise LookupError(str(e)) from None
-                self.reset()
-            except Exception:
-                # The connection may have died with a browser restart.
-                self.reset()
-                if attempt == 2:
-                    raise
-
-
-DRIVER = Driver()
+def page(rec: dict, op: str, **more) -> dict:
+    """Ask the daemon to do one thing to the tab a link is for."""
+    r = browse_daemon.request({"cmd": "human", "op": op, "tab": rec["tab"],
+                               "workspace": rec.get("workspace") or "default", "timeout": 30, **more},
+                              timeout=45)
+    if not r.get("ok"):
+        raise LookupError(r.get("out") or "the tab is gone")
+    return r
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -252,26 +225,32 @@ class Handler(BaseHTTPRequestHandler):
         if not rec:
             return self._send(404, b"not found", "text/plain")
         try:
+            why = html.escape(f"Herald asked for this: {rec['why']}")
             if sub == "":
-                why = html.escape(f"Herald asked for this: {rec['why']}")
                 return self._send(200, PAGE.replace("__WHY__", why).encode())
             if sub == "fit":
                 mw, mh = browse.display_max()
-                page = FIT.replace("__MAXW__", str(mw)).replace("__MAXH__", str(mh)) \
-                          .replace("__VNC__", json.dumps(browse.vnc_url(token)))
-                return self._send(200, page.encode())
+                page_ = FIT.replace("__MAXW__", str(mw)).replace("__MAXH__", str(mh))
+                return self._send(200, page_.encode())
+            if sub == "live":
+                page_ = LIVE.replace("__WHY__", why).replace("__VNC__", html.escape(browse.vnc_url(token)))
+                return self._send(200, page_.encode())
             if sub == "frame":
-                page = DRIVER.page(rec["tab"])
-                page.bring_to_front()
-                shot = page.screenshot(type="jpeg", quality=70)
-                return self._send(200, shot, "image/jpeg")
+                import base64
+                return self._send(200, base64.b64decode(page(rec, "frame")["jpeg"]), "image/jpeg")
         except Exception as e:
             # The exception names the failure, never anything the user typed.
-            print(f"frame failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr, flush=True)
-            if not isinstance(e, LookupError):
-                DRIVER.reset()
+            print(f"view failed: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr, flush=True)
             return self._send(502, b"the tab is gone", "text/plain")
         return self._send(404, b"not found", "text/plain")
+
+    def _done(self, token, rec):
+        browse.close_view(token)
+        with db.session() as con:
+            db.record_action(con, actor="user", tier="green", kind="browser.view",
+                             target=rec["tab"],
+                             summary="the user finished driving a browser tab "
+                                     "(sign-in or similar); nothing they typed is kept")
 
     def do_POST(self):
         token, rec, sub = self._route()
@@ -279,20 +258,16 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 n = min(int(self.headers.get("Content-Length") or 0), 1024)
                 a = json.loads(self.rfile.read(n) or b"{}")
-                w, h = int(a["w"]), int(a["h"])
-                CHROME.resize(w, h)
-                page = DRIVER.page(rec["tab"])
-                page.bring_to_front()
-                cdp = page.context.new_cdp_session(page)
-                win = cdp.send("Browser.getWindowForTarget")["windowId"]
-                cdp.send("Browser.setWindowBounds", {"windowId": win, "bounds": {
-                    "left": 0, "top": 0, "width": CHROME.clip[0], "height": CHROME.clip[1],
-                    "windowState": "normal"}})
-                cdp.detach()
+                CHROME.resize(int(a["w"]), int(a["h"]))
+                page(rec, "bounds", w=CHROME.clip[0], h=CHROME.clip[1])
                 time.sleep(1.0)
                 return self._send(200, b"ok", "text/plain")
             except Exception as e:
                 print(f"resize failed: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr, flush=True)
+                try:
+                    page(rec, "front")        # the wrong size is tolerable, the wrong tab is not
+                except Exception:
+                    pass
                 return self._send(200, b"kept size", "text/plain")
         if not rec or sub != "act":
             return self._send(404, b"not found", "text/plain")
@@ -301,31 +276,23 @@ class Handler(BaseHTTPRequestHandler):
             a = json.loads(self.rfile.read(n) or b"{}")
             k = a.get("k")
             if k == "done":
-                browse.close_view(token)
-                with db.session() as con:
-                    db.record_action(con, actor="user", tier="green", kind="browser.view",
-                                     target=rec["tab"],
-                                     summary="the user finished driving a browser tab "
-                                             "(sign-in or similar); nothing they typed is kept")
+                self._done(token, rec)
                 return self._send(200, b"ok", "text/plain")
-            page = DRIVER.page(rec["tab"])
             if k == "click":
-                page.mouse.click(float(a["x"]), float(a["y"]))
+                page(rec, "click", x=float(a["x"]), y=float(a["y"]))
             elif k == "type":
-                page.keyboard.type(str(a.get("text", ""))[:2000])
+                page(rec, "type", text=str(a.get("text", ""))[:2000])
             elif k == "key" and a.get("key") in ("Enter", "Tab", "Backspace", "Escape"):
-                page.keyboard.press(a["key"])
+                page(rec, "key", key=a["key"])
             elif k == "scroll":
-                page.mouse.wheel(0, max(-3000, min(3000, int(a.get("dy", 0)))))
+                page(rec, "scroll", dy=int(a.get("dy", 0)))
             elif k == "back":
-                page.go_back(timeout=15000)
+                page(rec, "back")
             else:
                 return self._send(400, b"unknown action", "text/plain")
             return self._send(200, b"ok", "text/plain")
         except Exception as e:
             print(f"action failed: {type(e).__name__}", file=sys.stderr, flush=True)
-            if not isinstance(e, LookupError):
-                DRIVER.reset()
             return self._send(502, b"that did not work", "text/plain")
 
 
@@ -337,10 +304,35 @@ FIT = """<!doctype html><meta charset=utf-8>
 <script>
 // Measure the window this link was opened in and size the server's browser
 // to match, so a laptop gets a laptop-sized page and a phone a phone-sized one.
-const w = Math.min(innerWidth, __MAXW__), h = Math.min(innerHeight, __MAXH__);
+// 52 pixels are kept for the bar with the Done button.
+const w = Math.min(innerWidth, __MAXW__), h = Math.min(innerHeight - 52, __MAXH__);
 fetch(location.pathname.replace(/fit\\/?$/, 'size'), {method: 'POST',
   headers: {'content-type': 'application/json'}, body: JSON.stringify({w, h})})
-  .finally(() => location.replace(__VNC__));
+  .finally(() => location.replace(location.pathname.replace(/fit\\/?$/, 'live')));
+</script>"""
+
+# The live screen with a way to say "finished". Until 21 Nov 2026 a link into
+# the default browser went through the review page to get this button, which
+# reserved the whole browser while it was open.
+LIVE = """<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name=robots content=noindex><title>Herald browser</title>
+<style>
+html,body{margin:0;height:100%;background:#151515;color:#e8e8e8;font:14px -apple-system,system-ui,sans-serif}
+body{display:flex;flex-direction:column}
+#bar{height:52px;box-sizing:border-box;display:flex;gap:.6rem;align-items:center;padding:0 .6rem}
+#why{flex:1;color:#aaa;font-size:13px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+button{font-size:15px;padding:.5rem .9rem;border:0;border-radius:6px;background:#e8e8e8;color:#151515}
+iframe{flex:1;border:0;width:100%}
+</style>
+<div id=bar><div id=why>__WHY__</div><button id=done>Done</button></div>
+<iframe id=live src="__VNC__" allow="clipboard-read; clipboard-write"></iframe>
+<script>
+const B = location.pathname.replace(/\\/live\\/?$/, '');
+document.getElementById('done').onclick = async () => {
+  await fetch(B + '/act', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"k":"done"}'});
+  document.body.innerHTML = '<p style="padding:1rem">Done. Herald can carry on from here.</p>';
+};
 </script>"""
 
 CHROME = None
@@ -352,8 +344,8 @@ def main() -> int:
     chrome = CHROME = Chrome()
     chrome.start()
     threading.Thread(target=chrome.watch, daemon=True).start()
-    # Single-threaded on purpose: Playwright's sync API is not thread-safe, and
-    # one person driving one tab does not need concurrency.
+    # Single-threaded on purpose: one person driving one tab does not need
+    # concurrency, and each request is at most one short call to the daemon.
     srv = HTTPServer(("127.0.0.1", browse.view_port()), Handler)
     print(f"herald-browser: CDP {browse.cdp_url()}, view on 127.0.0.1:{browse.view_port()}",
           flush=True)

@@ -457,6 +457,9 @@ def run(url: str, *, opportunity: int | None = None, company: str | None = None,
             page = s.ctx.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             browse.settle(page, 4000)
+        # This tab is this fill's until it finishes: a `herald browse` command
+        # from another agent waits or is told who holds it.
+        s.hold(page)
         # Fail fast on a field that went stale rather than waiting 30 s each.
         page.set_default_timeout(8000)
         page.bring_to_front()

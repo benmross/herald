@@ -25,6 +25,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -246,6 +247,22 @@ def cmd_doctor(args) -> int:
               "journalctl -u herald-root -n 50")
         check("installed daemon matches this checkout", rootcmd.current(),
               "run `herald root update` (it asks for sudo)")
+
+    import importlib.util  # noqa: PLC0415
+    if importlib.util.find_spec("playwright"):
+        from herald import browse, browse_daemon  # noqa: PLC0415
+        if browse.alive():
+            # "Running" is not "working": on 20 Nov 2026 the browser answered
+            # its status endpoint for a day while nothing could connect to it.
+            _hdr("browser")
+            report = browse.health()
+            silent = [p["tab"] for p in report["pages"] if p["state"] != "ok"]
+            check("the browser answers", report["ok"],
+                  "" if report["ok"] else f"{report['error']}. `herald browse heal --restart`")
+            check("every tab answers", not silent,
+                  "" if not silent else f"{', '.join(silent)} do not; `herald browse heal` closes them")
+            check("browse daemon running", browse_daemon.running(),
+                  "" if browse_daemon.running() else "the next `herald browse` command starts it")
 
     _hdr("database")
     try:
@@ -1894,27 +1911,15 @@ def cmd_deadline(args) -> int:
 
 
 def cmd_browse(args) -> int:
-    """Browse the web in a real browser on this machine. See lib/herald/browse.py."""
+    """Browse the web in a real browser on this machine. See lib/herald/browse.py.
+
+    Nearly every command is one request to the browse daemon
+    (lib/herald/browse_daemon.py), which holds the browser connections.
+    """
     from herald import browse  # noqa: PLC0415
 
     op = args.op
-    if op == 'login':
-        from herald import browser_workspaces as bw, notify
-        workspace=bw.name(args.workspace)
-        w=bw.get(workspace)
-        if w and w['state']=='human':
-            # An expired login link must be replaceable without taking a
-            # Playwright lease away from the human review controller.
-            records=[]
-            for path in browse.spool().glob('*.json'):
-                try:rec=json.loads(path.read_text())
-                except (OSError,ValueError):continue
-                if rec.get('workspace')==workspace and rec.get('tab')==args.tab:records.append(rec)
-            if not records:raise SystemExit('Use the exact tab id from the previous sign-in handoff.')
-            token=browse.new_view(args.tab,args.why,args.minutes,workspace=workspace)
-            sent=notify.telegram(f"Your browser is still reserved for you.\n{browse.view_link(token)}\n\n{args.why}",thread_id=notify._live_topic_thread())
-            print('A replacement sign-in link was sent.' if sent else 'The sign-in link could not be delivered; your browser remains protected.')
-            return 0 if sent else 1
+    workspace = getattr(args, "workspace", None)
     if op in ('workspaces', 'workspace'):
         from herald import browser_workspaces as bw
         if op == 'workspace':
@@ -1929,198 +1934,136 @@ def cmd_browse(args) -> int:
               flush=True)
         r = browse.crawl(jobs, args.out, concurrency=args.concurrency, wait_ms=args.wait,
                          grep=args.grep, profile=args.profile, every=args.every,
-                         links=args.links,workspace=args.workspace)
+                         links=args.links,workspace=workspace)
         print(f"done: {r['ok']} read, {r['err']} failed, {r['skipped']} already there, "
               f"{r['seconds']}s. One file per page, first line its final URL"
               + ("; matches.jsonl has the --grep hits." if args.grep else "."))
         return 0
-    if op == "status":
-        print(f"  profile browser  {'up' if browse.alive() else 'down'} on {browse.cdp_url()}")
-        print(f"  profile          {browse.profile_dir()}")
-        print(f"  user view        {browse.view_base() or 'off: set surfaces.browser_view.url'}")
-        return 0
-    if op in ("snap", "do"):
-        from herald import browse_agent
-        # A collector can hold the workspace for a minute or two (Instagram's
-        # does); waiting out a run beats failing with Busy mid-task.
-        req = {"cmd": op, "tab": args.tab, "timeout": 150}
-        if op == "snap":
-            req.update(scope=args.scope, page=args.page, full=args.full, find=args.find)
-        else:
-            steps = list(args.steps)
-            if args.file:
-                steps.append(pathlib.Path(args.file).read_text())
-            if not steps:
-                raise SystemExit("give steps, e.g. `do <tab> 'fill e4 \"Alex\"' 'click e9'`, or --file")
-            req.update(steps=steps, quiet=args.quiet, approval=args.approval, covers=args.covers)
-        r = browse_agent.request(getattr(args, "workspace", None) or "default", req)
-        print(r["out"])
-        return 0 if r["ok"] else 1
-    if op == "fetch":
-        url, text = browse.fetch_text(args.url, args.wait)
-        print(url)
-        print(browse.UNTRUSTED)
-        print(text[:args.max])
-        return 0
+    if op in ("fields", "fill", "select", "check"):
+        print(f"`herald browse {op}` is gone. Read the page with `herald browse snap <tab>` and act on "
+              "its refs with `herald browse do <tab> 'fill e4 \"text\"' 'select e5 \"Label\"' 'check e6'`.",
+              file=sys.stderr)
+        return 2
 
-    with browse.Session(getattr(args,'workspace',None)) as s:
-        if op == "tabs":
-            for i, p in enumerate(s.pages()):
-                print(f"  {i}  {s.tab_id(p)}  {p.title()[:60]!s:<60}  {p.url[:110]}")
+    from herald import browse_daemon, browse_tabs  # noqa: PLC0415
+    limit = float(args.timeout or 180)
+    req = {"cmd": op, "session": browse_tabs.session_name(args.session), "workspace": workspace,
+           "timeout": limit}
+
+    def send(request, extra=0.0):
+        return browse_daemon.request(request, timeout=limit + 25 + extra)
+
+    def finish(r):
+        if r.get("out"):
+            print(r["out"])
+        return 0 if r.get("ok") else 1
+
+    if op == "status":
+        try:
+            return finish(send(req))
+        except SystemExit as e:
+            print(f"daemon    NOT RUNNING: {e}")
+            print(f"default   {'answers' if browse.alive() else 'not running'} on {browse.cdp_url()}")
+            return 1
+    if op == "fetch":
+        req.update(url=args.url, wait=args.wait, max=args.max, links=args.links, html=args.html,
+                   selector=args.selector)
+        try:
+            return finish(send(req))
+        except SystemExit:
+            # No daemon: render it in a browser of this command's own.
+            url, text = browse.fetch_text(args.url, args.wait)
+            print(url)
+            print(browse.UNTRUSTED)
+            print(text[:args.max])
             return 0
-        if op == "open":
-            from herald import browser_workspaces as bw
-            bw.admit(s.workspace)
-            s.claim_account(args.url)
-            if len(s.pages()) >= int(config.get('browser.batch_size',10)):
-                raise SystemExit('Workspace tab limit reached; preserve this group before opening more.')
-            page = s.ctx.new_page()
-            page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
-            browse.settle(page, args.wait)
-            print(f"tab {s.tab_id(page)}  {page.title()[:70]}  {page.url}")
+    if op == "login":
+        from herald import browser_workspaces as bw, notify  # noqa: PLC0415
+        loc = send(dict(req, cmd="locate", tab=args.tab))
+        if not loc.get("ok"):
+            return finish(loc)
+        if loc["workspace"] == "clean":
+            print("a clean tab keeps no sign-in and has no screen to hand over; open the page "
+                  "without --clean, then `login` that tab", file=sys.stderr)
+            return 1
+        if not browse.view_base():
+            print("no view URL: set surfaces.browser_view.url (see docs/operations.md)", file=sys.stderr)
+            return 1
+        if (bw.get(loc["workspace"]) or {}).get("state") == "review":
+            print("this workspace is in a review group; the user reaches it through that group's link",
+                  file=sys.stderr)
+            return 1
+        token = browse.new_view(loc["tab"], args.why, args.minutes, workspace=loc["workspace"])
+        url = browse.view_link(token)
+        sent = notify.telegram(
+            f"A browser tab is waiting for you ({loc['url'][:80]}).\n{url}\n\n"
+            f"Why: {args.why}\n\nWhat you type there goes straight to the "
+            f"browser; no model sees it. Works for {args.minutes} minutes. Tap Done when you have finished.",
+            thread_id=notify._live_topic_thread())
+        print(f"tab {loc['tab']} is with the user until they tap Done; "
+              + ("the link is on their phone" if sent else f"open: {url}")
+              + f". `herald browse returned {loc['tab']} --wait 600` waits for them. Other tabs still work.")
+        if not args.wait:
             return 0
-        page = s.tab(args.tab)
-        s.claim_account(page.url)
-        mutates = op in ('fill','select','check','upload','click','press','go','close')
-        if mutates:
-            s.checkpoint_page(page,'before-browser-command')
-        if op == "close":
-            page.close()
-            print("closed")
-        elif op == "go":
-            page.goto(args.url, wait_until="domcontentloaded", timeout=60000)
-            browse.settle(page, args.wait)
-            print(f"{page.title()[:70]}  {page.url}")
-        elif op == "text":
-            t = browse.visible_text(page, args.selector)
-            print(page.url)
-            print(browse.UNTRUSTED)
-            print(t[args.offset:args.offset + args.max])
-            if len(t) > args.offset + args.max:
-                print(f"\n[{len(t) - args.offset - args.max} more characters: "
-                      f"--offset {args.offset + args.max}]")
-        elif op == "links":
-            rx = re.compile(args.match, re.I) if args.match else None
-            seen = set()
-            for label, href in page.evaluate(browse.LINKS_JS):
-                if href in seen or (rx and not (rx.search(label) or rx.search(href))):
-                    continue
-                seen.add(href)
-                print(f"{label[:80]}\t{href}")
-        elif op == "fields":
-            print(browse.UNTRUSTED)
-            for fr in page.frames:
-                try:
-                    found = fr.evaluate(browse.FIELDS_JS)
-                except Exception:
-                    continue
-                if found:
-                    if fr != page.main_frame:
-                        print(f"[frame {fr.url[:90]}]")
-                    for f in found:
-                        print(json.dumps(f, ensure_ascii=False))
-            print("buttons: " + " | ".join(page.evaluate(browse.BUTTONS_JS)[:40]))
-        elif op in ("fill", "select", "check", "upload"):
-            target = f"[data-hb='{args.field}']" if args.field.isdigit() else args.field
-            loc = None
-            for attempt in (1, 2):
-                for fr in page.frames:
-                    if fr.locator(target).count():
-                        loc = fr.locator(target).first
-                        break
-                if loc is not None or not args.field.isdigit():
-                    break
-                # The page re-rendered and dropped the handles (Ashby does after
-                # a resume upload). Tag the fields again; the order is the same.
-                for fr in page.frames:
-                    try:
-                        fr.evaluate(browse.FIELDS_JS)
-                    except Exception:
-                        pass
-            if loc is None:
-                print(f"no field {args.field!r}; `herald browse fields {args.tab}` lists them",
-                      file=sys.stderr)
-                return 1
-            from herald.application_checkpoints import PROTECTED
-            metadata=loc.evaluate("e=>[e.type,e.id,e.name,e.getAttribute('aria-label'),e.labels?[...e.labels].map(x=>x.innerText).join(' '):''].join(' ')")
-            if PROTECTED.search(metadata):
-                print("refused: a protected value is typed by the user, through "
-                      "`herald browse login`, never by a session", file=sys.stderr)
-                return 1
-            if op == "fill":
-                loc.fill(args.value)
-            elif op == "select":
-                loc.select_option(label=args.value)
-            elif op == "check":
-                loc.set_checked(args.value.lower() not in ("0", "false", "no", "off"))
-            else:
-                loc.set_input_files(args.value)
-            print(f"{op}: {args.field}")
-        elif op == "click":
-            if args.target.startswith(("css=", "#", ".", "[", "xpath=")):
-                loc = page.locator(args.target.removeprefix("css=")).first
-            else:
-                loc = page.get_by_role("button", name=args.target).or_(
-                    page.get_by_role("link", name=args.target)).or_(
-                    page.get_by_text(args.target, exact=False)).first
-            label = (loc.inner_text(timeout=5000) or loc.get_attribute("value")
-                     or loc.get_attribute("aria-label") or args.target)
-            filled = 0
-            for fr in page.frames:
-                try:
-                    filled += fr.evaluate(browse.FILLED_JS)
-                except Exception:
-                    pass
-            browse.refuse_submit(label, filled)
-            loc.click(timeout=10000)
-            browse.settle(page, args.wait)
-            print(f"clicked {label.strip()[:60]!r}; now {page.url}")
-        elif op == "press":
-            if args.key.lower() == "enter":
-                for fr in page.frames:
-                    try:
-                        if fr.evaluate(browse.ENTER_SUBMITS_JS):
-                            browse.refuse_submit("submit (Enter in a form)")
-                    except SystemExit:
-                        raise
-                    except Exception:
-                        continue
-            page.keyboard.press(args.key)
-            browse.settle(page, args.wait)
-            print(f"pressed {args.key}; now {page.url}")
-        elif op == "scroll":
-            page.mouse.wheel(0, args.dy)
-            page.wait_for_timeout(800)
-            print("scrolled")
-        elif op == "shot":
-            out = args.path or str(browse.home() / f"shot-{int(time.time())}.png")
-            page.screenshot(path=out, full_page=args.full)
-            print(out)
-        elif op == "html":
-            h = page.inner_html(args.selector) if args.selector != "html" else page.content()
-            print(browse.UNTRUSTED)
-            print(h[:args.max])
-        elif op == "login":
-            from herald import notify  # noqa: PLC0415
-            base = browse.view_base()
-            if not base:
-                print("no view URL: set surfaces.browser_view.url (see docs/operations.md)",
-                      file=sys.stderr)
-                return 1
-            page.bring_to_front()  # the live screen shows whichever tab is in front
-            token = browse.new_view(s.tab_id(page), args.why, args.minutes, workspace=s.workspace)
-            url = browse.view_link(token)
-            sent = notify.telegram(
-                f"A browser tab is waiting for you ({page.url[:80]}).\n{url}\n\n"
-                f"Why: {args.why}\n\nWhat you type there goes straight to the "
-                f"browser; no model sees it. Works for {args.minutes} minutes."
-                + ("\n\nIt is a live screen: tap to click, and use the keyboard "
-                   "button in the left-hand menu to type." if "/vnc.html" in url else ""),
-                thread_id=notify._live_topic_thread())
-            print("the link is on the user's phone" if sent else f"open: {url}")
-        if mutates and op != 'close':
-            s.checkpoint_page(page,'after-browser-command')
-    return 0
+        req.update(cmd="returned", tab=loc["tab"], workspace=loc["workspace"], wait=args.wait,
+                   timeout=args.wait + 30)
+        return finish(browse_daemon.request(req, timeout=args.wait + 60))
+
+    if op == "heal":
+        req.update(restart=args.restart, force=args.force)
+    elif op == "tabs":
+        req.update(all=args.all)
+    elif op == "open":
+        req.update(url=args.url, clean=args.clean, device=args.device, viewport=args.viewport,
+                   wait=args.wait, snap=args.snap, text=args.text, keep=args.keep)
+    elif op in ("go", "back", "forward", "reload"):
+        req.update(cmd="go", op=op, tab=args.tab, url=getattr(args, "url", None), wait=args.wait)
+    elif op == "close":
+        if not args.tabs and not args.all:
+            raise SystemExit("give tab ids, or --all for every tab of this session")
+        req.update(tabs=args.tabs, all=args.all)
+    elif op == "text":
+        req.update(tab=args.tab, selector=args.selector, max=args.max, offset=args.offset)
+    elif op == "links":
+        req.update(tab=args.tab, match=args.match)
+    elif op == "html":
+        req.update(tab=args.tab, selector=args.selector, max=args.max, offset=args.offset)
+    elif op == "snap":
+        req.update(tab=args.tab, scope=args.scope, page=args.page, full=args.full, find=args.find,
+                   controls=args.controls)
+    elif op == "do":
+        steps = list(args.steps)
+        if args.file:
+            steps.append(pathlib.Path(args.file).read_text())
+        if not steps:
+            raise SystemExit("give steps, e.g. `do <tab> 'fill e4 \"Alex\"' 'click e9'`, or --file")
+        req.update(tab=args.tab, steps=steps, quiet=args.quiet, approval=args.approval, covers=args.covers)
+    elif op == "upload":
+        req.update(cmd="do", tab=args.tab, steps=[f"upload {args.ref} {shlex.quote(args.path)}"], quiet=True)
+    elif op == "click":
+        req.update(tab=args.tab, target=args.target, wait=args.wait)
+    elif op == "press":
+        req.update(tab=args.tab, key=args.key, wait=args.wait)
+    elif op == "scroll":
+        req.update(tab=args.tab, dy=args.dy)
+    elif op == "shot":
+        req.update(tab=args.tab, path=str(pathlib.Path(args.path).resolve()) if args.path else None,
+                   full=args.full, ref=args.ref, viewport=args.viewport)
+    elif op == "pdf":
+        req.update(tab=args.tab, path=str(pathlib.Path(args.path).resolve()) if args.path else None)
+    elif op == "eval":
+        req.update(tab=args.tab, js=args.js, ref=args.ref, max=args.max)
+    elif op == "console":
+        req.update(tab=args.tab, errors=args.errors, clear=args.clear)
+    elif op == "network":
+        req.update(tab=args.tab, match=args.match, all=args.all, body=args.body, clear=args.clear,
+                   max=args.max, offset=args.offset)
+    elif op == "keep":
+        req.update(tab=args.tab, hours=args.hours)
+    elif op == "returned":
+        req.update(tab=args.tab, wait=args.wait, timeout=args.wait + 30)
+        return finish(browse_daemon.request(req, timeout=args.wait + 60))
+    return finish(send(req))
 
 
 def cmd_watch(args) -> int:
@@ -3061,22 +3004,42 @@ def main() -> int:
     x.add_argument("--characters", type=int, default=6000, help="maximum characters per page")
     ex.set_defaults(fn=cmd_exa)
 
-    bw = sub.add_parser("browse", help="a real browser on this machine: read, fill, crawl")
-    bw.add_argument("--workspace", help="independent browser workspace")
+    bw = sub.add_parser("browse", help="a real browser on this machine: read, act, sign in, crawl")
+    bw.add_argument("--workspace", help="a separate signed-in browser (see `herald browse workspaces`)")
+    bw.add_argument("--session", help="whose tabs these are; defaults to this conversation")
+    bw.add_argument("--timeout", type=float, help="seconds one command may take (default 180)")
     bw_sub = bw.add_subparsers(dest="op", required=True)
     bw_sub.add_parser("workspaces", help="list durable browser ownership")
     x = bw_sub.add_parser("workspace", help="register a separate browser workspace")
     x.add_argument("name", nargs="?")
-    bw_sub.add_parser("status", help="is the profile browser up, and where")
-    bw_sub.add_parser("tabs", help="open tabs, with their ids")
-    x = bw_sub.add_parser("fetch", help="render one public page headless and print its text")
+    bw_sub.add_parser("status", help="whether the daemon and each browser actually work")
+    x = bw_sub.add_parser("heal", help="close tabs that stopped answering or were abandoned")
+    x.add_argument("--restart", action="store_true", help="start a fresh browser (sign-ins kept, tabs lost)")
+    x.add_argument("--force", action="store_true", help="restart even if drafts or the user's tab would be lost")
+    x = bw_sub.add_parser("tabs", help="this session's tabs, with their ids")
+    x.add_argument("--all", action="store_true", help="every session's tabs, with owners")
+    x = bw_sub.add_parser("fetch", help="render one public page and print its text; nothing stays open")
     x.add_argument("url"); x.add_argument("--wait", type=int, default=5000)
     x.add_argument("--max", type=int, default=20000)
-    x = bw_sub.add_parser("open", help="open a URL in a new tab of the profile browser")
+    x.add_argument("--links", action="store_true", help="also list the page's links")
+    x.add_argument("--html", action="store_true", help="the HTML instead of the visible text")
+    x.add_argument("--selector", help="only this element's text")
+    x = bw_sub.add_parser("open", help="open a URL in a new tab of your own; prints its id")
     x.add_argument("url"); x.add_argument("--wait", type=int, default=4000)
+    x.add_argument("--clean", action="store_true",
+                   help="in a headless browser with no sign-ins and cookies of this session's own")
+    x.add_argument("--device", help='emulate a device, e.g. "iPhone 15" (implies --clean)')
+    x.add_argument("--viewport", help="page size, e.g. 390x844")
+    x.add_argument("--snap", action="store_true", help="also print the snapshot")
+    x.add_argument("--text", action="store_true", help="also print the page text")
+    x.add_argument("--keep", type=float, help="hours to keep the tab even if idle")
     x = bw_sub.add_parser("go", help="navigate a tab"); x.add_argument("tab"); x.add_argument("url")
     x.add_argument("--wait", type=int, default=4000)
-    x = bw_sub.add_parser("close", help="close a tab"); x.add_argument("tab")
+    for name in ("back", "forward", "reload"):
+        x = bw_sub.add_parser(name, help=f"{name} in a tab's history" if name != "reload" else "reload a tab")
+        x.add_argument("tab"); x.add_argument("--wait", type=int, default=3000)
+    x = bw_sub.add_parser("close", help="close tabs"); x.add_argument("tabs", nargs="*")
+    x.add_argument("--all", action="store_true", help="every tab of this session")
     x = bw_sub.add_parser("text", help="a tab's visible text, frames included")
     x.add_argument("tab"); x.add_argument("--selector", default="body")
     x.add_argument("--max", type=int, default=12000); x.add_argument("--offset", type=int, default=0)
@@ -3087,21 +3050,22 @@ def main() -> int:
     x.add_argument("--page", action="store_true", help="the whole page even when a dialog is open")
     x.add_argument("--full", action="store_true", help="keep containers, URLs and every option")
     x.add_argument("--find", help="only lines containing this text")
+    x.add_argument("--controls", action="store_true", help="only buttons, links and fields, one per line")
     x = bw_sub.add_parser("do", help="run steps on refs from `snap` in one call, then show the result")
     x.add_argument("tab"); x.add_argument("steps", nargs="*",
-                   help="click e7 | fill e4 TEXT | type e4 TEXT | pick e4 TEXT [OPTION] | select e5 LABEL | "
-                        "check e6 | uncheck e6 | press [e4] KEY | wait MS|TEXT | goto URL | scroll [DY] | snap")
+                   help="click e7 | dblclick e7 | hover e7 | fill e4 TEXT | type e4 TEXT | pick e4 TEXT [OPTION] | "
+                        "select e5 LABEL | check e6 | uncheck e6 | upload e8 PATH | drag e3 e9 | press [e4] KEY | "
+                        "wait MS|TEXT|gone TEXT|url PART|idle | goto URL | back | reload | scroll [DY|e7] | "
+                        "viewport WxH | dialog accept|dismiss | snap")
     x.add_argument("--file", help="steps, one per line")
     x.add_argument("--quiet", action="store_true", help="no snapshot after the steps")
     x.add_argument("--approval", type=int, help="a tapped `herald ask --approval` id that covers one click")
     x.add_argument("--covers", help="the approved text this click carries out, quoted exactly")
-    x = bw_sub.add_parser("fields", help="form fields with handles to fill, and the buttons")
-    x.add_argument("tab")
-    for name, h in (("fill", "type a value"), ("select", "choose an option by its label"),
-                    ("check", "tick (or 'off' to untick)"), ("upload", "attach a file path")):
-        x = bw_sub.add_parser(name, help=h + " into a field (handle from `fields`, or a selector)")
-        x.add_argument("tab"); x.add_argument("field"); x.add_argument("value")
-    x = bw_sub.add_parser("click", help="click a button, link or text; refuses final submits")
+    for name in ("fields", "fill", "select", "check"):      # removed 21 Nov 2026; each says what replaced it
+        x = bw_sub.add_parser(name); x.add_argument("rest", nargs="*")
+    x = bw_sub.add_parser("upload", help="attach a file to a field or its button (a ref from `snap`)")
+    x.add_argument("tab"); x.add_argument("ref"); x.add_argument("path")
+    x = bw_sub.add_parser("click", help="click a button, link or text by its words; refuses final submits")
     x.add_argument("tab"); x.add_argument("target"); x.add_argument("--wait", type=int, default=2500)
     x = bw_sub.add_parser("press", help="press a key (Enter, Tab, Escape...)")
     x.add_argument("tab"); x.add_argument("key"); x.add_argument("--wait", type=int, default=2000)
@@ -3109,12 +3073,32 @@ def main() -> int:
     x.add_argument("dy", type=int, nargs="?", default=900)
     x = bw_sub.add_parser("shot", help="screenshot a tab to a PNG (Read it to see the page)")
     x.add_argument("tab"); x.add_argument("path", nargs="?"); x.add_argument("--full", action="store_true")
+    x.add_argument("--ref", help="only this element"); x.add_argument("--viewport", help="resize first, e.g. 390x844")
+    x = bw_sub.add_parser("pdf", help="print a tab to a PDF file")
+    x.add_argument("tab"); x.add_argument("path", nargs="?")
     x = bw_sub.add_parser("html", help="a tab's HTML, or one element's")
     x.add_argument("tab"); x.add_argument("--selector", default="html")
-    x.add_argument("--max", type=int, default=30000)
+    x.add_argument("--max", type=int, default=30000); x.add_argument("--offset", type=int, default=0)
+    x = bw_sub.add_parser("eval", help="run JavaScript that reads the page and print what it returns")
+    x.add_argument("tab"); x.add_argument("js", help="an expression or function, e.g. '() => document.title'")
+    x.add_argument("--ref", help="run against this element: 'el => el.value'")
+    x.add_argument("--max", type=int, default=12000)
+    x = bw_sub.add_parser("console", help="what the page logged: console messages and uncaught errors")
+    x.add_argument("tab"); x.add_argument("--errors", action="store_true"); x.add_argument("--clear", action="store_true")
+    x = bw_sub.add_parser("network", help="the requests a page made (API calls, failures), and their bodies")
+    x.add_argument("tab"); x.add_argument("--match", help="regex on the URL")
+    x.add_argument("--all", action="store_true", help="include scripts and other assets")
+    x.add_argument("--body", type=int, help="print the response body of request N")
+    x.add_argument("--clear", action="store_true")
+    x.add_argument("--max", type=int, default=12000); x.add_argument("--offset", type=int, default=0)
+    x = bw_sub.add_parser("keep", help="keep an idle tab open (0 hours undoes it)")
+    x.add_argument("tab"); x.add_argument("hours", type=float, nargs="?", default=24)
     x = bw_sub.add_parser("login", help="send the user a link to drive a tab themselves (sign-ins)")
     x.add_argument("tab"); x.add_argument("--why", required=True)
     x.add_argument("--minutes", type=int, default=30)
+    x.add_argument("--wait", type=int, default=0, help="seconds to wait here for them to finish")
+    x = bw_sub.add_parser("returned", help="has the user finished with a tab they were sent")
+    x.add_argument("tab"); x.add_argument("--wait", type=int, default=0, help="seconds to wait for them")
     x = bw_sub.add_parser("crawl", help="read many pages in parallel, headless, resumable")
     x.add_argument("urls", help="file: one URL, or id<TAB>URL, per line")
     x.add_argument("--out", required=True, help="directory; one <id>.txt per page")

@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import tempfile
 import time
 import unittest
 from unittest import mock
 
-from herald import browse_agent as ba
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
+from herald import browse_agent as ba  # noqa: E402
 
 
 class Compact(unittest.TestCase):
@@ -40,6 +42,36 @@ class Parse(unittest.TestCase):
     def test_unknown_verbs_are_refused(self):
         with self.assertRaises(ValueError):
             ba.parse(["submit e1"])
+
+
+class Steps(unittest.TestCase):
+    def test_new_verbs_parse_and_only_refs_lose_their_at_sign(self):
+        steps = ba.parse(["upload @e8 /tmp/cv.pdf", "drag e3 e9", "wait gone Saving", "dialog accept",
+                          'fill e4 "@handle"'])
+        self.assertEqual(steps[0], ["upload", "e8", "/tmp/cv.pdf"])
+        self.assertEqual(steps[2], ["wait", "gone", "Saving"])
+        self.assertEqual(steps[4], ["fill", "e4", "@handle"], "a value that starts with @ is not a ref")
+
+    def test_controls_view_keeps_what_can_be_acted_on(self):
+        tree = ('- generic [ref=e1]:\n  - heading "Profile" [level=1] [ref=e2]\n'
+                '  - textbox "Name" [ref=e4]: Ada\n  - paragraph [ref=e5]: Some prose\n'
+                '  - button "Save" [ref=e6]\n  - link "Help" [ref=e7] [cursor=pointer]:')
+        out = ba.interactive(ba.compact(tree))
+        self.assertEqual(out.splitlines(), ['- textbox "Name" [ref=e4]: Ada', '- button "Save" [ref=e6]',
+                                            '- link "Help" [ref=e7] [cursor=pointer]:'])
+
+
+class EvalReadsOnly(unittest.TestCase):
+    def test_scripts_that_act_are_refused(self):
+        # `eval` would otherwise be a way around the check on what a click submits.
+        from herald import browse_daemon as d
+        for js in ("document.querySelector('#go').click()", "form.submit()", "f.requestSubmit()",
+                   "fetch('/x', {method: 'POST'})", "navigator.sendBeacon('/x')",
+                   "el.dispatchEvent(new Event('click'))"):
+            self.assertTrue(d.ACTS.search(js), js)
+        for js in ("() => document.title", "[...document.links].map(a => a.href)",
+                   "el => el.value", "fetch('/api/me').then(r => r.json())"):
+            self.assertFalse(d.ACTS.search(js), js)
 
 
 class ApprovedClicks(unittest.TestCase):

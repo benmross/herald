@@ -508,12 +508,55 @@ profile in `$HERALD_HOME/browser/profile`, DevTools on `127.0.0.1:9333`
 (`browser.cdp_port`). The profile holds cookies, so it is gitignored in
 `$HERALD_HOME` (migration 0004) and listed under `safety.secret_paths`.
 
+Three processes are involved, each replaceable without the others:
+
+| Process | Unit | What it owns |
+|---|---|---|
+| the profile browser's keeper, `bin/herald-browser` | `herald-browser.service` | Chromium with the profile, its Xvfb display, the live screen, the page a sign-in link opens |
+| the browse daemon, `lib/herald/browse_daemon.py` | `herald-browse-daemon.service` | the one Playwright connection to each browser, the headless clean browser, tab ownership, the janitor |
+| a command, `herald browse ...` | none | one request to the daemon over `$HERALD_HOME/run/browse.sock` |
+
+Restarting the daemon does not close any tab of the profile browser, and each
+tab keeps its owner; only clean (sign-in-free) tabs and element refs are lost.
+Restarting the profile browser closes its tabs and keeps its sign-ins. Where
+`herald-browser.service` is off (no view URL is set), the daemon starts a
+headless profile browser itself, and under systemd that one stops with the
+daemon. Without systemd the first command starts the daemon, and it exits
+after half an hour idle.
+
+Each agent's commands belong to a session, named after the Telegram topic or
+engine conversation they run in (`--session` overrides it). A session lists and
+names its own tabs, a lock is per tab, and several agents work in one browser
+at once. A tab its session has not used for `browser.tab_idle_hours` (six) is
+closed, and one nobody claimed after `browser.unowned_idle_hours` (two);
+`herald browse keep <tab>` exempts one. Tabs bound to an unfinished
+application, and a tab the person is driving, are never closed for age.
+
+`herald browse status` reports whether each browser works, not whether it is
+running: it connects, lists the tabs and has each evaluate an expression. Every
+minute the daemon does the same and closes a tab that has stopped answering
+twice in a row, or a popup that never loaded, because one such tab makes every
+new Playwright connection to that browser hang (this stopped all browsing for
+a day on 20 Nov 2026). What it closed, and why, is in
+`$HERALD_HOME/browser/janitor.log`. If the browser itself stops answering for
+three minutes and nothing unfinished lives in it, the daemon restarts it.
+By hand:
+
+```bash
+herald browse status
+herald browse heal                 # close silent and abandoned tabs now
+herald browse heal --restart       # a fresh browser; refuses if drafts or a sign-in would be lost
+journalctl --user -u herald-browse-daemon -n 50
+```
+
 Signing in to a site needs the user's hands, and that is what the service is
 for. `bin/herald-browser` (unit `herald-browser.service`) keeps the profile
 browser running headed inside Xvfb, which sign-in pages accept more readily,
-and serves the page a `herald browse login` link opens: a live picture of one
-tab whose taps and typing go straight to it. Nothing typed there is logged or
-reaches a session. The link expires (30 minutes by default) or when they tap
+and serves the page a `herald browse login` link opens: a live screen of the
+browser with that tab in front, and a Done button. Nothing typed there is
+logged or reaches a session. While the link is open that one tab is the
+person's: agents are refused on it and keep working in every other tab, which
+open behind it. The link expires (30 minutes by default) or when they tap
 Done. It binds to `127.0.0.1:8793` (`surfaces.browser_view.port`) and stays
 off until `surfaces.browser_view.url` is set:
 
@@ -614,7 +657,9 @@ application work is authorized. Identical failures stop after two attempts;
 admission checks both machine availability and the worker's own cgroup;
 new work pauses at 85 percent of the worker limit. Checkpoint existing drafts
 before changing units. `herald services install` reloads units without
-restarting the original browser. Never restart it to deploy a review page.
+restarting the original browser. Never restart it to deploy a review page or
+a change to the browse daemon; restart `herald-browse-daemon.service` for the
+latter.
 
 ## Backups
 

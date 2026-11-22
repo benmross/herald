@@ -1,0 +1,21 @@
+[Unit]
+Description=Herald — the browse daemon: one connection to the browsers, shared by every agent
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{ROOT}}
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH={{ROOT}}/lib
+ExecStart={{ROOT}}/venv/bin/python -m herald.browse_daemon
+Restart=always
+RestartSec=3
+# Holds the headless clean browser and, where no display exists, a headless
+# profile browser. The headed profile browser is herald-browser.service's.
+MemoryMax={{BROWSER_MEMORY_MAX}}
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

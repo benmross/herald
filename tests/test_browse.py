@@ -49,13 +49,47 @@ class Views(unittest.TestCase):
         self.p.start()
         # Workspace views exist only where systemd runs the browser workers.
         # Pretend it does, so these pass in a container or on a Mac too.
-        from herald import browser_workspaces as bw
+        from herald import browser_workspaces as bw, browse_tabs
         self.workers = mock.patch.object(bw, "managed_workers", return_value=True)
         self.workers.start()
+        self.state = pathlib.Path(tempfile.mkdtemp())       # not in the spool, whose files a test reads
+        self.registry = mock.patch.object(browse_tabs, "_path", lambda: self.state / "tabs.db")
+        self.registry.start()
+        self.locks = mock.patch.object(browse_tabs, "_lock_path", lambda w, t: str(self.state / f"{w}-{t}.lock"))
+        self.locks.start()
+        self.screen = mock.patch.object(browse, "vnc_enabled", return_value=False)
+        self.screen.start()
 
     def tearDown(self):
+        self.screen.stop()
+        self.locks.stop()
+        self.registry.stop()
         self.workers.stop()
         self.p.stop()
+
+    def test_a_default_browser_link_reserves_one_tab_not_the_browser(self):
+        # A sign-in link used to put the whole default browser in the
+        # person's hands, which stopped every agent and collector until
+        # they tapped Done. It now reserves the tab it is for.
+        from herald import browser_workspaces as bw, browse_tabs
+        with mock.patch.object(bw, "take_control") as take:
+            t = browse.new_view("abc123", "sign in to a site", 10, workspace="default")
+            take.assert_not_called()
+        self.assertTrue(browse_tabs.with_person(browse_tabs.get("abc123", "default")))
+        self.assertFalse(browse_tabs.with_person(browse_tabs.get("fff000", "default")))
+        self.assertNotIn("/groups/", browse.view_link(t) or "")
+        second = browse.new_view("abc123", "a replacement link", 10, workspace="default")
+        browse.close_view(t)
+        self.assertTrue(browse_tabs.with_person(browse_tabs.get("abc123", "default")),
+                        "another live link still points at the tab")
+        browse.close_view(second)
+        self.assertFalse(browse_tabs.with_person(browse_tabs.get("abc123", "default")))
+
+    def test_an_expired_link_stops_reserving_its_tab(self):
+        from herald import browse_tabs
+        browse.new_view("abc123", "sign in", 10, workspace="default")
+        with mock.patch.object(time, "time", return_value=time.time() + 3600):
+            self.assertFalse(browse_tabs.with_person(browse_tabs.get("abc123", "default")))
 
     def test_token_round_trip_and_close(self):
         t = browse.new_view("abc123", "sign in to a site", 10)

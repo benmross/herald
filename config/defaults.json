@@ -153,6 +153,7 @@
     "ready_limit": 8
   },
   "browser": {
+    "_comment": "`herald browse` (lib/herald/browse.py). The profile browser lives in $HERALD_HOME/browser. executable null means Playwright's Chromium. headed runs it inside Xvfb when installed, which sign-in pages trust more. sandbox stays off until an AppArmor profile allows Chromium's user namespaces (Ubuntu 23.10+).",
     "executable": null,
     "cdp_port": 9333,
     "headed": true,
@@ -163,6 +164,14 @@
     "display_max": "2560x1600",
     "vnc_port": 5993,
     "ws_port": 6093,
+    "_tabs_comment": "Each agent session owns its tabs. A tab its session has not touched for tab_idle_hours is closed, and one nobody claimed after unowned_idle_hours; `herald browse keep` exempts a tab. session_tabs caps one session's tabs in a browser and max_tabs the browser as a whole. connect_timeout (seconds) bounds attaching to a browser, which used to hang without limit.",
+    "tab_idle_hours": 6,
+    "unowned_idle_hours": 2,
+    "session_tabs": 10,
+    "max_tabs": 40,
+    "connect_timeout": 20,
+    "_remote_comment": "remote: browser workspaces on another machine over SSH, keyed by workspace name, e.g. {\"macbook\": {\"ssh\": \"macbook\", \"remote_port\": 9333, \"local_port\": 9390}}. `herald apply fill --workspace macbook` fills there. See lib/herald/browser_remote.py.",
+    "remote": {},
     "batch_size": 10,
     "max_workspaces": 2,
     "minimum_available_mb": 2048,
@@ -179,21 +188,6 @@
     "bank": "documents/career/answers.json",
     "bitwarden_extension_id": null,
     "_ready_comment": "ready_limit: how many filled forms the packet worker (lib/herald/packets.py) leaves open at their final page before it waits for you to submit some. Each is a live tab, and the browser's memory is finite."
-  },
-  "browser": {
-    "_comment": "`herald browse`: the profile browser lives in $HERALD_HOME/browser. executable null means Playwright's Chromium. headed runs it inside Xvfb when installed, which sign-in pages trust more. sandbox stays off until an AppArmor profile allows Chromium's user namespaces (Ubuntu 23.10+).",
-    "_remote_comment": "remote: browser workspaces on another machine over SSH, keyed by workspace name, e.g. {\"macbook\": {\"ssh\": \"macbook\", \"remote_port\": 9333, \"local_port\": 9390}}. `herald apply fill --workspace macbook` fills there. See lib/herald/browser_remote.py.",
-    "remote": {},
-    "executable": null,
-    "cdp_port": 9333,
-    "headed": true,
-    "display": 93,
-    "sandbox": false,
-    "vnc": true,
-    "screen": "820x1180",
-    "display_max": "2560x1600",
-    "vnc_port": 5993,
-    "ws_port": 6093
   },
   "places": {
     "regions": [],
