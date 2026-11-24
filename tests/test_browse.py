@@ -42,6 +42,32 @@ class Refusal(unittest.TestCase):
             browse.refuse_submit(label)
 
 
+class Gpu(unittest.TestCase):
+    """The clean browser drew WebGL in software on a machine with a GPU until
+    23 Nov 2026, and checking a 3D page took half a minute a screenshot."""
+
+    def args(self, setting, nodes):
+        with tempfile.TemporaryDirectory() as d:
+            for n in nodes:
+                (pathlib.Path(d) / n).touch()
+            with mock.patch.object(browse.config, "get", lambda key, default=None: setting if key == "browser.gpu" else default):
+                return browse.gpu_args(f"{d}/renderD*")
+
+    def test_auto_uses_a_gpu_only_where_there_is_one(self):
+        if sys.platform.startswith("linux"):
+            self.assertEqual(self.args("auto", ["renderD128"]), browse.GPU_ARGS)
+        self.assertEqual(self.args("auto", []), [])
+
+    def test_on_and_off_are_obeyed_whatever_the_machine_has(self):
+        self.assertEqual(self.args("on", []), browse.GPU_ARGS)
+        self.assertEqual(self.args(True, []), browse.GPU_ARGS)
+        self.assertEqual(self.args("off", ["renderD128"]), [])
+        self.assertEqual(self.args(False, ["renderD128"]), [])
+
+    def test_software_fallback_stays_available(self):
+        self.assertIn("--enable-unsafe-swiftshader", browse.GPU_ARGS)
+
+
 class Views(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())

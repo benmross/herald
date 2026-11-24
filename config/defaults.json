@@ -159,6 +159,8 @@
     "headed": true,
     "display": 93,
     "sandbox": false,
+    "_gpu_comment": "gpu: whether the headless clean browser draws WebGL on the machine's GPU. auto uses one when /dev/dri has a render node (Linux), on always asks for it, off keeps software rendering. `herald browse status` shows which it got.",
+    "gpu": "auto",
     "vnc": true,
     "screen": "820x1180",
     "display_max": "2560x1600",

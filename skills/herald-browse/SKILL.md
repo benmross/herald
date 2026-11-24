@@ -70,6 +70,11 @@ are building, and whenever two agents must not share a login.
 `--viewport 390x844` only changes the size. Clean tabs do not survive a daemon
 restart, and a person cannot be handed one.
 
+The clean browser draws WebGL on the machine's GPU when it has one
+(`browser.gpu`: `auto`, `on` or `off`). `herald browse status` says what it
+got. If that line says software, a 3D page will run at about one frame a
+second and each `shot` will take half a minute: fix that first, not the page.
+
 `fetch` and `crawl` open nothing that stays: a throwaway clean context per
 page.
 

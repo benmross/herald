@@ -94,6 +94,7 @@ class Daemon:
         self.conns: dict[str, Conn] = {}
         self.conn_locks = collections.defaultdict(asyncio.Lock)
         self.clean = None
+        self.clean_renderer: str | None = None
         self.clean_lock = asyncio.Lock()
         self.contexts: dict[tuple, object] = {}
         self.clean_seen: dict = {}
@@ -127,17 +128,41 @@ class Daemon:
             return c
 
     async def clean_browser(self):
-        from . import browser_workspaces as bw
+        from . import browse, browser_workspaces as bw
         async with self.clean_lock:
             if self.clean is None or not self.clean.is_connected():
                 await asyncio.to_thread(bw.admit)
                 self.clean = await self.pw.chromium.launch(
                     headless=True, executable_path=config.get("browser.executable") or None,
-                    args=["--disable-blink-features=AutomationControlled"])
+                    args=["--disable-blink-features=AutomationControlled"] + browse.gpu_args())
+                self.clean_renderer = None
                 self.contexts, self.clean_seen = {}, {}
                 for key in [k for k in self.tabs if k[0] == "clean"]:
                     del self.tabs[key]
             return self.clean
+
+    async def clean_webgl(self) -> str:
+        """What the clean browser draws WebGL with, asked of the browser itself."""
+        from . import browse
+        wanted = "GPU requested" if browse.gpu_args() else f"software (browser.gpu is {browse.gpu_mode()})"
+        if self.clean is None or not self.clean.is_connected():
+            return f"{wanted}, browser not started"
+        if self.clean_renderer is None:
+            ctx = await self.clean.new_context()
+            try:
+                page = await ctx.new_page()
+                self.clean_renderer = await page.evaluate("""() => {
+                    const gl = document.createElement('canvas').getContext('webgl2');
+                    if (!gl) return 'no WebGL';
+                    const e = gl.getExtension('WEBGL_debug_renderer_info');
+                    return e ? gl.getParameter(e.UNMASKED_RENDERER_WEBGL) : 'unknown renderer';
+                }""")
+            except Exception as error:
+                return f"{wanted}, could not ask ({type(error).__name__})"
+            finally:
+                await ctx.close()
+        software = any(word in self.clean_renderer.lower() for word in ("swiftshader", "llvmpipe", "no webgl"))
+        return f"{'software' if software else 'GPU'} ({self.clean_renderer})"
 
     async def clean_context(self, session: str, device: str | None):
         from . import browse
@@ -943,7 +968,8 @@ class Daemon:
                             if bad else ""))
         sessions = collections.Counter(t.session for k, t in self.tabs.items() if k[0] == "clean")
         lines.append("clean     " + (f"{sum(sessions.values())} tabs ({', '.join(f'{n} {s}' for s, n in sessions.items())})"
-                                     if sessions else "idle"))
+                                     if sessions else "idle")
+                     + f"; WebGL: {await self.clean_webgl()}")
         lines.append(f"view      {browse.view_base() or 'off: set surfaces.browser_view.url'}")
         return {"out": "\n".join(lines)}
 

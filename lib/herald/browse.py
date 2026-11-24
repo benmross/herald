@@ -178,6 +178,35 @@ def executable() -> str:
         return p.chromium.executable_path
 
 
+# Headless Chromium draws WebGL in software unless told otherwise, which is far too slow for
+# checking a 3D page (23 Nov 2026: one fps and about thirty seconds a screenshot on a scene the
+# machine's integrated GPU drew at 25 fps and 1.6 seconds). These switches put ANGLE on the
+# system's EGL driver, and still fall back to software where that does not work.
+GPU_ARGS = ["--ignore-gpu-blocklist", "--enable-gpu", "--use-angle=gl-egl", "--use-gl=angle",
+            "--enable-unsafe-swiftshader", "--disable-gpu-sandbox"]
+
+
+def gpu_mode() -> str:
+    """`browser.gpu`: "auto" (use a GPU when the machine has one), "on" or "off"."""
+    value = config.get("browser.gpu", "auto")
+    if value is True:
+        return "on"
+    if value is False or value is None:
+        return "off"
+    value = str(value).lower()
+    return value if value in ("auto", "on", "off") else "auto"
+
+
+def gpu_args(render_nodes: str = "/dev/dri/renderD*") -> list[str]:
+    """Switches for the clean browser to draw on the GPU, or none."""
+    import glob
+    import sys
+    mode = gpu_mode()
+    if mode == "on" or (mode == "auto" and sys.platform.startswith("linux") and glob.glob(render_nodes)):
+        return list(GPU_ARGS)
+    return []
+
+
 def chrome_args(*, headless: bool, workspace=None) -> list[str]:
     profile_dir(workspace).mkdir(parents=True, exist_ok=True, mode=0o700)
     args = [executable(),
