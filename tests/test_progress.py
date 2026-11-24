@@ -14,6 +14,7 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
@@ -79,6 +80,13 @@ class NothingIsDropped(unittest.TestCase):
         nothing here to display and this must not produce a blank line."""
         seen = _events([{"type": "thinking", "thinking": "", "signature": "abc"}])
         self.assertEqual(seen, [])
+
+    def test_a_thinking_block_with_words_is_passed_on(self):
+        """On 23 Nov 2026 the answer to a question sent mid-turn arrived as a
+        thinking block with text, and was dropped here, so nobody saw it."""
+        seen = _events([{"type": "thinking", "thinking": "I'm measuring the model.\n\n", "signature": "abc"},
+                        {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}])
+        self.assertEqual([(e.kind, e.text) for e in seen], [("thinking", "I'm measuring the model."), ("tool", "Bash: ls")])
 
 
 class _Bridge(unittest.TestCase):
@@ -355,6 +363,22 @@ class NarrationAsMessages(_Bridge):
         w.on_progress(think.Progress("reasoning", "Weighing two options."))
         self.assertEqual(self.texts(), [])
         self.assertIn("Weighing two options.", w._render())
+
+    def test_thinking_with_words_is_sent_at_once_after_what_came_before(self):
+        w = self.w
+        w.on_progress(think.Progress("text", "Looking at the file."))
+        w.on_progress(think.Progress("thinking", "It is the web export, not the CAD."))
+        self.assertEqual([t for t in self.texts()], ["Looking at the file.", "It is the web export, not the CAD."])
+
+    def test_thinking_can_stay_in_the_block_or_be_dropped(self):
+        w = self.w
+        with mock.patch.object(self.mod.config, "get", lambda key, default=None: "transcript" if key == "telegram.thinking" else default):
+            w.on_progress(think.Progress("thinking", "Kept in the block."))
+        self.assertEqual(self.texts(), [])
+        self.assertIn("Kept in the block.", w._render())
+        with mock.patch.object(self.mod.config, "get", lambda key, default=None: "off" if key == "telegram.thinking" else default):
+            w.on_progress(think.Progress("thinking", "Dropped."))
+        self.assertNotIn("Dropped.", w._render())
 
     def test_an_interim_reply_is_not_sent_twice(self):
         w = self.w

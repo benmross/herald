@@ -639,7 +639,9 @@ class Progress:
     `kind` is "text" for something the model said -- the sentences it writes
     between tool calls, explaining what it is about to do and what it found --
     "reasoning" for a reasoning summary (Codex only; never meant as a message to
-    the user), and "tool" for a call it made. "interim" is a whole reply the turn gave
+    the user), "thinking" for a Claude thinking block that arrived with words in
+    it (most carry none; one that does is usually something the model meant to
+    say), and "tool" for a call it made. "interim" is a whole reply the turn gave
     before going back to wait on background work; a handler that delivers it
     returns True (see `_offer_interim`). Both of the first two come out of the stream-json output that
     is already flowing, so neither costs a token or a millisecond.
@@ -817,10 +819,18 @@ def _handle_stream_line(line: str, state: dict, on_progress,
                 summary = _text_summary(block)
                 if not summary:
                     continue
+            elif kind == "thinking":
+                # Nearly always an empty body and a signature. When it does
+                # carry words they are the model's, and on 23 Nov 2026 they
+                # were its answer to a question the user sent mid-turn, which
+                # reached nobody because this branch did not exist.
+                summary = (block.get("thinking") or "").strip()
+                if not summary:
+                    continue
             else:
                 continue
             if on_progress:
-                on_progress(Progress("tool" if kind == "tool_use" else "text",
+                on_progress(Progress({"tool_use": "tool", "thinking": "thinking"}.get(kind, "text"),
                                      summary))
             if kind == "tool_use":
                 state.setdefault("pending_tools", {})[block.get("id")] = (

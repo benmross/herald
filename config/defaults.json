@@ -10,6 +10,8 @@
   "telegram": {
     "_comment": "narration: messages sends what the model says between tool calls as its own Telegram message, in order (the final answer still arrives last, once). transcript keeps it all inside the single edited progress block. command_menu is what Telegram autocompletes: short offers /new, /stop and /private, full offers every command. All of them work when typed either way.",
     "narration": "messages",
+    "_thinking_comment": "thinking: what to do with a Claude thinking block that arrives with text in it (most are empty). messages sends it as its own message, as narration is; transcript keeps it in the edited progress block; off drops it.",
+    "thinking": "messages",
     "max_parallel_turns": 2,
     "command_menu": "short",
     "_engine_topic_dots_comment": "Append an engine marker to known forum topic names: orange Claude, blue Codex, purple Kiro. Names are learned from topic creation/rename events and root replies. General and private sessions are excluded.",

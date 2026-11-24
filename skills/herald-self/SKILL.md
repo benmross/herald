@@ -134,6 +134,10 @@ sends a notification; the snapshot is free and silent.
   single edited block). Codex reasoning summaries stay in the block
   (`Progress("reasoning")`); Codex commentary was already sent as interim
   replies. Write mid-turn text as something a person should read.
+  A Claude thinking block that arrives with words in it is sent the same way
+  (since 23 Nov 2026; `telegram.thinking` is `messages`, `transcript` or
+  `off`). Most carry none. That day the answer to a question sent mid-turn
+  came through as one and was dropped, so the user never saw a reply.
 
 ## Never restart the bridge you are answering through
 

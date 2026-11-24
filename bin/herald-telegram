@@ -530,6 +530,17 @@ class Working:
         if kind == "interim":
             self._drop_pending(text)
             return self._interim(text)
+        if kind == "thinking":
+            # A thinking block that came with words. They are not the turn's
+            # answer, so there is nothing to hold: say them now, in order.
+            mode = config.get("telegram.thinking", "messages")
+            if mode == "off":
+                return
+            if mode == "messages" and self.narration == "messages":
+                self._flush_pending()
+                self._post(text)
+                return
+            kind = "reasoning"
         if self.narration == "messages" and kind == "text":
             # The turn's last text block is its answer, which the caller sends
             # itself, so a block is held until something follows it. A tool call
