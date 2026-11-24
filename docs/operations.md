@@ -129,6 +129,26 @@ never queued. Permanent rejections remain marked `failed` for inspection:
 herald db "select id, created_at, method, attempts, state, last_error from telegram_outbox order by id"
 ```
 
+### What was actually sent
+
+The outbox forgets a message once it is delivered. `telegram_log` does not:
+every message, edit, file and button answer Herald sends is recorded with
+Telegram's reply (the message id, or the error), and so is every update
+received. Use it to answer "did that reach me, and what did it say".
+
+```bash
+herald telegram log --since 2h                      # everything, oldest first
+herald telegram log --topic -100123:1006 --since 1d # one topic
+herald telegram log --message 11931 --full          # one message: its send and each edit
+herald telegram log --direction received --grep "why do you"
+```
+
+Rows are kept for `telegram.log_days` (30; 0 keeps them forever). A private
+topic's rows have the time, ids and outcome but no text. The root helper's
+own approval prompts (`herald-rootd`) are sent by a separate process and are
+not in this log.
+
+
 Successful rows are removed. A crashed delivery is retried once its five-minute
 lease expires. Telegram has no idempotency key for sending a message, so a
 connection timeout after acceptance can still produce a duplicate on retry.

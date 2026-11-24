@@ -1,5 +1,6 @@
 """Exercise the app-server transport over real pipes, without model calls."""
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -85,6 +86,16 @@ class AppServerTests(unittest.TestCase):
         capture = patch("herald.debugtrace.Trace")
         capture.start()
         self.addCleanup(capture.stop)
+        # Run from inside a Telegram turn, the bridge's HERALD_WORKER_PARENT is
+        # inherited and think._spawn wraps the command in a systemd scope: the
+        # launch check below then saw systemd-run first, and stopping a scope
+        # that never existed cost the idle test two five-second timeouts
+        # (23 Nov 2026). These tests are about the app-server protocol, so
+        # they run as a process outside the bridge would.
+        env = patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop('HERALD_WORKER_PARENT', None)
         tmp=tempfile.TemporaryDirectory(prefix='app-server-test-')
         self.addCleanup(tmp.cleanup)
         self.root=pathlib.Path(tmp.name)

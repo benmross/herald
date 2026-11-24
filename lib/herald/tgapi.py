@@ -104,4 +104,7 @@ _client = Client()
 
 
 def call(method: str, *, http_timeout: float = 25, **params):
-    return _client.call(method, http_timeout=http_timeout, **params)
+    response = _client.call(method, http_timeout=http_timeout, **params)
+    from . import tglog  # noqa: PLC0415 -- tglog needs db, which this transport must not
+    tglog.sent(method, params, response)
+    return response

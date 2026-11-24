@@ -230,11 +230,15 @@ def _telegram_upload(method: str, field: str, filename: str, blob: bytes,
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{token}/{method}", data=body, method="POST",
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    from . import tglog  # noqa: PLC0415
+    response = None
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
-            return json.load(r)
+            response = json.load(r)
     except (urllib.error.URLError, OSError, json.JSONDecodeError):
-        return None
+        response = None
+    tglog.sent(method, params, response if isinstance(response, dict) else None, filename=filename)
+    return response
 
 
 def telegram_photo(path, *, caption: str | None = None, thread_id: int | None = None,

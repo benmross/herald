@@ -12,6 +12,8 @@
     "narration": "messages",
     "_thinking_comment": "thinking: what to do with a Claude thinking block that arrives with text in it (most are empty). messages sends it as its own message, as narration is; transcript keeps it in the edited progress block; off drops it.",
     "thinking": "messages",
+    "_log_days_comment": "log_days: how long the record of what was sent to and received from Telegram is kept (`herald telegram log`). 0 keeps it forever. Private topics are logged without their text.",
+    "log_days": 30,
     "max_parallel_turns": 2,
     "command_menu": "short",
     "_engine_topic_dots_comment": "Append an engine marker to known forum topic names: orange Claude, blue Codex, purple Kiro. Names are learned from topic creation/rename events and root replies. General and private sessions are excluded.",

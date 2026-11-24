@@ -1091,14 +1091,19 @@ def cmd_test(args) -> int:
     only covers the program would stop covering most of the code the moment
     someone's life moved into an extension.
     """
+    env = _child_env()
+    # The suite is not one of the bridge's workers, even when a Telegram turn
+    # starts it. Inherited, this made every engine launch in a test wrap itself
+    # in a systemd scope, and the suite failed only when run from a turn.
+    env.pop("HERALD_WORKER_PARENT", None)
     rc = subprocess.run([config.python(), "-m", "unittest", "discover",
                          "-s", "tests", *args.extra],
-                        cwd=str(config.ROOT), env=_child_env()).returncode
+                        cwd=str(config.ROOT), env=env).returncode
     for path in extensions.test_paths():
         print(_c(f"\n{path.parent.name} extension", BOLD))
         r = subprocess.run([config.python(), "-m", "unittest", "discover",
                             "-s", str(path), *args.extra],
-                           cwd=str(path.parent), env=_child_env()).returncode
+                           cwd=str(path.parent), env=env).returncode
         rc = rc or r
     return rc
 
@@ -1690,6 +1695,55 @@ def cmd_act(args) -> int:
         return 1
     print(json.dumps(result))
     return 0 if result.get("state") == "done" else 3
+
+
+def cmd_telegram(args) -> int:
+    """What was actually sent to Telegram and received from it.
+
+    `herald telegram log` reads lib/herald/tglog.py's table: every message,
+    edit, file and button answer Herald sent, with Telegram's reply to it, and
+    every update that came in. Added 23 Nov 2026, when "did my question get an
+    answer" could only be reconstructed from a session transcript.
+    """
+    from herald import tglog  # noqa: PLC0415
+    thread = args.thread
+    chat = args.chat
+    if args.topic:
+        left, _, right = args.topic.partition(":")
+        chat, thread = int(left), right or "main"
+    if thread is not None and thread != "main":
+        thread = int(thread)
+    try:
+        found = tglog.rows(since_ts=tglog.since(args.since) if args.since else None,
+                           until_ts=tglog.since(args.until) if args.until else None,
+                           chat_id=chat, thread_id=thread, message_id=args.message,
+                           direction={"sent": "out", "received": "in"}.get(args.direction),
+                           grep=args.grep, limit=args.limit)
+    except ValueError as exc:
+        print(f"could not read a time: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(found, indent=1, ensure_ascii=False))
+        return 0
+    if not found:
+        print("nothing logged matches (the log starts when the bridge was last restarted after 23 Nov 2026)")
+        return 0
+    for r in found:
+        arrow = "->" if r["direction"] == "out" else "<-"
+        outcome = "" if r["ok"] is None else (" ok" if r["ok"] else f" FAILED {r['error'] or ''}".rstrip())
+        where = f"{r['chat_id']}:{r['thread_id'] or 'main'}" if r["chat_id"] is not None else "-"
+        mid = f" #{r['message_id']}" if r["message_id"] else ""
+        extra = json.loads(r["extra"]) if r["extra"] else {}
+        notes = "".join(f" [{k}: {', '.join(map(str, v)) if isinstance(v, list) else v}]"
+                        for k, v in extra.items() if k in ("file", "buttons", "media"))
+        print(f"{r['ts'][:23].replace('T', ' ')} {arrow} {r['method']}{mid} {where}{outcome}{notes}")
+        if r["private"]:
+            print("    (private session: text not recorded)")
+        elif r["text"]:
+            text = r["text"] if args.full or len(r["text"]) <= 400 else r["text"][:400] + f" ... ({len(r['text'])} characters; --full shows all)"
+            for line in text.splitlines() or [""]:
+                print(f"    {line}")
+    return 0
 
 
 def cmd_safety(args) -> int:
@@ -2691,6 +2745,22 @@ def main() -> int:
     rk.add_argument("--show", action="store_true",
                     help="print what the user would be asked, and ask nothing")
     act.set_defaults(fn=cmd_act)
+
+    tg = sub.add_parser("telegram", help="what was sent to and received from Telegram")
+    tg_sub = tg.add_subparsers(dest="op", required=True)
+    tl = tg_sub.add_parser("log", help="messages, edits and files sent, with Telegram's answer, and updates received")
+    tl.add_argument("--since", help="90m, 6h, 2d or an ISO time")
+    tl.add_argument("--until", help="same forms as --since")
+    tl.add_argument("--topic", help="chat:thread, as in the bridge's log, e.g. -100123:1006 or -100123:main")
+    tl.add_argument("--chat", type=int)
+    tl.add_argument("--thread", help="a topic's thread id, or main")
+    tl.add_argument("--message", type=int, help="one message id: its send and every edit")
+    tl.add_argument("--direction", choices=("sent", "received"))
+    tl.add_argument("--grep", help="text contains this")
+    tl.add_argument("--limit", type=int, default=50, help="newest N matching rows (default 50)")
+    tl.add_argument("--full", action="store_true", help="whole texts, not the first 400 characters")
+    tl.add_argument("--json", action="store_true")
+    tg.set_defaults(fn=cmd_telegram)
 
     sf = sub.add_parser("safety", help="Herald's own safety rules, the same on every engine")
     sf_sub = sf.add_subparsers(dest="op", required=True)

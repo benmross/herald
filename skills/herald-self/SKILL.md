@@ -138,6 +138,10 @@ sends a notification; the snapshot is free and silent.
   (since 23 Nov 2026; `telegram.thinking` is `messages`, `transcript` or
   `off`). Most carry none. That day the answer to a question sent mid-turn
   came through as one and was dropped, so the user never saw a reply.
+- **To say what reached Telegram, read the log, not the transcript.**
+  `herald telegram log` (since 23 Nov 2026) has every message, edit and file
+  sent, with Telegram's answer, and every update received. A session
+  transcript shows what the model wrote, which is not always what was sent.
 
 ## Never restart the bridge you are answering through
 

@@ -61,7 +61,7 @@ from datetime import datetime
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "lib"))
 
 from herald import activity, approvals, config, db, obligations, questions, sessioninfo, study, tgcommands, tglocation, tgsessions, tgtext, think  # noqa: E402
-from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tgoutbox, tgtopics, tgturns, topicstatus, usage  # noqa: E402
+from herald import handoff, limitchoice, limitresume, private as private_mod, routing, tgapi, tglog, tgoutbox, tgtopics, tgturns, topicstatus, usage  # noqa: E402
 from herald import claude_accounts as accounts_mod  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -321,6 +321,15 @@ PRIVATE_ON = (
 # in this process, and its transcript only in the scratch directory named here.
 _private: dict[str, dict] = {}
 _ingress_private: set[str] = set()  # includes /private not yet handled by a worker
+
+
+def _log_private(chat_id, thread_id) -> bool:
+    """For tglog: a private topic's messages are recorded without their text."""
+    key = f"{chat_id}:{thread_id or 'main'}"
+    return key in _private or key in _ingress_private
+
+
+tglog.private_topic = _log_private
 _journal_lock = threading.RLock()
 _running_turns: dict[str, str] = {}
 _recovered_ids: set[str] = set()
@@ -3165,6 +3174,7 @@ def _journal_receive(update: dict) -> bool:
     """Persist before getUpdates can acknowledge it. False means already done."""
     msg = update.get('message') or {}
     key = _topic_key(update)
+    tglog.received(update)
     if not key or (msg.get('from') or {}).get('id') != config.secret('telegram.user_id'):
         return True
     text = msg.get('text') or msg.get('caption') or ''
@@ -3300,11 +3310,15 @@ def _notify_service(message: str) -> None:
 
 def _retry_deliveries() -> None:
     """Retry saved text after recovery, without starting a model turn."""
+    pruned = 0.0
     while True:
         try:
             tgoutbox.retry(api)
         except Exception as exc:  # noqa: BLE001 -- keep retrying after a ledger lock
             print(f"telegram outbox retry skipped ({type(exc).__name__})", file=sys.stderr)
+        if time.monotonic() - pruned > 3600:
+            pruned = time.monotonic()
+            tglog.prune()
         time.sleep(5)
 
 

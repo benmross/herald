@@ -314,6 +314,25 @@ CREATE TABLE IF NOT EXISTS telegram_outbox (
 CREATE INDEX IF NOT EXISTS idx_telegram_outbox_due
     ON telegram_outbox (state, next_attempt, id);
 
+-- What was sent to Telegram and what arrived, with Telegram's answer
+-- (lib/herald/tglog.py). A private topic's rows carry no text.
+CREATE TABLE IF NOT EXISTS telegram_log (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    method TEXT NOT NULL,
+    chat_id INTEGER,
+    thread_id INTEGER,
+    message_id INTEGER,
+    ok INTEGER,
+    error TEXT,
+    text TEXT,
+    extra TEXT,
+    private INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_telegram_log_ts ON telegram_log (ts);
+CREATE INDEX IF NOT EXISTS idx_telegram_log_message ON telegram_log (chat_id, message_id);
+
 -- Every write Herald makes outside its own ledger: a calendar event, a task,
 -- a label, a draft. CLAUDE.md's amber tier says such an action is "never
 -- silent -- every amber action appears in the journal and the next digest",
