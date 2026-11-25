@@ -202,8 +202,10 @@ handle names the bug. `herald-watchdog` now restarts on this at 85% of the
 limit, so it should never again get far enough to go deaf.
 
 **Brain unreachable from the phone.** `herald brain status`. `herald-watchdog`
-restarts it within 5 minutes. Remote Control needs a claude.ai login, no
-`ANTHROPIC_BASE_URL`, and telemetry not disabled.
+restarts it within 5 minutes, including when Claude Code has updated itself
+under the running host (its binary deleted), which otherwise fails every new
+session with `ENOENT ... posix_spawn .../versions/<old>`. Remote Control needs
+a claude.ai login, no `ANTHROPIC_BASE_URL`, and telemetry not disabled.
 
 **A source says it is stale.** Any collector may write a `health` fact with
 `stale` set; the cycle brief then suppresses that source's awaiting-reply list

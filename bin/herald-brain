@@ -54,8 +54,30 @@ mkdir -p "$HERALD_ROOT/logs"
 
 alive() { tmux has-session -t "$SESSION" 2>/dev/null; }
 
+# Anchored: the tmux server's own command line also contains
+# "claude remote-control" (it was started with it), so an unanchored match
+# reported the brain alive whenever tmux was, with or without claude.
+rc_pids() {
+  pgrep -u "$(id -u)" -f '^claude remote-control'
+}
+
 running_claude() {
-  pgrep -u "$(id -u)" -f 'claude remote-control' >/dev/null 2>&1
+  [ -n "$(rc_pids)" ]
+}
+
+# Claude Code's native installer updates itself and prunes old versions. The
+# remote-control host keeps running the deleted binary, looks healthy, and
+# then fails every session it is asked to spawn with "ENOENT ... posix_spawn
+# .../versions/<old>", because it spawns sessions from its own path. On 25 Nov
+# 2026 that left claude.ai unable to open a Herald session for days while
+# `ensure` saw a live process. Linux only; elsewhere this never reports stale.
+stale_binary() {
+  local p exe
+  for p in $(rc_pids); do
+    exe=$(readlink "/proc/$p/exe" 2>/dev/null) || continue
+    case "$exe" in *" (deleted)") return 0 ;; esac
+  done
+  return 1
 }
 
 start() {
@@ -71,13 +93,30 @@ start() {
   if alive; then echo "started (tmux: $SESSION)"; else echo "failed to start" >&2; return 1; fi
 }
 
+# Killing the tmux session only signals claude. Until it has deregistered, a
+# new host refuses with "This folder is already served by a terminal `claude
+# remote-control` on this device", which is how the first restart on 25 Nov
+# 2026 failed.
+wait_gone() {
+  local i
+  for i in $(seq 1 30); do
+    running_claude || return 0
+    sleep 0.5
+  done
+  return 1
+}
+
 stop() {
-  if alive; then tmux kill-session -t "$SESSION" && echo "stopped"; else echo "not running"; fi
+  if alive; then tmux kill-session -t "$SESSION" && wait_gone && echo "stopped"; else echo "not running"; fi
 }
 
 ensure() {
-  if alive && running_claude; then exit 0; fi
-  if alive; then
+  if alive && running_claude && ! stale_binary; then exit 0; fi
+  if alive && running_claude; then
+    echo "$(date -Is) claude was updated under the running brain; restarting" >> "$LOG"
+    tmux kill-session -t "$SESSION" 2>/dev/null
+    wait_gone
+  elif alive; then
     echo "$(date -Is) tmux session alive but claude is gone; restarting" >> "$LOG"
     tmux kill-session -t "$SESSION" 2>/dev/null
   else
@@ -90,6 +129,7 @@ status() {
   if alive; then
     echo "tmux session '$SESSION': up"
     running_claude && echo "claude:            running" || echo "claude:            NOT running"
+    stale_binary && echo "binary:            replaced by an update; new sessions will fail until restart"
     echo
     tmux capture-pane -p -t "$SESSION" 2>/dev/null | sed -e 's/\x1b\[[0-9;]*m//g' |
       grep -v '^[[:space:]]*$' | tail -8
