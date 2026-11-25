@@ -181,6 +181,60 @@ class Questions(unittest.TestCase):
             self.bridge._question_answer(row, {"update_id": 1}, {})
         steer.assert_not_called()
 
+    def outside_topic(self):
+        return mock.patch.dict("os.environ", {"HERALD_TELEGRAM_TOPIC": ""})
+
+    def bridge_answer(self, row):
+        with mock.patch.object(self.bridge, "api"), mock.patch.object(self.bridge, "send") as send, \
+                mock.patch.object(self.bridge, "_try_steer", return_value=False) as steer, \
+                mock.patch.object(self.bridge, "handle") as handle:
+            self.bridge._question_answer(row, {"update_id": 1}, {})
+        return send, steer, handle
+
+    def test_approval_asked_outside_telegram_wakes_no_topic(self):
+        # 25 Nov 2026: a terminal session asked, the question fell back to
+        # Updates, and the tap started a turn there that performed the action.
+        self.message["message_thread_id"] = 5
+        with self.outside_topic():
+            row = questions.request("Deploy commit abc from this checkout.", approval=True)
+        self.assertEqual(row["thread_id"], 5)
+        self.assertFalse(row["wake"])
+        answered = self.tap(row)
+        send, steer, handle = self.bridge_answer(answered)
+        steer.assert_not_called()
+        handle.assert_not_called()
+        self.assertIn("Approved", send.call_args.args[1])
+        # The asking session still collects it.
+        self.assertTrue(questions.result(row["id"])["approved"])
+
+    def test_plain_question_asked_outside_telegram_wakes_no_topic(self):
+        self.message["message_thread_id"] = 5
+        with self.outside_topic():
+            row = self.ask()
+        _, steer, handle = self.bridge_answer(self.tap(row, 1))
+        steer.assert_not_called()
+        handle.assert_not_called()
+        self.assertEqual(questions.result(row["id"])["answer"], "JSON")
+
+    def test_question_sent_to_another_topic_does_not_wake_it(self):
+        self.message["message_thread_id"] = 12
+        row = self.ask(thread_id=12)
+        self.assertFalse(row["wake"])
+        _, steer, handle = self.bridge_answer(self.tap(row))
+        steer.assert_not_called()
+        handle.assert_not_called()
+
+    def test_explicit_own_topic_and_general_still_wake(self):
+        self.assertTrue(self.ask(thread_id=9)["wake"])
+        with mock.patch.dict("os.environ", {"HERALD_TELEGRAM_TOPIC": "-100:main"}):
+            row = self.ask()
+        self.assertIsNone(row["thread_id"])
+        self.assertTrue(row["wake"])
+
+    def test_foreign_chat_topic_is_not_woken(self):
+        with mock.patch.dict("os.environ", {"HERALD_TELEGRAM_TOPIC": "-999:9"}):
+            self.assertFalse(self.ask()["wake"])
+
     def test_callback_owner_check_precedes_question_lookup(self):
         update = {"callback_query": {"id": "tap", "from": {"id": 43},
                   "data": "question:1:0", "message": self.message}}

@@ -2336,9 +2336,14 @@ def _question_answer(row: dict, update: dict, state: dict) -> None:
     if original.get("message_id"):
         api("editMessageReplyMarkup", chat_id=row["chat_id"], message_id=row["message_id"],
             reply_markup={"inline_keyboard": []})
-    send(row["chat_id"], f"Answer recorded: {answer}", row["thread_id"])
     if not row["wake"]:
-        return  # The waiting command receives this answer directly.
+        # A waiting command, or a session outside this topic, collects the
+        # answer itself. Starting a turn here would hand it to a conversation
+        # that did not ask (see questions.asked_from).
+        send(row["chat_id"], f"Answer recorded: {answer}. The session that asked will pick it up.",
+             row["thread_id"])
+        return
+    send(row["chat_id"], f"Answer recorded: {answer}", row["thread_id"])
     text = f"Your question: {row['question']}\n\nMy answer: {answer}"
     if row["approval_id"]:
         text += (f"\nConsent receipt: {row['approval_id']}. "

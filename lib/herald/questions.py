@@ -1,5 +1,9 @@
 """Questions in the asking Telegram topic, with durable answers and consent.
 
+An answer goes back to the session that asked and to no other. A question
+asked from a Telegram turn may wake that same topic; any other asker reads its
+answer with `result` or `wait`.
+
 Ordinary answers are choices or explicit replies to the question message.
 Consent requires the owner's Approve button. Neither grants a safety override
 nor executes the action described in the question.
@@ -53,6 +57,20 @@ def result(question_id: int) -> dict:
     return row
 
 
+def asked_from(own: object | None, thread_id: int | None) -> bool:
+    """Whether the question lands in the asking process's own Telegram topic.
+
+    Only then may an answer re-enter that topic as a message. A terminal,
+    remote or scheduled session has no topic: its question is shown in Updates
+    (or wherever `--telegram-thread` says), which is somebody else's
+    conversation. Waking it hands the answer to a session that never asked. On
+    25 Nov 2026 that session read an approval for a deploy and performed it
+    from the question text, while the session that had asked was still
+    waiting to do the same thing from its own working tree.
+    """
+    return own is not None and notify._resolve(own) == thread_id
+
+
 def request(question: str, *, options: list[str] | None = None, approval: bool = False,
             actor: str = "session", timeout: int = 86400, wake: bool = True,
             thread_id: int | None = None) -> dict:
@@ -78,8 +96,10 @@ def request(question: str, *, options: list[str] | None = None, approval: bool =
     chat = notify._telegram_chat_id()
     if not chat:
         raise RuntimeError("Telegram is not configured")
+    own = notify._own_topic_thread(chat)
     if thread_id is None:
-        thread_id = notify._resolve(notify._own_topic_thread(chat))
+        thread_id = notify._resolve(own)
+    wake = wake and asked_from(own, thread_id)
     with db.session() as con:
         approval_id = None
         if approval:

@@ -2683,11 +2683,14 @@ def main() -> int:
     waiting = ask.add_mutually_exclusive_group()
     waiting.add_argument("--wait", action="store_true", help="block until answered or expired")
     waiting.add_argument("--no-wait", dest="wait", action="store_false",
-                         help="return immediately and resume this topic when answered (default)")
+                         help="return immediately (default); a Telegram turn is resumed by the "
+                              "answer, any other session reads it with --result")
     ask.set_defaults(wait=False)
     ask.add_argument("--timeout", type=int, default=86400, help="seconds before expiry (default: one day)")
     ask.add_argument("--actor", default="session")
-    ask.add_argument("--telegram-thread", type=int, help="default: the asking topic, otherwise Updates")
+    ask.add_argument("--telegram-thread", type=int,
+                     help="default: the asking topic, otherwise Updates. An answer in a topic "
+                          "other than the asker's own is recorded and wakes nothing")
     ask.set_defaults(fn=cmd_ask)
 
     act = sub.add_parser("act", help="an outward action, through the right door")
